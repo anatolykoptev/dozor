@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/schema/settings.json",
+  "mcpServers": {
+    "dozor": {
+      "command": "ssh",
+      "args": [
+        "<ssh-alias>",
+        "~/dozor/run-mcp.sh"
+      ]
+    }
+  }
+}
