@@ -1,0 +1,106 @@
+"""
+Safe logging utilities for Dozor.
+
+Provides logging that:
+- Sanitizes sensitive data (passwords, tokens, keys)
+- Formats output for both human and AI consumption
+- Respects log levels from environment
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import sys
+from typing import Optional
+
+
+# Patterns for sensitive data that should be redacted
+SENSITIVE_PATTERNS = [
+    (r'(password|passwd|pwd)["\']?\s*[:=]\s*["\']?[^"\'\s]+', r'\1=***'),
+    (r'(token|api_key|apikey|secret|key)["\']?\s*[:=]\s*["\']?[^"\'\s]+', r'\1=***'),
+    (r'(Authorization|X-Api-Key):\s*\S+', r'\1: ***'),
+    (r'Bearer\s+[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+', 'Bearer ***'),
+    (r'(mk_|krlk_|sk-)[A-Za-z0-9]+', r'\1***'),
+]
+
+
+class SafeFormatter(logging.Formatter):
+    """Formatter that redacts sensitive information."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = super().format(record)
+        return sanitize_message(message)
+
+
+def sanitize_message(message: str) -> str:
+    """Remove sensitive data from log message."""
+    for pattern, replacement in SENSITIVE_PATTERNS:
+        message = re.sub(pattern, replacement, message, flags=re.IGNORECASE)
+    return message
+
+
+def get_safe_logger(
+    name: str,
+    level: Optional[str] = None,
+) -> logging.Logger:
+    """
+    Get a logger that sanitizes sensitive data.
+
+    Args:
+        name: Logger name (usually __name__)
+        level: Log level (DEBUG, INFO, WARNING, ERROR). Defaults to env LOG_LEVEL or INFO.
+
+    Returns:
+        Configured logger instance.
+    """
+    logger = logging.getLogger(name)
+
+    # Only configure if not already configured
+    if not logger.handlers:
+        # Determine log level
+        if level is None:
+            level = os.environ.get('LOG_LEVEL', 'INFO').upper()
+
+        numeric_level = getattr(logging, level, logging.INFO)
+        logger.setLevel(numeric_level)
+
+        # Create handler with safe formatter
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setLevel(numeric_level)
+
+        # Format: timestamp - level - name - message
+        formatter = SafeFormatter(
+            '%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        handler.setFormatter(formatter)
+
+        logger.addHandler(handler)
+
+        # Prevent propagation to root logger
+        logger.propagate = False
+
+    return logger
+
+
+def log_command(logger: logging.Logger, command: str, result: str, success: bool) -> None:
+    """
+    Log a command execution with sanitized output.
+
+    Args:
+        logger: Logger instance
+        command: Command that was executed
+        result: Command output
+        success: Whether command succeeded
+    """
+    sanitized_cmd = sanitize_message(command)
+    sanitized_result = sanitize_message(result[:500])  # Truncate long output
+
+    if success:
+        logger.debug(f"Command succeeded: {sanitized_cmd}")
+        logger.debug(f"Output: {sanitized_result}")
+    else:
+        logger.warning(f"Command failed: {sanitized_cmd}")
+        logger.warning(f"Error: {sanitized_result}")
