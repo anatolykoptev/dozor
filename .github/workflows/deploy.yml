@@ -47,9 +47,31 @@ jobs:
             --exclude '.env' \
             ./ krolik:$REMOTE_DIR/
 
-      - name: Install dependencies
+      - name: Setup venv and install
         run: |
-          ssh krolik "cd $REMOTE_DIR && pip install -e '.[sse]' -q"
+          ssh krolik "cd $REMOTE_DIR && python3 -m venv .venv --upgrade-deps 2>/dev/null || python3 -m venv .venv"
+          ssh krolik "cd $REMOTE_DIR && .venv/bin/pip install -e '.[sse]' -q"
+
+      - name: Update systemd service
+        run: |
+          ssh krolik "cat > /tmp/dozor-mcp.service << 'SVCEOF'
+          [Unit]
+          Description=Dozor MCP Server
+          After=network.target docker.service
+
+          [Service]
+          Type=simple
+          WorkingDirectory=/home/ubuntu/dozor
+          ExecStart=/home/ubuntu/dozor/.venv/bin/python -m dozor.mcp_server_sse --transport sse --port 8765
+          Restart=always
+          RestartSec=10
+          Environment=PYTHONUNBUFFERED=1
+
+          [Install]
+          WantedBy=multi-user.target
+          SVCEOF
+          sudo mv /tmp/dozor-mcp.service /etc/systemd/system/
+          sudo systemctl daemon-reload"
 
       - name: Restart service
         run: |
