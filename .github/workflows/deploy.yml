@@ -1,0 +1,67 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REMOTE_HOST: krolik
+  REMOTE_DIR: ~/dozor
+  MCP_PORT: 8765
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          cat > ~/.ssh/config << EOF
+          Host krolik
+            HostName $SSH_HOST
+            User $SSH_USER
+            IdentityFile ~/.ssh/id_rsa
+            StrictHostKeyChecking no
+          EOF
+
+      - name: Sync code
+        run: |
+          rsync -avz --delete \
+            --exclude '__pycache__' \
+            --exclude '*.pyc' \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude '.env' \
+            ./ krolik:$REMOTE_DIR/
+
+      - name: Install dependencies
+        run: |
+          ssh krolik "cd $REMOTE_DIR && pip install -e '.[sse]' -q"
+
+      - name: Restart service
+        run: |
+          ssh krolik "sudo systemctl restart dozor-mcp"
+          sleep 3
+          ssh krolik "sudo systemctl is-active dozor-mcp" || exit 1
+
+      - name: Health check
+        run: |
+          ssh krolik "curl -sf http://localhost:$MCP_PORT/health" || echo "Health endpoint not available"
+
+      - name: Show status
+        if: always()
+        run: |
+          ssh krolik "sudo systemctl status dozor-mcp --no-pager" || true
