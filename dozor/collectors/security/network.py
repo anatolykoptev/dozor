@@ -31,20 +31,14 @@ class NetworkSecurityChecker:
     - Moltbot gateway exposure without authentication
 
     Usage:
-        checker = NetworkSecurityChecker(transport)
-        issues = checker.check_exposed_ports()
-        issues.extend(checker.check_firewall())
-        issues.extend(checker.check_gateway_exposure())
+        checker = NetworkSecurityChecker()
+        issues = checker.check_exposed_ports(transport)
+        issues.extend(checker.check_firewall(transport))
+        issues.extend(checker.check_gateway_exposure(transport))
     """
 
-    def __init__(self, transport: 'SSHTransport') -> None:
-        """
-        Initialize the network security checker.
-
-        Args:
-            transport: SSH transport for executing remote commands
-        """
-        self._transport = transport
+    def __init__(self) -> None:
+        """Initialize the network security checker."""
         self._ufw_status: Optional[dict] = None
 
     def check_exposed_ports(self, transport: 'SSHTransport') -> list[SecurityIssue]:
