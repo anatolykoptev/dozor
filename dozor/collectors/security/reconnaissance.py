@@ -25,10 +25,7 @@ class ReconnaissanceChecker:
     that may be probing for weaknesses.
     """
 
-    def __init__(self, transport: SSHTransport) -> None:
-        self.transport = transport
-
-    def check_bot_activity(self) -> list[SecurityIssue]:
+    def check_bot_activity(self, transport: 'SSHTransport') -> list[SecurityIssue]:
         """
         Detect automated vulnerability scanning activity.
 
@@ -40,7 +37,7 @@ class ReconnaissanceChecker:
         """
         issues: list[SecurityIssue] = []
 
-        result = self.transport.execute(
+        result = transport.execute(
             "docker compose logs --tail 1000 2>/dev/null | "
             "grep -iE '404|403|401' | head -100"
         )
@@ -92,7 +89,7 @@ class ReconnaissanceChecker:
 
         return issues
 
-    def get_external_ips(self) -> list[SecurityIssue]:
+    def get_external_ips(self, transport: 'SSHTransport') -> list[SecurityIssue]:
         """
         Get list of external IPs accessing the server.
 
@@ -104,7 +101,7 @@ class ReconnaissanceChecker:
         """
         issues: list[SecurityIssue] = []
 
-        result = self.transport.execute(
+        result = transport.execute(
             "docker compose logs --tail 5000 2>/dev/null | "
             "grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' | "
             "sort | uniq -c | sort -rn | head -20"
@@ -154,7 +151,7 @@ class ReconnaissanceChecker:
 
         return issues
 
-    def check(self) -> list[SecurityIssue]:
+    def check(self, transport: 'SSHTransport') -> list[SecurityIssue]:
         """
         Run all reconnaissance checks.
 
@@ -162,6 +159,6 @@ class ReconnaissanceChecker:
             Combined list of SecurityIssue objects from all checks.
         """
         issues: list[SecurityIssue] = []
-        issues.extend(self.check_bot_activity())
-        issues.extend(self.get_external_ips())
+        issues.extend(self.check_bot_activity(transport))
+        issues.extend(self.get_external_ips(transport))
         return issues

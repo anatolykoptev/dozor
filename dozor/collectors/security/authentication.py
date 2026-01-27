@@ -28,10 +28,7 @@ class AuthenticationChecker:
     - Rate limiting configuration
     """
 
-    def __init__(self, transport: 'SSHTransport') -> None:
-        self.transport = transport
-
-    def check_auth_configuration(self) -> list[SecurityIssue]:
+    def check_auth_configuration(self, transport: 'SSHTransport') -> list[SecurityIssue]:
         """
         Check authentication middleware configuration.
 
@@ -42,7 +39,7 @@ class AuthenticationChecker:
         """
         issues: list[SecurityIssue] = []
 
-        env_result = self.transport.execute("cat .env 2>/dev/null")
+        env_result = transport.execute("cat .env 2>/dev/null")
         env_content = env_result.stdout if env_result.success else ''
 
         env_vars = self._parse_env_content(env_content)
@@ -52,7 +49,7 @@ class AuthenticationChecker:
 
         return issues
 
-    def check_gateway_auth(self) -> list[SecurityIssue]:
+    def check_gateway_auth(self, transport: 'SSHTransport') -> list[SecurityIssue]:
         """
         Check Moltbot gateway authentication configuration.
 
@@ -62,7 +59,7 @@ class AuthenticationChecker:
         - Token is sufficiently strong
         """
         issues: list[SecurityIssue] = []
-        gateway_config = self._check_gateway_config()
+        gateway_config = self._check_gateway_config(transport)
 
         if not gateway_config['found']:
             return issues
@@ -94,7 +91,7 @@ class AuthenticationChecker:
 
         return issues
 
-    def check_cors_configuration(self) -> list[SecurityIssue]:
+    def check_cors_configuration(self, transport: 'SSHTransport') -> list[SecurityIssue]:
         """
         Check CORS whitelist configuration.
 
@@ -105,7 +102,7 @@ class AuthenticationChecker:
         """
         issues: list[SecurityIssue] = []
 
-        env_result = self.transport.execute("cat .env 2>/dev/null")
+        env_result = transport.execute("cat .env 2>/dev/null")
         env_content = env_result.stdout if env_result.success else ''
         env_vars = self._parse_env_content(env_content)
 
@@ -152,11 +149,11 @@ class AuthenticationChecker:
                 cwe_id='CWE-942',
             ))
 
-        issues.extend(self._check_cors_headers())
+        issues.extend(self._check_cors_headers(transport))
 
         return issues
 
-    def check_rate_limiting(self) -> list[SecurityIssue]:
+    def check_rate_limiting(self, transport: 'SSHTransport') -> list[SecurityIssue]:
         """
         Check rate limiting configuration.
 
@@ -167,7 +164,7 @@ class AuthenticationChecker:
         """
         issues: list[SecurityIssue] = []
 
-        env_result = self.transport.execute("cat .env 2>/dev/null")
+        env_result = transport.execute("cat .env 2>/dev/null")
         env_content = env_result.stdout if env_result.success else ''
         env_vars = self._parse_env_content(env_content)
 
@@ -294,7 +291,7 @@ class AuthenticationChecker:
 
         return issues
 
-    def _check_gateway_config(self) -> dict:
+    def _check_gateway_config(self, transport: 'SSHTransport') -> dict:
         """
         Parse gateway configuration from config files.
 
@@ -310,7 +307,7 @@ class AuthenticationChecker:
         }
 
         for config_path in GATEWAY_CONFIG_PATHS:
-            result = self.transport.execute(f"cat {config_path} 2>/dev/null")
+            result = transport.execute(f"cat {config_path} 2>/dev/null")
 
             if not result.success or not result.stdout.strip():
                 continue
@@ -370,16 +367,16 @@ class AuthenticationChecker:
 
         return issues
 
-    def _check_cors_headers(self) -> list[SecurityIssue]:
+    def _check_cors_headers(self, transport: 'SSHTransport') -> list[SecurityIssue]:
         """Check CORS headers in nginx/traefik configuration."""
         issues: list[SecurityIssue] = []
 
-        nginx_result = self.transport.execute(
+        nginx_result = transport.execute(
             "cat /etc/nginx/nginx.conf /etc/nginx/conf.d/*.conf 2>/dev/null | "
             "grep -i 'access-control' || true"
         )
 
-        traefik_result = self.transport.execute(
+        traefik_result = transport.execute(
             "cat traefik.yml traefik.toml docker-compose.yml 2>/dev/null | "
             "grep -i 'accesscontrol\\|cors' || true"
         )
