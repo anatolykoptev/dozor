@@ -302,7 +302,7 @@ def handle_server_deploy(arguments: dict[str, Any]) -> str:
     # Step 3: Deploy
     results.append("\n=== Deploying containers ===")
     cmd = f"cd {project_path} && docker compose up -d --remove-orphans {services_arg}"
-    result = agent.transport.execute(cmd, skip_validation=True)
+    result = agent.transport.execute(cmd, skip_validation=True, timeout=300)
     if result.success:
         results.append(result.stdout or "Deploy: done")
     else:
