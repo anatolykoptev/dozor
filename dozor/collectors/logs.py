@@ -41,6 +41,15 @@ class LogCollector:
         (r'"level":\s*"error"', 'ERROR'),
         (r'"level":\s*"warn"', 'WARNING'),
         (r'"level":\s*"info"', 'INFO'),
+        # Shell/system errors
+        (r'Permission denied', 'ERROR'),
+        (r'cannot create', 'ERROR'),
+        (r'No such file or directory', 'ERROR'),
+        (r'command not found', 'ERROR'),
+        (r'Segmentation fault', 'ERROR'),
+        (r'Killed', 'ERROR'),
+        (r'OOM', 'ERROR'),
+        (r'out of memory', 'ERROR'),
     ]
 
     def __init__(self, transport: SSHTransport):
