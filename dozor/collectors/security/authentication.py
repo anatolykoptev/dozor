@@ -39,15 +39,24 @@ class AuthenticationChecker:
         """
         issues: list[SecurityIssue] = []
 
-        env_result = transport.execute("cat .env 2>/dev/null")
-        env_content = env_result.stdout if env_result.success else ''
-
+        env_content = self._read_env_file(transport)
         env_vars = self._parse_env_content(env_content)
 
         issues.extend(self._check_auth_enabled(env_vars))
         issues.extend(self._check_required_secrets(env_vars))
 
         return issues
+
+    def _read_env_file(self, transport: 'SSHTransport') -> str:
+        """Read .env file from compose_path directory."""
+        import shlex
+        compose_path = transport.config.compose_path
+        if compose_path.startswith("~"):
+            path = '"$HOME' + compose_path[1:] + '"'
+        else:
+            path = shlex.quote(compose_path)
+        env_result = transport.execute(f"cat {path}/.env 2>/dev/null", skip_validation=True)
+        return env_result.stdout if env_result.success else ''
 
     def check_gateway_auth(self, transport: 'SSHTransport') -> list[SecurityIssue]:
         """
@@ -102,8 +111,7 @@ class AuthenticationChecker:
         """
         issues: list[SecurityIssue] = []
 
-        env_result = transport.execute("cat .env 2>/dev/null")
-        env_content = env_result.stdout if env_result.success else ''
+        env_content = self._read_env_file(transport)
         env_vars = self._parse_env_content(env_content)
 
         cors_origins = env_vars.get('CORS_ORIGINS', '')
@@ -164,8 +172,7 @@ class AuthenticationChecker:
         """
         issues: list[SecurityIssue] = []
 
-        env_result = transport.execute("cat .env 2>/dev/null")
-        env_content = env_result.stdout if env_result.success else ''
+        env_content = self._read_env_file(transport)
         env_vars = self._parse_env_content(env_content)
 
         rate_limit_enabled = env_vars.get('RATE_LIMIT_ENABLED', '').lower()
@@ -298,6 +305,7 @@ class AuthenticationChecker:
         Returns:
             Dict with keys: found, bind, auth_mode, token, has_auth
         """
+        import shlex
         config = {
             'found': False,
             'bind': 'loopback',
@@ -306,8 +314,15 @@ class AuthenticationChecker:
             'has_auth': False,
         }
 
+        compose_path = transport.config.compose_path
+        if compose_path.startswith("~"):
+            base_path = '"$HOME' + compose_path[1:] + '"'
+        else:
+            base_path = shlex.quote(compose_path)
+
         for config_path in GATEWAY_CONFIG_PATHS:
-            result = transport.execute(f"cat {config_path} 2>/dev/null")
+            full_path = f"{base_path}/{config_path}"
+            result = transport.execute(f"cat {full_path} 2>/dev/null", skip_validation=True)
 
             if not result.success or not result.stdout.strip():
                 continue
