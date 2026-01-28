@@ -205,4 +205,43 @@ WARNING: volume pruning can delete data. Use with caution.""",
             },
         },
     },
+    {
+        "name": "server_deploy",
+        "description": """Deploy application directly via SSH.
+
+Faster than GitHub Actions - see results immediately.
+
+Steps:
+1. git pull (fetch latest changes)
+2. docker compose build (rebuild changed images)
+3. docker compose up -d (deploy containers)
+4. Show container status
+
+Use this for quick deployments and debugging.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_path": {
+                    "type": "string",
+                    "description": "Path to project on server (default: ~/krolik-server)",
+                    "default": "~/krolik-server",
+                },
+                "services": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Specific services to deploy (default: all)",
+                },
+                "build": {
+                    "type": "boolean",
+                    "description": "Rebuild images before deploying (default: true)",
+                    "default": True,
+                },
+                "pull": {
+                    "type": "boolean",
+                    "description": "Pull latest code before deploying (default: true)",
+                    "default": True,
+                },
+            },
+        },
+    },
 ]

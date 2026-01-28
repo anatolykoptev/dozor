@@ -256,6 +256,68 @@ def handle_server_prune(arguments: dict[str, Any]) -> str:
     return "\n".join(results)
 
 
+def handle_server_deploy(arguments: dict[str, Any]) -> str:
+    """Handle server_deploy tool call.
+
+    Deploy application directly via SSH - faster than GitHub Actions.
+    """
+    import shlex
+
+    project_path = arguments.get("project_path", "~/krolik-server")
+    services = arguments.get("services", [])
+    do_build = arguments.get("build", True)
+    do_pull = arguments.get("pull", True)
+
+    # Validate project_path (basic security check)
+    if ".." in project_path or ";" in project_path or "|" in project_path:
+        return f"Invalid project path: {project_path}"
+
+    agent = get_agent()
+    results = []
+    services_arg = " ".join(shlex.quote(s) for s in services) if services else ""
+
+    # Step 1: Git pull
+    if do_pull:
+        results.append("=== Pulling latest changes ===")
+        cmd = f"cd {project_path} && git fetch origin main && git reset --hard origin/main"
+        result = agent.transport.execute(cmd, skip_validation=True)
+        if result.success:
+            results.append(result.stdout or "Git pull: done")
+        else:
+            results.append(f"Git pull failed: {result.stderr}")
+            return "\n".join(results)
+
+    # Step 2: Docker build
+    if do_build:
+        results.append("\n=== Building containers ===")
+        cmd = f"cd {project_path} && docker compose build --pull {services_arg}"
+        result = agent.transport.execute(cmd, skip_validation=True, timeout=600)
+        if result.success:
+            results.append(result.stdout or "Build: done")
+        else:
+            results.append(f"Build failed: {result.stderr}")
+            return "\n".join(results)
+
+    # Step 3: Deploy
+    results.append("\n=== Deploying containers ===")
+    cmd = f"cd {project_path} && docker compose up -d --remove-orphans {services_arg}"
+    result = agent.transport.execute(cmd, skip_validation=True)
+    if result.success:
+        results.append(result.stdout or "Deploy: done")
+    else:
+        results.append(f"Deploy failed: {result.stderr}")
+        return "\n".join(results)
+
+    # Step 4: Show status
+    results.append("\n=== Container Status ===")
+    cmd = f"cd {project_path} && docker compose ps --format 'table {{{{.Name}}}}\\t{{{{.Status}}}}\\t{{{{.Health}}}}'"
+    result = agent.transport.execute(cmd, skip_validation=True)
+    if result.success:
+        results.append(result.stdout or "(no output)")
+
+    return "\n".join(results)
+
+
 # Handler dispatch map
 HANDLERS = {
     "server_diagnose": handle_server_diagnose,
@@ -267,6 +329,7 @@ HANDLERS = {
     "server_health": handle_server_health,
     "server_security": handle_server_security,
     "server_prune": handle_server_prune,
+    "server_deploy": handle_server_deploy,
 }
 
 
