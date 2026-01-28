@@ -11,33 +11,43 @@ from typing import Optional
 
 # Allowlist of safe commands for server_exec
 # Only these command patterns are allowed
+# SECURITY: Patterns must be as restrictive as possible
 ALLOWED_COMMANDS = [
     # Docker commands (read-only)
-    r'^docker\s+(ps|logs|inspect|stats|top|images|info|version)',
-    r'^docker\s+compose\s+(ps|logs|config|images|top|version)',
-    # System info (read-only)
-    r'^(cat|head|tail|less|more)\s+/var/log/',
-    r'^(ls|ll|dir)\s',
-    r'^(df|du|free|top|htop|uptime|uname|hostname|whoami|pwd|date)',
-    r'^(ps|pgrep|pidof)\s',
-    r'^(netstat|ss|lsof)\s',
-    r'^(curl|wget)\s.*(-I|--head)',  # HEAD requests only
-    # Systemd (read-only)
-    r'^systemctl\s+(status|is-active|is-enabled|list-units)',
-    r'^journalctl\s',
-    # Health checks
-    r'^(ping|traceroute|dig|nslookup|host)\s',
-    # File inspection (read-only, limited paths)
-    r'^cat\s+~/[a-zA-Z0-9_/-]+\.(yml|yaml|json|conf|env\.example)$',
-    r'^grep\s',
-    r'^find\s+~/',
+    r'^docker\s+(ps|logs|inspect|stats|top|images|info|version)(\s|$)',
+    r'^docker\s+compose\s+(ps|logs|config|images|top|version)(\s|$)',
+    # System info (read-only, no arguments that could be dangerous)
+    r'^(cat|head|tail)\s+/var/log/[a-zA-Z0-9._/-]+$',
+    r'^(ls|ll)\s+(-[lah]+\s+)?(/var/log/|~/|/home/)[a-zA-Z0-9._/-]*$',
+    r'^(df|free|uptime|uname|hostname|whoami|pwd|date)(\s+-[a-z]+)?$',
+    r'^(du)\s+-[sh]+\s+(/var/log/|~/|/tmp/)[a-zA-Z0-9._/-]*$',
+    r'^(ps)\s+(aux|ef|-ef)$',
+    r'^(netstat|ss)\s+-[tlnup]+$',
+    r'^lsof\s+-i\s*$',
+    # Systemd (read-only, specific commands only)
+    r'^systemctl\s+(status|is-active|is-enabled)\s+[a-zA-Z0-9_-]+$',
+    r'^systemctl\s+list-units(\s+--type=[a-z]+)?$',
+    r'^journalctl\s+(-u\s+[a-zA-Z0-9_-]+|--since\s+"[^"]+"|--no-pager|-n\s+\d+|\s)+$',
+    # Health checks (limited targets)
+    r'^ping\s+-c\s+\d+\s+[a-zA-Z0-9.-]+$',
+    r'^(dig|nslookup|host)\s+[a-zA-Z0-9.-]+$',
+    # File inspection (read-only, STRICT path validation)
+    # Only allow specific safe paths, no shell expansion
+    r'^cat\s+~/[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+\.(yml|yaml|json|conf|env\.example|txt|log)$',
+    r'^cat\s+/var/log/[a-zA-Z0-9._/-]+$',
+    # grep - RESTRICTED: only search in safe paths, no -r to prevent traversal
+    r'^grep\s+(-[ivnc]+\s+)?["\'][^"\']+["\']\s+(/var/log/|~/)[a-zA-Z0-9._/-]+$',
+    # find - RESTRICTED: only in home, only -name, no -exec
+    r'^find\s+~/[a-zA-Z0-9_/-]*\s+-name\s+["\'][a-zA-Z0-9.*_-]+["\'](\s+-type\s+[fd])?$',
 ]
 
 _ALLOWED_PATTERNS = [re.compile(p) for p in ALLOWED_COMMANDS]
 
 
 # Dangerous patterns that are ALWAYS blocked
+# SECURITY: These patterns are checked BEFORE allowlist
 BLOCKED_PATTERNS = [
+    # Destructive commands
     r'rm\s+(-r|-f|-rf|--recursive|--force)',
     r'>\s*/dev/',
     r'mkfs',
@@ -45,19 +55,48 @@ BLOCKED_PATTERNS = [
     r'chmod\s+(-R\s+)?[0-7]{3,4}\s+/',
     r'chown\s+(-R\s+)?',
     r':\(\)\s*\{',  # Fork bomb
-    r'\$\(',  # Command substitution
-    r'`',  # Backtick execution
-    r';\s*(rm|dd|mkfs|chmod|chown)',  # Chained dangerous commands
-    r'\|\s*(rm|dd|mkfs|chmod|chown)',  # Piped dangerous commands
-    r'&&\s*(rm|dd|mkfs|chmod|chown)',  # And-chained dangerous commands
+    # Command injection vectors
+    r'\$\(',  # Command substitution $(...)
+    r'\$\{',  # Variable expansion ${...}
+    r'`',     # Backtick execution
+    r'\$\w+', # Variable reference $VAR (block all variable expansion)
+    # Command chaining with dangerous commands
+    r';\s*(rm|dd|mkfs|chmod|chown|mv|cp\s+-r|tar|zip|curl|wget|python|perl|ruby|node|bash|sh)',
+    r'\|\s*(rm|dd|mkfs|chmod|chown|bash|sh|zsh|python|perl|ruby|node|xargs)',
+    r'&&\s*(rm|dd|mkfs|chmod|chown|mv|cp\s+-r)',
+    # Shell execution
     r'eval\s',
     r'exec\s',
     r'source\s',
     r'\.\s+/',  # Dot sourcing
-    r'>/etc/',  # Writing to /etc
-    r'>\s*/root/',  # Writing to /root
-    r'curl.*\|\s*(bash|sh|zsh)',  # Curl pipe to shell
-    r'wget.*\|\s*(bash|sh|zsh)',  # Wget pipe to shell
+    # File writing to sensitive locations
+    r'>\s*/',     # Redirect to absolute path
+    r'>>\s*/',    # Append to absolute path
+    r'>\s*~/',    # Redirect to home
+    r'>>\s*~/',   # Append to home
+    # Dangerous downloads
+    r'curl.*\|\s*(bash|sh|zsh|python|perl)',
+    r'wget.*\|\s*(bash|sh|zsh|python|perl)',
+    r'curl.*-o\s',  # Download to file
+    r'wget.*-O\s',  # Download to file
+    # Path traversal
+    r'\.\.',      # Parent directory reference
+    # Sensitive paths (read access)
+    r'/etc/shadow',
+    r'/etc/passwd',
+    r'\.ssh/',
+    r'\.gnupg/',
+    r'\.aws/',
+    r'\.kube/config',
+    # Recursive operations that could be dangerous
+    r'grep\s+-r',   # Recursive grep (could read entire filesystem)
+    r'find\s+/',    # Find from root (should only allow ~/)
+    r'-exec\s',     # Find with exec
+    r'-delete',     # Find with delete
+    # Network exfiltration
+    r'nc\s',        # Netcat
+    r'ncat\s',      # Nmap netcat
+    r'socat\s',     # Socat
 ]
 
 _BLOCKED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in BLOCKED_PATTERNS]

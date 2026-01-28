@@ -17,12 +17,38 @@ from typing import Optional
 
 
 # Patterns for sensitive data that should be redacted
+# SECURITY: Add new patterns as new token formats are discovered
 SENSITIVE_PATTERNS = [
-    (r'(password|passwd|pwd)["\']?\s*[:=]\s*["\']?[^"\'\s]+', r'\1=***'),
-    (r'(token|api_key|apikey|secret|key)["\']?\s*[:=]\s*["\']?[^"\'\s]+', r'\1=***'),
-    (r'(Authorization|X-Api-Key):\s*\S+', r'\1: ***'),
-    (r'Bearer\s+[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+', 'Bearer ***'),
-    (r'(mk_|krlk_|sk-)[A-Za-z0-9]+', r'\1***'),
+    # Generic key=value patterns
+    (r'(password|passwd|pwd|pass)["\']?\s*[:=]\s*["\']?[^"\'\s,}]+', r'\1=***'),
+    (r'(token|api_key|apikey|secret|private_key|secret_key)["\']?\s*[:=]\s*["\']?[^"\'\s,}]+', r'\1=***'),
+    (r'(auth|credential|cred)["\']?\s*[:=]\s*["\']?[^"\'\s,}]+', r'\1=***'),
+    # HTTP headers
+    (r'(Authorization|X-Api-Key|X-Auth-Token|X-Secret):\s*\S+', r'\1: ***'),
+    (r'Bearer\s+[A-Za-z0-9\-_]+\.?[A-Za-z0-9\-_]*\.?[A-Za-z0-9\-_]*', 'Bearer ***'),
+    (r'Basic\s+[A-Za-z0-9+/=]+', 'Basic ***'),
+    # Specific token formats
+    (r'(mk_|krlk_|sk-)[A-Za-z0-9_-]+', r'\1***'),           # Internal tokens
+    (r'ghp_[A-Za-z0-9]{36,}', 'ghp_***'),                   # GitHub PAT
+    (r'gho_[A-Za-z0-9]{36,}', 'gho_***'),                   # GitHub OAuth
+    (r'github_pat_[A-Za-z0-9_]{22,}', 'github_pat_***'),    # GitHub fine-grained PAT
+    (r'npm_[A-Za-z0-9]{36,}', 'npm_***'),                   # NPM tokens
+    (r'pypi-[A-Za-z0-9_-]{32,}', 'pypi-***'),               # PyPI tokens
+    # Cloud provider keys
+    (r'AKIA[A-Z0-9]{16}', 'AKIA***'),                       # AWS Access Key ID
+    (r'[A-Za-z0-9/+=]{40}(?=\s|$|")', '***'),               # AWS Secret (40 chars base64)
+    (r'ya29\.[A-Za-z0-9_-]+', 'ya29.***'),                  # Google OAuth
+    (r'AIza[A-Za-z0-9_-]{35}', 'AIza***'),                  # Google API Key
+    (r'[0-9]+-[A-Za-z0-9_]{32}\.apps\.googleusercontent\.com', '***-***.apps.googleusercontent.com'),
+    # Database connection strings
+    (r'(postgres|mysql|mongodb)://[^@]+@', r'\1://***@'),   # DB URLs with creds
+    (r'redis://:[^@]+@', 'redis://***@'),                   # Redis with password
+    # SSH/Private keys (partial match to avoid huge replacements)
+    (r'-----BEGIN [A-Z ]+ PRIVATE KEY-----', '-----BEGIN *** PRIVATE KEY-----'),
+    (r'ssh-rsa\s+[A-Za-z0-9+/=]+', 'ssh-rsa ***'),
+    (r'ssh-ed25519\s+[A-Za-z0-9+/]+', 'ssh-ed25519 ***'),
+    # IP addresses with ports (potential internal services)
+    (r'\b(?:192\.168|10\.|172\.(?:1[6-9]|2[0-9]|3[01]))\.\d+\.\d+:\d+\b', '***:***'),
 ]
 
 

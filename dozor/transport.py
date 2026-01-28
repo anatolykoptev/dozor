@@ -1,5 +1,8 @@
 """
 Secure SSH transport layer.
+
+SECURITY: All command execution goes through this module.
+Local mode commands are validated against the same allowlist as remote commands.
 """
 
 import subprocess
@@ -14,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.logging import get_safe_logger as get_logger
 
 from .config import ServerConfig
+from .validation import is_command_allowed
 
 
 logger = get_logger(__name__)
@@ -71,21 +75,43 @@ class SSHTransport:
 
         return cmd
 
-    def execute(self, command: str, timeout: Optional[int] = None) -> CommandResult:
+    def execute(
+        self,
+        command: str,
+        timeout: Optional[int] = None,
+        skip_validation: bool = False,
+    ) -> CommandResult:
         """
         Execute a command on the server.
 
         If host is "local"/"localhost"/"127.0.0.1", runs command directly.
         Otherwise, runs via SSH.
 
+        SECURITY: Local commands are validated against allowlist by default.
+        Internal methods can pass skip_validation=True for trusted commands.
+
         Args:
             command: Command to execute
             timeout: Optional timeout override
+            skip_validation: Skip allowlist check (for internal trusted commands)
 
         Returns:
             CommandResult with stdout, stderr, and return code
         """
         effective_timeout = timeout or self.config.timeout
+
+        # SECURITY: Validate local commands against allowlist
+        if self._is_local and not skip_validation:
+            allowed, reason = is_command_allowed(command)
+            if not allowed:
+                logger.warning(f"Blocked local command: {command[:50]}... Reason: {reason}")
+                return CommandResult(
+                    stdout="",
+                    stderr=f"Command blocked by security policy: {reason}",
+                    return_code=-1,
+                    command=command,
+                    success=False,
+                )
 
         if self._is_local:
             # Local execution - run directly via shell
@@ -152,13 +178,18 @@ class SSHTransport:
             return False, result.stderr or "Connection failed"
 
     def docker_command(self, docker_cmd: str) -> CommandResult:
-        """Execute a docker command on the remote server."""
-        # Escape the docker command properly
+        """Execute a docker command on the remote server.
+
+        SECURITY: Internal method - commands are pre-validated by callers.
+        """
         full_cmd = f"docker {docker_cmd}"
-        return self.execute(full_cmd)
+        return self.execute(full_cmd, skip_validation=True)
 
     def docker_compose_command(self, compose_cmd: str) -> CommandResult:
-        """Execute a docker compose command in the configured path."""
+        """Execute a docker compose command in the configured path.
+
+        SECURITY: Internal method - commands are pre-validated by callers.
+        """
         # Expand ~ to $HOME for SSH compatibility
         path = self.config.compose_path
         if path.startswith("~"):
@@ -167,4 +198,4 @@ class SSHTransport:
         else:
             path = shlex.quote(path)
         full_cmd = f"cd {path} && docker compose {compose_cmd}"
-        return self.execute(full_cmd)
+        return self.execute(full_cmd, skip_validation=True)
