@@ -223,8 +223,7 @@ Use this for quick deployments and debugging.""",
             "properties": {
                 "project_path": {
                     "type": "string",
-                    "description": "Path to project on server (default: ~/krolik-server)",
-                    "default": "/home/krolik/krolik-server",
+                    "description": "Path to project on server. Default: SERVER_COMPOSE_PATH from .env",
                 },
                 "services": {
                     "type": "array",

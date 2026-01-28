@@ -263,7 +263,10 @@ def handle_server_deploy(arguments: dict[str, Any]) -> str:
     """
     import shlex
 
-    project_path = arguments.get("project_path", "/home/krolik/krolik-server")
+    agent = get_agent()
+
+    # Use SERVER_COMPOSE_PATH from config as default
+    project_path = arguments.get("project_path") or agent.server_config.compose_path
     services = arguments.get("services", [])
     do_build = arguments.get("build", True)
     do_pull = arguments.get("pull", True)
@@ -271,8 +274,6 @@ def handle_server_deploy(arguments: dict[str, Any]) -> str:
     # Validate project_path (basic security check)
     if ".." in project_path or ";" in project_path or "|" in project_path:
         return f"Invalid project path: {project_path}"
-
-    agent = get_agent()
     results = []
     services_arg = " ".join(shlex.quote(s) for s in services) if services else ""
 
