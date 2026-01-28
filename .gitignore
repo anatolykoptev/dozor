@@ -41,3 +41,6 @@ ENV/
 
 # Local docs (not for git)
 docs/
+
+# Claude instructions (local only)
+CLAUDE.md
