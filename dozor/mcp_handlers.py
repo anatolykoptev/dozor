@@ -263,7 +263,7 @@ def handle_server_deploy(arguments: dict[str, Any]) -> str:
     """
     import shlex
 
-    project_path = arguments.get("project_path", "~/krolik-server")
+    project_path = arguments.get("project_path", "/home/krolik/krolik-server")
     services = arguments.get("services", [])
     do_build = arguments.get("build", True)
     do_pull = arguments.get("pull", True)

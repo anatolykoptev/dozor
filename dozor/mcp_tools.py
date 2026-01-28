@@ -224,7 +224,7 @@ Use this for quick deployments and debugging.""",
                 "project_path": {
                     "type": "string",
                     "description": "Path to project on server (default: ~/krolik-server)",
-                    "default": "~/krolik-server",
+                    "default": "/home/krolik/krolik-server",
                 },
                 "services": {
                     "type": "array",
