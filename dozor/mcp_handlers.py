@@ -259,9 +259,11 @@ def handle_server_prune(arguments: dict[str, Any]) -> str:
 def handle_server_deploy(arguments: dict[str, Any]) -> str:
     """Handle server_deploy tool call.
 
-    Deploy application directly via SSH - faster than GitHub Actions.
+    Deploy runs in BACKGROUND via nohup. Returns immediately with log path.
+    Use server_deploy_status to check progress.
     """
     import shlex
+    import time
 
     agent = get_agent()
 
@@ -274,49 +276,78 @@ def handle_server_deploy(arguments: dict[str, Any]) -> str:
     # Validate project_path (basic security check)
     if ".." in project_path or ";" in project_path or "|" in project_path:
         return f"Invalid project path: {project_path}"
-    results = []
+
     services_arg = " ".join(shlex.quote(s) for s in services) if services else ""
 
-    # Step 1: Git pull
+    # Generate unique deploy ID
+    deploy_id = f"deploy-{int(time.time())}"
+    log_file = f"/tmp/{deploy_id}.log"
+
+    # Build deploy script
+    steps = [f"cd {project_path}"]
+
     if do_pull:
-        results.append("=== Pulling latest changes ===")
-        cmd = f"cd {project_path} && git fetch origin main && git reset --hard origin/main"
-        result = agent.transport.execute(cmd, skip_validation=True)
-        if result.success:
-            results.append(result.stdout or "Git pull: done")
-        else:
-            results.append(f"Git pull failed: {result.stderr}")
-            return "\n".join(results)
+        steps.append("echo '=== Pulling latest changes ===' && git fetch origin main && git reset --hard origin/main")
 
-    # Step 2: Docker build
     if do_build:
-        results.append("\n=== Building containers ===")
-        cmd = f"cd {project_path} && docker compose build --pull {services_arg}"
-        result = agent.transport.execute(cmd, skip_validation=True, timeout=600)
-        if result.success:
-            results.append(result.stdout or "Build: done")
-        else:
-            results.append(f"Build failed: {result.stderr}")
-            return "\n".join(results)
+        steps.append(f"echo '=== Building containers ===' && docker compose build --pull {services_arg}")
 
-    # Step 3: Deploy
-    results.append("\n=== Deploying containers ===")
-    cmd = f"cd {project_path} && docker compose up -d --remove-orphans {services_arg}"
-    result = agent.transport.execute(cmd, skip_validation=True, timeout=300)
-    if result.success:
-        results.append(result.stdout or "Deploy: done")
-    else:
-        results.append(f"Deploy failed: {result.stderr}")
-        return "\n".join(results)
+    steps.append(f"echo '=== Deploying containers ===' && docker compose up -d --remove-orphans {services_arg}")
+    steps.append("echo '=== Container Status ===' && docker compose ps")
+    steps.append("echo '=== DEPLOY COMPLETE ==='")
 
-    # Step 4: Show status
-    results.append("\n=== Container Status ===")
-    cmd = f"cd {project_path} && docker compose ps --format 'table {{{{.Name}}}}\\t{{{{.Status}}}}\\t{{{{.Health}}}}'"
+    script = " && ".join(steps)
+
+    # Run in background with nohup
+    cmd = f"nohup bash -c '{script}' > {log_file} 2>&1 &"
     result = agent.transport.execute(cmd, skip_validation=True)
-    if result.success:
-        results.append(result.stdout or "(no output)")
 
-    return "\n".join(results)
+    if not result.success:
+        return f"Failed to start deploy: {result.stderr}"
+
+    return f"""Deploy started in background.
+
+Deploy ID: {deploy_id}
+Log file: {log_file}
+
+Check progress: server_deploy_status deploy_id="{deploy_id}"
+View logs: server_exec command="tail -50 {log_file}" """
+
+
+def handle_server_deploy_status(arguments: dict[str, Any]) -> str:
+    """Check status of background deploy."""
+    deploy_id = arguments.get("deploy_id", "")
+
+    if not deploy_id:
+        return "Error: deploy_id is required"
+
+    # Validate deploy_id format
+    if not deploy_id.startswith("deploy-") or ".." in deploy_id:
+        return f"Invalid deploy_id: {deploy_id}"
+
+    agent = get_agent()
+    log_file = f"/tmp/{deploy_id}.log"
+
+    # Check if log file exists and get contents
+    result = agent.transport.execute(f"cat {log_file} 2>/dev/null || echo 'Log not found'", skip_validation=True)
+
+    if not result.success:
+        return f"Failed to read log: {result.stderr}"
+
+    log_content = result.stdout or ""
+
+    # Check if deploy completed
+    if "=== DEPLOY COMPLETE ===" in log_content:
+        status = "COMPLETED"
+    elif "error" in log_content.lower() or "failed" in log_content.lower():
+        status = "FAILED"
+    else:
+        status = "RUNNING"
+
+    return f"""Deploy Status: {status}
+
+--- Log ({log_file}) ---
+{log_content[-3000:] if len(log_content) > 3000 else log_content}"""
 
 
 # Handler dispatch map
@@ -331,6 +362,7 @@ HANDLERS = {
     "server_security": handle_server_security,
     "server_prune": handle_server_prune,
     "server_deploy": handle_server_deploy,
+    "server_deploy_status": handle_server_deploy_status,
 }
 
 

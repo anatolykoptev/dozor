@@ -243,4 +243,21 @@ Use this for quick deployments and debugging.""",
             },
         },
     },
+    {
+        "name": "server_deploy_status",
+        "description": """Check status of a background deploy.
+
+Returns log contents and status (RUNNING/COMPLETED/FAILED).
+Use the deploy_id returned by server_deploy.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "deploy_id": {
+                    "type": "string",
+                    "description": "Deploy ID from server_deploy (e.g., deploy-1234567890)",
+                },
+            },
+            "required": ["deploy_id"],
+        },
+    },
 ]
