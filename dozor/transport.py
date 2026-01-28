@@ -87,18 +87,27 @@ class SSHTransport:
         If host is "local"/"localhost"/"127.0.0.1", runs command directly.
         Otherwise, runs via SSH.
 
-        SECURITY: Local commands are validated against allowlist by default.
-        Internal methods can pass skip_validation=True for trusted commands.
+        SECURITY: Commands are validated against allowlist by default.
+        Internal methods can pass skip_validation=True for pre-sanitized commands.
+
+        IMPORTANT: When using skip_validation=True:
+        - ALL user input MUST be sanitized with shlex.quote()
+        - Command must be constructed from trusted patterns only
+        - Log entry will be created for audit trail
 
         Args:
             command: Command to execute
             timeout: Optional timeout override
-            skip_validation: Skip allowlist check (for internal trusted commands)
+            skip_validation: Skip allowlist check (only for internal pre-sanitized commands)
 
         Returns:
             CommandResult with stdout, stderr, and return code
         """
         effective_timeout = timeout or self.config.timeout
+
+        # SECURITY: Log when validation is skipped (audit trail)
+        if skip_validation:
+            logger.debug(f"Validation skipped for internal command: {command[:80]}...")
 
         # SECURITY: Validate local commands against allowlist
         if self._is_local and not skip_validation:

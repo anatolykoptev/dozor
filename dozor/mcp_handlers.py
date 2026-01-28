@@ -5,37 +5,47 @@ Security: All inputs are validated before execution.
 """
 
 import json
+import logging
+import re
+import shlex
+from functools import lru_cache
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 from .agent import ServerAgent
+from .decorators import require_valid_service
+from .deploy import (
+    start_background_deploy,
+    format_deploy_started,
+    get_deploy_status,
+    format_deploy_status,
+)
+from .models import ContainerState
 from .validation import (
     is_command_allowed,
-    validate_service_name,
     validate_lines_count,
 )
 
 
-# Global agent instance
-_agent: ServerAgent | None = None
-
-
+@lru_cache(maxsize=1)
 def get_agent() -> ServerAgent:
-    """Get or create the global agent instance."""
-    global _agent
-    if _agent is None:
-        _agent = ServerAgent.from_env()
-    return _agent
+    """Get or create the agent instance (thread-safe singleton via lru_cache)."""
+    return ServerAgent.from_env()
+
+
+def reset_agent() -> None:
+    """Reset agent instance. Use for testing only."""
+    get_agent.cache_clear()
 
 
 def handle_server_diagnose(arguments: dict[str, Any]) -> str:
     """Handle server_diagnose tool call."""
     agent = get_agent()
 
-    # Override services if provided
-    if arguments.get("services"):
-        agent.server_config.services = arguments["services"]
-
-    report = agent.diagnose()
+    # Pass services override (immutable - no state mutation)
+    services_override = arguments.get("services")
+    report = agent.diagnose(services_override=services_override)
 
     # Return AI-friendly format
     if report.needs_attention:
@@ -48,14 +58,10 @@ def handle_server_diagnose(arguments: dict[str, Any]) -> str:
                f"{len(report.services)} services checked, no issues found."
 
 
+@require_valid_service
 def handle_server_status(arguments: dict[str, Any]) -> str:
     """Handle server_status tool call."""
     service = arguments["service"]
-
-    # Validate service name
-    valid, reason = validate_service_name(service)
-    if not valid:
-        return f"Invalid service name: {reason}"
 
     agent = get_agent()
     status = agent.get_service_status(service)
@@ -79,17 +85,14 @@ def handle_server_status(arguments: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+@require_valid_service
 def handle_server_logs(arguments: dict[str, Any]) -> str:
     """Handle server_logs tool call."""
     service = arguments["service"]
     lines = arguments.get("lines", 100)
     errors_only = arguments.get("errors_only", False)
 
-    # Validate inputs
-    valid, reason = validate_service_name(service)
-    if not valid:
-        return f"Invalid service name: {reason}"
-
+    # Validate lines count
     valid, reason = validate_lines_count(lines)
     if not valid:
         return f"Invalid lines count: {reason}"
@@ -109,14 +112,10 @@ def handle_server_logs(arguments: dict[str, Any]) -> str:
     return "\n".join(result)
 
 
+@require_valid_service
 def handle_server_restart(arguments: dict[str, Any]) -> str:
     """Handle server_restart tool call."""
     service = arguments["service"]
-
-    # Validate service name
-    valid, reason = validate_service_name(service)
-    if not valid:
-        return f"Invalid service name: {reason}"
 
     agent = get_agent()
     success, output = agent.restart_service(service)
@@ -154,14 +153,10 @@ def handle_server_exec(arguments: dict[str, Any]) -> str:
         return f"Command failed (exit code {result.return_code}):\n{result.stderr}"
 
 
+@require_valid_service
 def handle_server_analyze_logs(arguments: dict[str, Any]) -> str:
     """Handle server_analyze_logs tool call."""
     service = arguments["service"]
-
-    # Validate service name
-    valid, reason = validate_service_name(service)
-    if not valid:
-        return f"Invalid service name: {reason}"
 
     agent = get_agent()
     return agent.get_service_logs_summary(service)
@@ -179,7 +174,6 @@ def handle_server_health(arguments: dict[str, Any]) -> str:
     unhealthy = 0
 
     for status in statuses:
-        from .models import ContainerState
         if status.state == ContainerState.RUNNING:
             lines.append(f"  [OK] {status.name}")
             healthy += 1
@@ -207,23 +201,24 @@ def handle_server_prune(arguments: dict[str, Any]) -> str:
 
     Cleanup Docker resources (images, build cache, volumes).
     """
-    import re
-
     prune_images = arguments.get("images", True)
     prune_build_cache = arguments.get("build_cache", True)
     prune_volumes = arguments.get("volumes", False)
     age = arguments.get("age", "24h")
 
-    # Validate age format
+    # Validate age format (strict: only digits + unit)
     if not re.match(r'^\d+[smhd]$', age):
         return f"Invalid age format: {age}. Use format like '24h', '7d', '30m'"
+
+    # SECURITY: Always quote user input for shell commands
+    safe_age = shlex.quote(age)
 
     agent = get_agent()
     results = []
 
     # Prune images
     if prune_images:
-        cmd = f"docker image prune -af --filter 'until={age}'"
+        cmd = f"docker image prune -af --filter until={safe_age}"
         result = agent.transport.execute(cmd, skip_validation=True)
         if result.success:
             results.append(f"Images pruned: {result.stdout or 'done'}")
@@ -232,7 +227,7 @@ def handle_server_prune(arguments: dict[str, Any]) -> str:
 
     # Prune build cache
     if prune_build_cache:
-        cmd = f"docker builder prune -af --filter 'until={age}'"
+        cmd = f"docker builder prune -af --filter until={safe_age}"
         result = agent.transport.execute(cmd, skip_validation=True)
         if result.success:
             results.append(f"Build cache pruned: {result.stdout or 'done'}")
@@ -262,56 +257,17 @@ def handle_server_deploy(arguments: dict[str, Any]) -> str:
     Deploy runs in BACKGROUND via nohup. Returns immediately with log path.
     Use server_deploy_status to check progress.
     """
-    import shlex
-    import time
-
     agent = get_agent()
-
-    # Use SERVER_COMPOSE_PATH from config as default
     project_path = arguments.get("project_path") or agent.server_config.compose_path
-    services = arguments.get("services", [])
-    do_build = arguments.get("build", True)
-    do_pull = arguments.get("pull", True)
 
-    # Validate project_path (basic security check)
-    if ".." in project_path or ";" in project_path or "|" in project_path:
-        return f"Invalid project path: {project_path}"
-
-    services_arg = " ".join(shlex.quote(s) for s in services) if services else ""
-
-    # Generate unique deploy ID
-    deploy_id = f"deploy-{int(time.time())}"
-    log_file = f"/tmp/{deploy_id}.log"
-
-    # Build deploy script
-    steps = [f"cd {project_path}"]
-
-    if do_pull:
-        steps.append("echo '=== Pulling latest changes ===' && git fetch origin main && git reset --hard origin/main")
-
-    if do_build:
-        steps.append(f"echo '=== Building containers ===' && docker compose build --pull {services_arg}")
-
-    steps.append(f"echo '=== Deploying containers ===' && docker compose up -d --remove-orphans {services_arg}")
-    steps.append("echo '=== Container Status ===' && docker compose ps")
-    steps.append("echo '=== DEPLOY COMPLETE ==='")
-
-    script = " && ".join(steps)
-
-    # Run in background with nohup
-    cmd = f"nohup bash -c '{script}' > {log_file} 2>&1 &"
-    result = agent.transport.execute(cmd, skip_validation=True)
-
-    if not result.success:
-        return f"Failed to start deploy: {result.stderr}"
-
-    return f"""Deploy started in background.
-
-Deploy ID: {deploy_id}
-Log file: {log_file}
-
-Check progress: server_deploy_status deploy_id="{deploy_id}"
-View logs: server_exec command="tail -50 {log_file}" """
+    result = start_background_deploy(
+        agent=agent,
+        project_path=project_path,
+        services=arguments.get("services"),
+        do_build=arguments.get("build", True),
+        do_pull=arguments.get("pull", True),
+    )
+    return format_deploy_started(result)
 
 
 def handle_server_deploy_status(arguments: dict[str, Any]) -> str:
@@ -321,33 +277,13 @@ def handle_server_deploy_status(arguments: dict[str, Any]) -> str:
     if not deploy_id:
         return "Error: deploy_id is required"
 
-    # Validate deploy_id format
-    if not deploy_id.startswith("deploy-") or ".." in deploy_id:
-        return f"Invalid deploy_id: {deploy_id}"
+    # SECURITY: Strict deploy_id validation (format: deploy-<unix_timestamp>)
+    if not re.match(r'^deploy-\d{10,13}$', deploy_id):
+        return f"Invalid deploy_id format. Expected: deploy-<timestamp>"
 
     agent = get_agent()
-    log_file = f"/tmp/{deploy_id}.log"
-
-    # Check if log file exists and get contents
-    result = agent.transport.execute(f"cat {log_file} 2>/dev/null || echo 'Log not found'", skip_validation=True)
-
-    if not result.success:
-        return f"Failed to read log: {result.stderr}"
-
-    log_content = result.stdout or ""
-
-    # Check if deploy completed
-    if "=== DEPLOY COMPLETE ===" in log_content:
-        status = "COMPLETED"
-    elif "error" in log_content.lower() or "failed" in log_content.lower():
-        status = "FAILED"
-    else:
-        status = "RUNNING"
-
-    return f"""Deploy Status: {status}
-
---- Log ({log_file}) ---
-{log_content[-3000:] if len(log_content) > 3000 else log_content}"""
+    status = get_deploy_status(agent, deploy_id)
+    return format_deploy_status(status)
 
 
 # Handler dispatch map
@@ -375,4 +311,5 @@ def handle_tool(name: str, arguments: dict[str, Any]) -> str:
     try:
         return handler(arguments)
     except Exception as e:
+        logger.exception(f"Error executing tool {name}")
         return f"Error executing {name}: {str(e)}"

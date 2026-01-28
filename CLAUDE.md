@@ -16,3 +16,5 @@ Never hardcode IPs, paths, or usernames in code.
 cp .env.example .env
 # Edit .env with your values
 ```
+
+cd dozor && pytest tests/ -v

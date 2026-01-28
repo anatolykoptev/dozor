@@ -38,3 +38,6 @@ ENV/
 # Distribution
 *.whl
 *.tar.gz
+
+# Local docs (not for git)
+docs/

@@ -16,7 +16,7 @@ from .transport import SSHTransport
 from .collectors import LogCollector, StatusCollector, ResourceCollector, SecurityCollector
 from .analyzers import LogAnalyzer, AlertGenerator
 from .analyzers.log_analyzer import is_bot_scanner_request
-from .models import DiagnosticReport, ServiceStatus, Alert
+from .models import DiagnosticReport, ServiceStatus, Alert, LogEntry
 
 
 logger = get_logger(__name__)
@@ -54,7 +54,19 @@ class ServerAgent:
         self._connected = success
         return success, message
 
-    def diagnose(self, include_security: bool = True) -> DiagnosticReport:
+    def _filter_error_logs(self, logs: list[LogEntry]) -> list[LogEntry]:
+        """Filter logs to only include errors, excluding bot scanner noise."""
+        return [
+            log for log in logs
+            if log.level in ('ERROR', 'CRITICAL', 'FATAL')
+            and not is_bot_scanner_request(log.raw)
+        ]
+
+    def diagnose(
+        self,
+        include_security: bool = True,
+        services_override: list[str] | None = None,
+    ) -> DiagnosticReport:
         """
         Run full diagnostics and return report.
 
@@ -62,16 +74,18 @@ class ServerAgent:
 
         Args:
             include_security: Also run security checks (default: True)
+            services_override: Override default services list (immutable pattern)
         """
         logger.info(f"Running diagnostics on {self.server_config.host}")
 
-        # Collect status for all services
-        services = self._collect_all_data()
+        # Collect status for all services (use override if provided)
+        target_services = services_override or self.server_config.services
+        service_statuses = self._collect_all_data(target_services)
 
         # Generate report with alerts
         report = self.alert_generator.create_report(
             server=self.server_config.host,
-            services=services,
+            services=service_statuses,
         )
 
         # Add security alerts
@@ -84,9 +98,9 @@ class ServerAgent:
         logger.info(f"Diagnostics complete: {report.overall_health}")
         return report
 
-    def _collect_all_data(self) -> list[ServiceStatus]:
+    def _collect_all_data(self, services: list[str] | None = None) -> list[ServiceStatus]:
         """Collect all data for services."""
-        services = self.server_config.services
+        services = services or self.server_config.services
 
         # Get container statuses
         statuses = self.status_collector.get_all_statuses(services)
@@ -113,11 +127,7 @@ class ServerAgent:
                 status.name,
                 lines=self.alert_config.log_lines,
             )
-            error_logs = [
-                l for l in logs
-                if l.level in ('ERROR', 'CRITICAL', 'FATAL')
-                and not is_bot_scanner_request(l.raw)
-            ]
+            error_logs = self._filter_error_logs(logs)
 
             status.error_count = len(error_logs)
             status.recent_errors = error_logs[-10:]  # Keep last 10 errors
@@ -132,11 +142,7 @@ class ServerAgent:
 
             # Enrich with logs (exclude bot scanner noise)
             logs = self.log_collector.get_logs(service, lines=50)
-            error_logs = [
-                l for l in logs
-                if l.level in ('ERROR', 'CRITICAL', 'FATAL')
-                and not is_bot_scanner_request(l.raw)
-            ]
+            error_logs = self._filter_error_logs(logs)
             status.error_count = len(error_logs)
             status.recent_errors = error_logs[-5:]
 
@@ -149,7 +155,7 @@ class ServerAgent:
         service: str,
         lines: int = 100,
         errors_only: bool = False,
-    ) -> list:
+    ) -> list[LogEntry]:
         """Get logs for a service."""
         if errors_only:
             return self.log_collector.get_error_logs(service, lines)
