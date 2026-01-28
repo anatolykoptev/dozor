@@ -1,183 +1,194 @@
 # Dozor - AI-First Server Monitoring
 
-AI-native server monitoring agent with MCP integration. Automatically detects issues and provides AI-friendly diagnostics for resolution.
+> The only MCP server designed for AI agents to monitor Docker infrastructure.
+
+AI-native server monitoring agent with MCP integration. Unlike traditional monitoring tools (Prometheus, Datadog) built for humans with dashboards, Dozor outputs are optimized for LLM consumption.
+
+## Why Dozor?
+
+| Traditional Tools | Dozor |
+|-------------------|-------|
+| Dashboards & graphs | Text optimized for LLMs |
+| Manual alert triage | AI-ready diagnostics |
+| Human-in-the-loop | Autonomous agent actions |
+| Generic metrics | Context-aware analysis |
 
 ## Features
 
-- **Container Status Monitoring** - Tracks running/stopped/restarting states
-- **Log Analysis** - Pattern matching for known errors (PostgreSQL, Hasura, n8n, etc.)
-- **Resource Monitoring** - CPU, memory, disk usage tracking
-- **Alert Generation** - AI-friendly alerts with suggested actions
-- **MCP Integration** - Full MCP server for Claude Code integration
+- **Container Monitoring** - Status, health, resource usage
+- **Log Analysis** - Pattern matching for known errors
+- **Security Audit** - Exposed ports, bot scanners, misconfigurations
+- **Background Deploy** - Non-blocking deploys with status tracking
+- **Command Validation** - Allowlist/blocklist for safe execution
+- **MCP Integration** - Full MCP server for Claude Code
 
 ## Quick Start
 
 ### 1. Configure Environment
 
 ```bash
-# Copy and edit .env
 cp .env.example .env
+```
 
-# Required variables:
-SERVER_HOST=192.9.243.148
+**Required variables:**
+```env
+SERVER_HOST=your-server.com    # or "local" for direct execution
 SERVER_USER=ubuntu
-SERVER_SERVICES=n8n,postgres,hasura
+SERVER_COMPOSE_PATH=~/your-project
+SERVER_SERVICES=nginx,postgres,redis
 ```
 
-### 2. CLI Usage
+### 2. MCP Server (Claude Code)
 
-```bash
-# Full diagnostics
-dozor diagnose
-
-# Quick health check
-dozor health
-
-# Service status
-dozor status postgres
-
-# View logs (errors only)
-dozor logs n8n --errors
-
-# Analyze logs for patterns
-dozor analyze postgres
-
-# Restart service
-dozor restart n8n --yes
-```
-
-### 3. MCP Server (for Claude Code)
-
-Add to `.mcp.json` in your project root:
+Add to your MCP config:
 
 ```json
 {
   "mcpServers": {
     "dozor": {
-      "type": "stdio",
       "command": "ssh",
-      "args": ["<ssh-alias>", "~/dozor/run-mcp.sh"]
+      "args": ["your-server", "cd ~/dozor && python -m dozor.mcp_server"]
     }
   }
 }
 ```
 
-Available MCP tools:
-- `server_diagnose` - Full diagnostics with AI-friendly output
-- `server_status` - Single service status
-- `server_logs` - Get logs with filtering
-- `server_restart` - Restart a service
-- `server_exec` - Execute commands
-- `server_analyze_logs` - Deep log analysis
-- `server_health` - Quick health check
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `server_diagnose` | Full diagnostics with AI-friendly output |
+| `server_status` | Single service status |
+| `server_logs` | Get logs with filtering |
+| `server_restart` | Restart a service |
+| `server_exec` | Execute read-only commands (validated) |
+| `server_analyze_logs` | Deep log analysis with patterns |
+| `server_health` | Quick health check |
+| `server_security` | Security audit |
+| `server_deploy` | Background deploy |
+| `server_deploy_status` | Check deploy progress |
+| `server_prune` | Clean Docker resources |
+
+### 3. CLI Usage
+
+```bash
+dozor diagnose          # Full diagnostics
+dozor health            # Quick health check
+dozor status nginx      # Service status
+dozor logs nginx -e     # Errors only
+dozor analyze postgres  # Log pattern analysis
+```
 
 ### 4. Python API
 
 ```python
-from dozor import ServerAgent, ServerConfig
+from dozor import ServerAgent
 
-# From environment
 agent = ServerAgent.from_env()
-
-# Or explicit config
-config = ServerConfig(
-    host="192.9.243.148",
-    services=["n8n", "postgres", "hasura"],
-)
-agent = ServerAgent(config)
-
-# Run diagnostics
 report = agent.diagnose()
 
-# Check if attention needed
 if report.needs_attention:
-    print(report.to_ai_prompt())
-
-# Get service status
-status = agent.get_service_status("postgres")
-print(f"Errors: {status.error_count}")
-
-# Restart service
-success, msg = agent.restart_service("n8n")
+    print(report.to_ai_prompt())  # AI-optimized output
 ```
 
 ## Error Pattern Detection
 
-The analyzer recognizes patterns for:
-
 | Service | Patterns |
 |---------|----------|
-| PostgreSQL | Auth failures, connection limits, collation issues, schema errors |
-| Hasura | Metadata inconsistency, JWT errors |
-| n8n | Workflow failures, connection refused, credential errors |
-| Supabase Auth | GoTrue errors, OAuth failures |
-| General | OOM, disk full, timeouts, rate limits |
+| PostgreSQL | Auth failures, connection limits, collation issues |
+| Redis | Memory limits, connection refused |
+| Nginx | Upstream failures, SSL errors |
+| Docker | OOM kills, health check failures |
+| General | Disk full, timeouts, rate limits |
 
-## Alert Levels
+## Security
 
-- **CRITICAL** - Service down, OOM, disk full
-- **ERROR** - Service degraded, multiple errors
-- **WARNING** - Potential issues, elevated metrics
-- **INFO** - Informational
+Dozor implements defense-in-depth security:
+
+- **Command Validation** - Allowlist for safe commands, blocklist for dangerous patterns
+- **Input Sanitization** - All inputs validated with strict regex
+- **Path Traversal Protection** - Paths validated against traversal attacks
+- **Injection Prevention** - `shlex.quote()` for all shell interpolations
+- **Audit Logging** - Security-sensitive operations logged
+- **No Shell=True** - Commands built as lists, no shell injection possible
+
+### Blocked Patterns
+- `rm -rf`, `mkfs`, `dd` - Destructive commands
+- `$()`, backticks - Command substitution
+- `${VAR}`, `$VAR` - Variable expansion
+- `..` - Path traversal
+- `;`, `|`, `&&` - Command chaining
 
 ## Architecture
 
 ```
 dozor/
-├── agent.py          # Main orchestrator
-├── config.py         # Configuration handling
-├── transport.py      # Secure SSH transport
-├── types.py          # Data models
+├── agent.py           # Main orchestrator
+├── config.py          # Configuration (from env)
+├── transport.py       # SSH/local transport
+├── validation.py      # Security validation
+├── decorators.py      # @require_valid_service
+├── deploy.py          # Background deploy
 ├── collectors/
-│   ├── logs.py       # Log collection & parsing
-│   ├── status.py     # Container status
-│   └── resources.py  # CPU/memory/disk
+│   ├── status.py      # Container status
+│   ├── logs.py        # Log collection
+│   ├── resources.py   # CPU/memory/disk
+│   └── security/      # Security checks
 ├── analyzers/
-│   ├── log_analyzer.py    # Pattern matching
-│   └── alert_generator.py # Alert creation
-├── mcp_server.py     # MCP server
-├── mcp_tools.py      # Tool definitions
-├── mcp_handlers.py   # Tool implementations
-└── cli.py            # CLI interface
+│   ├── log_analyzer.py
+│   └── alert_generator.py
+├── mcp_server.py      # MCP stdio server
+├── mcp_server_sse.py  # MCP SSE server
+├── mcp_tools.py       # Tool definitions
+└── mcp_handlers.py    # Tool implementations
 ```
 
-## Remote Deployment (MCP over SSH)
-
-Deploy the agent on the server and connect from local machine:
-
-### 1. Deploy to Server
+## Testing
 
 ```bash
-# Deploy agent and start MCP service
-./scripts/deploy-remote.sh krolik
+# Run all tests (169 tests)
+pytest tests/ -v
+
+# Test categories:
+# - Security validation (92 tests)
+# - Decorators (7 tests)
+# - Deploy (17 tests)
+# - MCP handlers (23 tests)
 ```
 
-This will:
-- Sync code to `~/dozor` on remote
-- Install dependencies with SSE transport
-- Create systemd service `dozor-mcp`
-- Start the service on port 8765
+## Deployment Options
 
-### 2. Connect from Local
+### Option A: Direct SSH (Recommended)
 
-```bash
-# Start SSH tunnel
-./scripts/connect-remote.sh krolik
-
-# Test connection
-./scripts/connect-remote.sh krolik test
-```
-
-### 3. Configure Claude Code
-
-**Option A: SSH Tunnel + SSE (recommended for persistent service)**
-
-Add to `~/.config/claude-code/settings.json`:
+MCP runs over SSH stdio - simplest setup:
 
 ```json
 {
   "mcpServers": {
-    "dozor-remote": {
+    "dozor": {
+      "command": "ssh",
+      "args": ["server-alias", "cd ~/dozor && python -m dozor.mcp_server"]
+    }
+  }
+}
+```
+
+### Option B: SSE with SSH Tunnel
+
+For persistent service:
+
+```bash
+# Server: Start MCP service
+python -m dozor.mcp_server_sse --port 8765
+
+# Local: SSH tunnel
+ssh -L 8765:localhost:8765 server-alias -N &
+```
+
+```json
+{
+  "mcpServers": {
+    "dozor": {
       "transport": "sse",
       "url": "http://localhost:8765/sse"
     }
@@ -185,50 +196,6 @@ Add to `~/.config/claude-code/settings.json`:
 }
 ```
 
-**Option B: Direct SSH (simpler, no service needed)**
+## License
 
-```json
-{
-  "mcpServers": {
-    "dozor-remote": {
-      "command": "ssh",
-      "args": ["krolik", "cd ~/dozor && python -m dozor.mcp_server"]
-    }
-  }
-}
-```
-
-This runs MCP over SSH stdio directly - no systemd service or tunnel needed.
-
-### Architecture
-
-```
-┌─────────────┐    SSH Tunnel    ┌─────────────┐
-│ Local Mac   │  (port 8765)     │   Server    │
-│ Claude Code │─────────────────▶│ MCP Server  │
-│   (client)  │                  │ dozor│
-└─────────────┘                  └─────────────┘
-```
-
-### Manual Setup
-
-```bash
-# On server: Start MCP server
-python -m dozor.mcp_server_sse --transport sse --port 8765
-
-# On local: Create tunnel
-ssh -L 8765:localhost:8765 krolik -N &
-
-# On local: Test
-curl http://localhost:8765/health
-```
-
-## Security
-
-- No `shell=True` in subprocess calls
-- SSH commands built as lists (no injection)
-- Dangerous commands blocked in `server_exec`
-- Credentials from environment only
-- Sensitive data redacted in logs
-- MCP server binds to 127.0.0.1 by default (not exposed externally)
-- Remote access only via SSH tunnel (encrypted)
+MIT
