@@ -16,7 +16,7 @@ class ServerConfig:
     host: str
     user: str = "ubuntu"
     port: int = 22
-    compose_path: str = "~/n8n-setup"
+    compose_path: str = "~/docker-project"  # Override with SERVER_COMPOSE_PATH
     ssh_key: Optional[str] = None
     timeout: int = 30
     services: list[str] = field(default_factory=list)
@@ -37,20 +37,24 @@ class ServerConfig:
         services_str = os.getenv("SERVER_SERVICES", "")
         services = [s.strip() for s in services_str.split(",") if s.strip()]
 
+        compose_path = os.getenv("SERVER_COMPOSE_PATH")
+        if not compose_path:
+            raise ValueError("SERVER_COMPOSE_PATH environment variable is required")
+
+        if not services:
+            raise ValueError(
+                "SERVER_SERVICES environment variable is required. "
+                "Example: SERVER_SERVICES=nginx,postgres,redis"
+            )
+
         return cls(
             host=host,
             user=os.getenv("SERVER_USER", "ubuntu"),
             port=int(os.getenv("SERVER_PORT", "22")),
-            compose_path=os.getenv("SERVER_COMPOSE_PATH", "~/n8n-setup"),
+            compose_path=compose_path,
             ssh_key=os.getenv("SERVER_SSH_KEY"),
             timeout=int(os.getenv("SERVER_TIMEOUT", "30")),
-            services=services or [
-                "n8n",
-                "postgres",
-                "hasura",
-                "supabase-auth",
-                "embedding-service",
-            ],
+            services=services,
         )
 
     def validate(self) -> list[str]:
