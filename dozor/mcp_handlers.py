@@ -202,6 +202,60 @@ def handle_server_security(arguments: dict[str, Any]) -> str:
     return agent.get_security_report()
 
 
+def handle_server_prune(arguments: dict[str, Any]) -> str:
+    """Handle server_prune tool call.
+
+    Cleanup Docker resources (images, build cache, volumes).
+    """
+    import re
+
+    prune_images = arguments.get("images", True)
+    prune_build_cache = arguments.get("build_cache", True)
+    prune_volumes = arguments.get("volumes", False)
+    age = arguments.get("age", "24h")
+
+    # Validate age format
+    if not re.match(r'^\d+[smhd]$', age):
+        return f"Invalid age format: {age}. Use format like '24h', '7d', '30m'"
+
+    agent = get_agent()
+    results = []
+
+    # Prune images
+    if prune_images:
+        cmd = f"docker image prune -af --filter 'until={age}'"
+        result = agent.transport.execute(cmd, skip_validation=True)
+        if result.success:
+            results.append(f"Images pruned: {result.stdout or 'done'}")
+        else:
+            results.append(f"Image prune failed: {result.stderr}")
+
+    # Prune build cache
+    if prune_build_cache:
+        cmd = f"docker builder prune -af --filter 'until={age}'"
+        result = agent.transport.execute(cmd, skip_validation=True)
+        if result.success:
+            results.append(f"Build cache pruned: {result.stdout or 'done'}")
+        else:
+            results.append(f"Build cache prune failed: {result.stderr}")
+
+    # Prune volumes (dangerous!)
+    if prune_volumes:
+        cmd = "docker volume prune -f"
+        result = agent.transport.execute(cmd, skip_validation=True)
+        if result.success:
+            results.append(f"Volumes pruned: {result.stdout or 'done'}")
+        else:
+            results.append(f"Volume prune failed: {result.stderr}")
+
+    # Get disk usage after cleanup
+    df_result = agent.transport.execute("df -h /var/lib/docker", skip_validation=True)
+    if df_result.success:
+        results.append(f"\nDisk usage after cleanup:\n{df_result.stdout}")
+
+    return "\n".join(results)
+
+
 # Handler dispatch map
 HANDLERS = {
     "server_diagnose": handle_server_diagnose,
@@ -212,6 +266,7 @@ HANDLERS = {
     "server_analyze_logs": handle_server_analyze_logs,
     "server_health": handle_server_health,
     "server_security": handle_server_security,
+    "server_prune": handle_server_prune,
 }
 
 

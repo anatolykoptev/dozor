@@ -168,4 +168,41 @@ Run this periodically to ensure server security posture.""",
             "properties": {},
         },
     },
+    {
+        "name": "server_prune",
+        "description": """Clean up Docker resources (images, build cache, volumes).
+
+Removes:
+- Unused images (dangling and unreferenced)
+- Build cache older than specified age
+- Unused volumes (optional, dangerous!)
+
+Use this to free disk space after deployments.
+WARNING: volume pruning can delete data. Use with caution.""",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "images": {
+                    "type": "boolean",
+                    "description": "Prune unused images (default: true)",
+                    "default": True,
+                },
+                "build_cache": {
+                    "type": "boolean",
+                    "description": "Prune build cache (default: true)",
+                    "default": True,
+                },
+                "volumes": {
+                    "type": "boolean",
+                    "description": "Prune unused volumes (default: false, DANGEROUS!)",
+                    "default": False,
+                },
+                "age": {
+                    "type": "string",
+                    "description": "Only prune items older than this (e.g., '24h', '7d'). Default: '24h'",
+                    "default": "24h",
+                },
+            },
+        },
+    },
 ]
