@@ -24,16 +24,29 @@ AI-native server monitoring agent with MCP integration. Unlike traditional monit
 
 ## Quick Start
 
-### 1. Configure Environment
+### One-Line Install (on server)
 
 ```bash
-cp .env.example .env
+curl -fsSL https://raw.githubusercontent.com/anatolykoptev/dozor/main/install.sh | bash
 ```
 
-**Required variables:**
+Or with pre-configured values:
+```bash
+curl -fsSL ... | SERVICES="nginx,postgres" COMPOSE_PATH="~/myproject" bash
+```
+
+### Manual Install
+
+```bash
+git clone https://github.com/anatolykoptev/dozor.git
+cd dozor
+pip install -e .
+cp .env.example .env  # edit with your values
+```
+
+**Required .env variables:**
 ```env
-SERVER_HOST=your-server.com    # or "local" for direct execution
-SERVER_USER=ubuntu
+SERVER_HOST=local              # "local" for server install, or IP for remote
 SERVER_COMPOSE_PATH=~/your-project
 SERVER_SERVICES=nginx,postgres,redis
 ```
