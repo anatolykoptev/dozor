@@ -20,6 +20,7 @@ ALLOWED_COMMANDS = [
     r'^(cat|head|tail)\s+/var/log/[a-zA-Z0-9._/-]+$',
     r'^(ls|ll)\s+(-[lah]+\s+)?(/var/log/|~/|/home/)[a-zA-Z0-9._/-]*$',
     r'^(df|free|uptime|uname|hostname|whoami|pwd|date)(\s+-[a-z]+)?$',
+    r'^echo\s+[\'"][a-zA-Z0-9_]+[\'"]$',  # Simple echo for connection test
     r'^(du)\s+-[sh]+\s+(/var/log/|~/|/tmp/)[a-zA-Z0-9._/-]*$',
     r'^(ps)\s+(aux|ef|-ef)$',
     r'^(netstat|ss)\s+-[tlnup]+$',
