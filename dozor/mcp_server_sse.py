@@ -23,7 +23,7 @@ from mcp.server import Server
 from mcp.types import Tool, TextContent
 
 from .mcp_tools import TOOLS
-from .mcp_handlers import handle_tool
+from .mcp_handlers import handle_tool, reset_agent
 
 # Optional SSE transport
 try:
@@ -90,9 +90,18 @@ def create_sse_app(host: str = "127.0.0.1", port: int = 8765):
             "tools": len(TOOLS),
         })
 
+    async def reload(request):
+        """Reload configuration by clearing agent cache."""
+        reset_agent()
+        return JSONResponse({
+            "status": "reloaded",
+            "message": "Agent cache cleared. Next request will use fresh config.",
+        })
+
     app = Starlette(
         routes=[
             Route("/health", health),
+            Route("/reload", reload, methods=["POST"]),
             Route("/sse", handle_sse),
             Route("/messages/", handle_messages, methods=["POST"]),
         ],
