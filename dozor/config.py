@@ -25,10 +25,10 @@ class ServerConfig:
     def from_env(cls, env_file: Optional[Path] = None) -> "ServerConfig":
         """Load configuration from environment variables."""
         if env_file:
-            load_dotenv(env_file)
+            load_dotenv(env_file, override=True)
         else:
             # Try to find .env in parent directory
-            load_dotenv(Path(__file__).parent.parent / ".env")
+            load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 
         host = os.getenv("SERVER_HOST")
         if not host:
