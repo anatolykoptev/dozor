@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +17,7 @@ type ServerAgent struct {
 	logs      *LogCollector
 	security  *SecurityCollector
 	alerts    *AlertGenerator
+	cleanup   *CleanupCollector
 }
 
 // NewAgent creates a new server agent with all collectors.
@@ -29,6 +31,7 @@ func NewAgent(cfg Config) *ServerAgent {
 		logs:      &LogCollector{transport: t},
 		security:  &SecurityCollector{transport: t, cfg: cfg},
 		alerts:    &AlertGenerator{cfg: cfg},
+		cleanup:   &CleanupCollector{transport: t},
 	}
 }
 
@@ -358,6 +361,144 @@ func (a *ServerAgent) PruneDocker(ctx context.Context, images, buildCache, volum
 	results = append(results, "\nDisk usage:\n"+diskRes.Output())
 
 	return strings.Join(results, "\n")
+}
+
+// CleanupSystem scans or cleans system targets.
+func (a *ServerAgent) CleanupSystem(ctx context.Context, targets []string, report bool, minAge string) string {
+	if report {
+		results := a.cleanup.Scan(ctx, targets)
+		return formatScanResults(results)
+	}
+	results := a.cleanup.Clean(ctx, targets, minAge)
+	return formatCleanResults(results)
+}
+
+// GetDiskPressure parses df -h output into structured data.
+func (a *ServerAgent) GetDiskPressure(ctx context.Context) []DiskPressure {
+	res := a.transport.ExecuteUnsafe(ctx, "df -h 2>/dev/null")
+	if !res.Success {
+		return nil
+	}
+	var pressures []DiskPressure
+	for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			continue
+		}
+		// Skip header and pseudo-filesystems
+		fs := fields[0]
+		if fs == "Filesystem" {
+			continue
+		}
+		mount := fields[len(fields)-1]
+		// Skip pseudo-filesystems
+		if strings.HasPrefix(fs, "tmpfs") || strings.HasPrefix(fs, "devtmpfs") ||
+			strings.HasPrefix(fs, "overlay") || strings.HasPrefix(fs, "shm") ||
+			strings.HasPrefix(fs, "udev") || strings.HasPrefix(fs, "none") {
+			continue
+		}
+		// Parse used percentage (e.g., "82%")
+		pctStr := fields[4]
+		pctStr = strings.TrimSuffix(pctStr, "%")
+		pct, err := strconv.ParseFloat(pctStr, 64)
+		if err != nil {
+			continue
+		}
+		// Parse available (e.g., "15G")
+		availStr := fields[3]
+		availGB := parseAvailGB(availStr)
+
+		pressures = append(pressures, DiskPressure{
+			Filesystem: fs,
+			UsedPct:    pct,
+			AvailGB:    availGB,
+			MountPoint: mount,
+		})
+	}
+	return pressures
+}
+
+// parseAvailGB parses human-readable sizes like "15G", "500M", "1.5T" to GB.
+func parseAvailGB(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	s = strings.ToUpper(s)
+	unit := s[len(s)-1:]
+	numStr := s[:len(s)-1]
+	val, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0
+	}
+	switch unit {
+	case "T":
+		return val * 1024
+	case "G":
+		return val
+	case "M":
+		return val / 1024
+	case "K":
+		return val / (1024 * 1024)
+	default:
+		return 0
+	}
+}
+
+func formatScanResults(results []CleanupTarget) string {
+	var b strings.Builder
+	b.WriteString("System Cleanup Scan\n")
+	b.WriteString(strings.Repeat("=", 40) + "\n\n")
+
+	var totalMB float64
+	for _, r := range results {
+		if !r.Available {
+			fmt.Fprintf(&b, "  [--] %-10s not available\n", r.Name)
+			continue
+		}
+		if r.Error != "" {
+			fmt.Fprintf(&b, "  [!!] %-10s error: %s\n", r.Name, r.Error)
+			continue
+		}
+		if r.SizeMB >= 1024 {
+			fmt.Fprintf(&b, "  [OK] %-10s %.1f GB\n", r.Name, r.SizeMB/1024)
+		} else {
+			fmt.Fprintf(&b, "  [OK] %-10s %.0f MB\n", r.Name, r.SizeMB)
+		}
+		totalMB += r.SizeMB
+	}
+
+	b.WriteString("\n")
+	if totalMB >= 1024 {
+		fmt.Fprintf(&b, "Total reclaimable: %.1f GB\n", totalMB/1024)
+	} else {
+		fmt.Fprintf(&b, "Total reclaimable: %.0f MB\n", totalMB)
+	}
+	b.WriteString("Run server_cleanup({report: false}) to execute cleanup.\n")
+	return b.String()
+}
+
+func formatCleanResults(results []CleanupTarget) string {
+	var b strings.Builder
+	b.WriteString("System Cleanup Results\n")
+	b.WriteString(strings.Repeat("=", 40) + "\n\n")
+
+	for _, r := range results {
+		if !r.Available {
+			fmt.Fprintf(&b, "  [--] %-10s not available\n", r.Name)
+			continue
+		}
+		if r.Error != "" {
+			fmt.Fprintf(&b, "  [!!] %-10s error: %s\n", r.Name, r.Error)
+			continue
+		}
+		freed := r.Freed
+		if freed == "" {
+			freed = "0 MB"
+		}
+		fmt.Fprintf(&b, "  [OK] %-10s freed %s\n", r.Name, freed)
+	}
+	return b.String()
 }
 
 // FormatReport creates a human-readable diagnostic report.

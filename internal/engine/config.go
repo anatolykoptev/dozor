@@ -41,6 +41,9 @@ type Config struct {
 
 	SystemdServices  []string
 	RequiredAuthVars []string
+
+	DiskThreshold float64
+	DiskCritical  float64
 }
 
 // IsLocal returns true if the host is a local machine.
@@ -70,6 +73,8 @@ func Init() Config {
 		RemoteServices:   envList("DOZOR_REMOTE_SERVICES", ""),
 		SystemdServices:  envList("DOZOR_SYSTEMD_SERVICES", ""),
 		RequiredAuthVars: envList("DOZOR_REQUIRED_AUTH_VARS", ""),
+		DiskThreshold:    envFloat("DOZOR_DISK_THRESHOLD", 80),
+		DiskCritical:     envFloat("DOZOR_DISK_CRITICAL", 95),
 	}
 }
 

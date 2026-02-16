@@ -82,3 +82,31 @@ func (g *AlertGenerator) GenerateAlerts(statuses []ServiceStatus) []Alert {
 
 	return alerts
 }
+
+// GenerateDiskAlerts creates alerts for disk pressure conditions.
+func GenerateDiskAlerts(pressures []DiskPressure, cfg Config) []Alert {
+	var alerts []Alert
+	now := time.Now()
+	for _, p := range pressures {
+		if p.UsedPct >= cfg.DiskCritical {
+			alerts = append(alerts, Alert{
+				Level:           AlertCritical,
+				Service:         "disk",
+				Title:           fmt.Sprintf("Disk %s at %.0f%%", p.MountPoint, p.UsedPct),
+				Description:     fmt.Sprintf("%s: %.0f%% used, %.1fGB free", p.Filesystem, p.UsedPct, p.AvailGB),
+				SuggestedAction: "Run server_cleanup({report: true}) to scan reclaimable space.",
+				Timestamp:       now,
+			})
+		} else if p.UsedPct >= cfg.DiskThreshold {
+			alerts = append(alerts, Alert{
+				Level:           AlertWarning,
+				Service:         "disk",
+				Title:           fmt.Sprintf("Disk %s at %.0f%%", p.MountPoint, p.UsedPct),
+				Description:     fmt.Sprintf("%s: %.0f%% used, %.1fGB free", p.Filesystem, p.UsedPct, p.AvailGB),
+				SuggestedAction: "Monitor disk usage. Run server_cleanup({report: true}) to check reclaimable space.",
+				Timestamp:       now,
+			})
+		}
+	}
+	return alerts
+}

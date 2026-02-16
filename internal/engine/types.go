@@ -219,3 +219,26 @@ type DeployInput struct {
 	Build       *bool    `json:"build,omitempty" jsonschema:"Build images before deploy (default true)"`
 	Pull        *bool    `json:"pull,omitempty" jsonschema:"Pull images before deploy (default true)"`
 }
+
+type CleanupInput struct {
+	Targets []string `json:"targets,omitempty" jsonschema:"Cleanup targets: docker, go, npm, uv, pip, journal, tmp, caches, all"`
+	Report  *bool    `json:"report,omitempty" jsonschema:"Dry-run: scan sizes without deleting (default true)"`
+	MinAge  string   `json:"min_age,omitempty" jsonschema:"Minimum age for cleanup (e.g. 7d, 24h, 3d)"`
+}
+
+// CleanupTarget represents a single cleanup target result.
+type CleanupTarget struct {
+	Name      string  `json:"name"`
+	Available bool    `json:"available"`
+	SizeMB    float64 `json:"size_mb"`
+	Freed     string  `json:"freed,omitempty"`
+	Error     string  `json:"error,omitempty"`
+}
+
+// DiskPressure represents disk usage for a filesystem.
+type DiskPressure struct {
+	Filesystem string  `json:"filesystem"`
+	UsedPct    float64 `json:"used_pct"`
+	AvailGB    float64 `json:"avail_gb"`
+	MountPoint string  `json:"mount_point"`
+}
