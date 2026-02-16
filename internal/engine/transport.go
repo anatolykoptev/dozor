@@ -4,20 +4,56 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
 // Transport executes commands locally or via SSH.
 type Transport struct {
-	cfg Config
+	cfg         Config
+	composeOnce sync.Once
+	composePath string // resolved path, empty if no compose found
 }
 
 // NewTransport creates a transport from config.
 func NewTransport(cfg Config) *Transport {
 	return &Transport{cfg: cfg}
+}
+
+// ResolveComposePath finds docker-compose project directory.
+// If DOZOR_COMPOSE_PATH is set, uses it. Otherwise searches common locations.
+// Result is cached via sync.Once.
+func (t *Transport) ResolveComposePath() string {
+	t.composeOnce.Do(func() {
+		if t.cfg.ComposePath != "" {
+			t.composePath = t.cfg.ComposePath
+			return
+		}
+		// Search for compose file in common locations
+		candidates := []string{
+			".", // current directory
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			candidates = append(candidates, home)
+		}
+		files := []string{"compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml"}
+		for _, dir := range candidates {
+			for _, f := range files {
+				path := filepath.Join(dir, f)
+				if _, err := os.Stat(path); err == nil {
+					t.composePath = dir
+					return
+				}
+			}
+		}
+		// No compose file found — Docker compose features disabled
+	})
+	return t.composePath
 }
 
 // Execute runs a command with validation.
@@ -43,8 +79,15 @@ func (t *Transport) DockerCommand(ctx context.Context, dockerCmd string) Command
 }
 
 // DockerComposeCommand runs a docker compose command in the compose path.
+// Returns a failure result if no compose path is available.
 func (t *Transport) DockerComposeCommand(ctx context.Context, composeCmd string) CommandResult {
-	path := t.cfg.ComposePath
+	path := t.ResolveComposePath()
+	if path == "" {
+		return CommandResult{
+			Stderr:  "no docker compose project found",
+			Success: false,
+		}
+	}
 	if strings.HasPrefix(path, "~") {
 		path = "$HOME" + path[1:]
 	}

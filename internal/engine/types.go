@@ -191,7 +191,7 @@ type TextOutput struct {
 // --- MCP tool input structs ---
 
 type InspectInput struct {
-	Mode     string   `json:"mode" jsonschema:"Inspection mode: health, status, diagnose, logs, analyze, security"`
+	Mode     string   `json:"mode" jsonschema:"Inspection mode: health, status, diagnose, logs, analyze, security, overview, remote, systemd"`
 	Service  string   `json:"service,omitempty" jsonschema:"Service name (required for status, logs, analyze modes)"`
 	Services []string `json:"services,omitempty" jsonschema:"Services to diagnose (all if omitted, only for diagnose mode)"`
 	Lines    int      `json:"lines,omitempty" jsonschema:"Number of log lines (default 100, only for logs mode)"`

@@ -100,6 +100,57 @@ func CheckRemoteServer(ctx context.Context, cfg Config) *RemoteServerStatus {
 	return status
 }
 
+// FormatRemoteStatus formats remote server status as a human-readable report.
+func FormatRemoteStatus(s *RemoteServerStatus) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Remote Server: %s\n", s.Host)
+	b.WriteString(strings.Repeat("=", 40) + "\n\n")
+
+	if s.HTTPStatus > 0 {
+		icon := "OK"
+		if s.HTTPStatus >= 400 {
+			icon = "!!"
+		}
+		fmt.Fprintf(&b, "[%s] HTTP: %d\n", icon, s.HTTPStatus)
+	}
+
+	if s.SSLExpiry != nil {
+		days := int(time.Until(*s.SSLExpiry).Hours() / 24)
+		icon := "OK"
+		if days < 14 {
+			icon = "!!"
+		}
+		fmt.Fprintf(&b, "[%s] SSL expires: %s (%d days)\n", icon, s.SSLExpiry.Format("2006-01-02"), days)
+	}
+
+	if len(s.Services) > 0 {
+		b.WriteString("\nServices:\n")
+		for name, state := range s.Services {
+			icon := "OK"
+			if state != "active" {
+				icon = "!!"
+			}
+			fmt.Fprintf(&b, "  [%s] %s: %s\n", icon, name, state)
+		}
+	}
+
+	if s.DiskUsage != "" {
+		fmt.Fprintf(&b, "\nDisk: %s\n", s.DiskUsage)
+	}
+	if s.LoadAvg != "" {
+		fmt.Fprintf(&b, "Load: %s\n", s.LoadAvg)
+	}
+
+	if len(s.Alerts) > 0 {
+		fmt.Fprintf(&b, "\nAlerts (%d):\n", len(s.Alerts))
+		for _, a := range s.Alerts {
+			fmt.Fprintf(&b, "  [%s] %s: %s\n", a.Level, a.Service, a.Title)
+		}
+	}
+
+	return b.String()
+}
+
 func checkHTTP(ctx context.Context, url string) (int, *time.Time) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,

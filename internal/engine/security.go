@@ -16,14 +16,14 @@ type SecurityCollector struct {
 // internalOnlyPorts that should not be exposed to 0.0.0.0.
 var internalOnlyPorts = map[string]string{
 	"5432":  "PostgreSQL",
+	"3306":  "MySQL",
 	"6379":  "Redis",
-	"8080":  "Hasura GraphQL",
-	"9999":  "Supabase Auth",
-	"3000":  "Internal API",
 	"27017": "MongoDB",
 	"9200":  "Elasticsearch",
 	"2379":  "etcd",
-	"18789": "Gateway",
+	"5672":  "RabbitMQ",
+	"15672": "RabbitMQ Management",
+	"6333":  "Qdrant",
 }
 
 var rootAllowedContainers = map[string]bool{
@@ -157,14 +157,18 @@ func (c *SecurityCollector) checkContainerSecurity(ctx context.Context) []Securi
 func (c *SecurityCollector) checkAuthentication(ctx context.Context) []SecurityIssue {
 	var issues []SecurityIssue
 
+	// Skip if no required auth vars configured
+	if len(c.cfg.RequiredAuthVars) == 0 {
+		return issues
+	}
+
 	// Check compose config for auth vars
 	res := c.transport.DockerComposeCommand(ctx, "config 2>/dev/null")
 	if !res.Success {
 		return issues
 	}
 
-	requiredVars := []string{"AUTH_ENABLED", "MASTER_KEY_HASH", "INTERNAL_SERVICE_SECRET"}
-	for _, v := range requiredVars {
+	for _, v := range c.cfg.RequiredAuthVars {
 		if !strings.Contains(res.Stdout, v) {
 			issues = append(issues, SecurityIssue{
 				Level:       AlertWarning,
@@ -182,8 +186,13 @@ func (c *SecurityCollector) checkAuthentication(ctx context.Context) []SecurityI
 func (c *SecurityCollector) checkAPIHardening(ctx context.Context) []SecurityIssue {
 	var issues []SecurityIssue
 
-	// Check for stack traces in recent logs (last 200 lines across services)
-	for _, svc := range c.cfg.Services {
+	services := c.cfg.Services
+	if len(services) == 0 {
+		return issues // Skip if no services configured (auto-discover is handled at agent level)
+	}
+
+	// Check for stack traces in recent logs (last 50 lines per service)
+	for _, svc := range services {
 		res := c.transport.DockerComposeCommand(ctx, fmt.Sprintf("logs --tail 50 %s 2>&1", svc))
 		if !res.Success {
 			continue

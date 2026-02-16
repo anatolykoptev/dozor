@@ -32,10 +32,29 @@ func NewAgent(cfg Config) *ServerAgent {
 	}
 }
 
+// resolveServices returns the services list: explicit > config > auto-discover.
+func (a *ServerAgent) resolveServices(ctx context.Context, services []string) []string {
+	if len(services) > 0 {
+		return services
+	}
+	if len(a.cfg.Services) > 0 {
+		return a.cfg.Services
+	}
+	// Auto-discover from docker compose
+	return a.status.DiscoverServices(ctx)
+}
+
 // Diagnose runs full diagnostics on the server.
 func (a *ServerAgent) Diagnose(ctx context.Context, services []string) DiagnosticReport {
+	services = a.resolveServices(ctx, services)
+
 	if len(services) == 0 {
-		services = a.cfg.Services
+		// No Docker services — return empty report with server info
+		return DiagnosticReport{
+			Timestamp:     time.Now(),
+			Server:        a.cfg.Host,
+			OverallHealth: "healthy",
+		}
 	}
 
 	// Get container statuses
@@ -110,7 +129,11 @@ func (a *ServerAgent) CheckSecurity(ctx context.Context) []SecurityIssue {
 
 // GetHealth returns a quick health summary.
 func (a *ServerAgent) GetHealth(ctx context.Context) string {
-	statuses := a.status.GetAllStatuses(ctx, a.cfg.Services)
+	services := a.resolveServices(ctx, nil)
+	if len(services) == 0 {
+		return "No Docker services found. Use mode=overview for system info, or mode=systemd for systemd services."
+	}
+	statuses := a.status.GetAllStatuses(ctx, services)
 	var b strings.Builder
 	allOK := true
 	for _, s := range statuses {
@@ -127,6 +150,180 @@ func (a *ServerAgent) GetHealth(ctx context.Context) string {
 		b.WriteString("\nSome services need attention.")
 	}
 	return b.String()
+}
+
+// GetOverview returns a system-level dashboard.
+func (a *ServerAgent) GetOverview(ctx context.Context) string {
+	var b strings.Builder
+	b.WriteString("System Overview\n")
+	b.WriteString(strings.Repeat("=", 40) + "\n\n")
+
+	// Memory info
+	res := a.transport.ExecuteUnsafe(ctx, "free -h 2>/dev/null")
+	if res.Success && res.Stdout != "" {
+		b.WriteString("Memory:\n")
+		b.WriteString(res.Stdout)
+		b.WriteString("\n")
+	}
+
+	// Disk usage
+	disk := a.resources.GetDiskUsage(ctx)
+	if disk != "" {
+		b.WriteString("Disk:\n")
+		b.WriteString(disk)
+		b.WriteString("\n")
+	}
+
+	// Load average
+	load := a.resources.GetSystemLoad(ctx)
+	if load != "" {
+		fmt.Fprintf(&b, "Load: %s\n\n", load)
+	}
+
+	// CPU info
+	res = a.transport.ExecuteUnsafe(ctx, "nproc 2>/dev/null")
+	if res.Success {
+		fmt.Fprintf(&b, "CPUs: %s\n", strings.TrimSpace(res.Stdout))
+	}
+
+	// Uptime
+	res = a.transport.ExecuteUnsafe(ctx, "uptime -p 2>/dev/null || uptime")
+	if res.Success {
+		fmt.Fprintf(&b, "Uptime: %s\n", strings.TrimSpace(res.Stdout))
+	}
+
+	// Top processes by CPU
+	res = a.transport.ExecuteUnsafe(ctx, "ps aux --sort=-%cpu 2>/dev/null | head -6")
+	if res.Success && res.Stdout != "" {
+		b.WriteString("\nTop processes (CPU):\n")
+		b.WriteString(res.Stdout)
+	}
+
+	// Docker summary (if available)
+	services := a.resolveServices(ctx, nil)
+	if len(services) > 0 {
+		statuses := a.status.GetAllStatuses(ctx, services)
+		running, stopped := 0, 0
+		for _, s := range statuses {
+			if s.State == StateRunning {
+				running++
+			} else {
+				stopped++
+			}
+		}
+		fmt.Fprintf(&b, "\nDocker: %d running, %d stopped (of %d total)\n", running, stopped, len(statuses))
+	}
+
+	// Systemd services (if configured)
+	if len(a.cfg.SystemdServices) > 0 {
+		b.WriteString("\nSystemd services:\n")
+		for _, svc := range a.cfg.SystemdServices {
+			state := a.systemctlIsActive(ctx, svc)
+			icon := "OK"
+			if state != "active" {
+				icon = "!!"
+			}
+			fmt.Fprintf(&b, "  [%s] %s (%s)\n", icon, svc, state)
+		}
+	}
+
+	return b.String()
+}
+
+// GetSystemdStatus returns status of local systemd services.
+func (a *ServerAgent) GetSystemdStatus(ctx context.Context, services []string) string {
+	if len(services) == 0 {
+		services = a.cfg.SystemdServices
+	}
+	if len(services) == 0 {
+		return "No systemd services configured. Set DOZOR_SYSTEMD_SERVICES in .env."
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Systemd Services (%d)\n\n", len(services))
+
+	for _, svc := range services {
+		state := a.systemctlIsActive(ctx, svc)
+		icon := "OK"
+		if state != "active" {
+			icon = "!!"
+		}
+		fmt.Fprintf(&b, "[%s] %s: %s\n", icon, svc, state)
+
+		// Get memory and uptime from systemctl show
+		output := a.systemctlShow(ctx, svc, "ActiveEnterTimestamp,MemoryCurrent")
+		for _, line := range strings.Split(output, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "ActiveEnterTimestamp=") {
+				ts := strings.TrimPrefix(line, "ActiveEnterTimestamp=")
+				if ts != "" {
+					fmt.Fprintf(&b, "  Started: %s\n", ts)
+				}
+			}
+			if strings.HasPrefix(line, "MemoryCurrent=") {
+				mem := strings.TrimPrefix(line, "MemoryCurrent=")
+				if mem != "" && mem != "[not set]" && mem != "18446744073709551615" {
+					if mb, ok := bytesToMB(mem); ok {
+						fmt.Fprintf(&b, "  Memory: %.1f MB\n", mb)
+					}
+				}
+			}
+		}
+	}
+
+	return b.String()
+}
+
+// GetRemoteStatus returns remote server monitoring results.
+func (a *ServerAgent) GetRemoteStatus(ctx context.Context) string {
+	status := CheckRemoteServer(ctx, a.cfg)
+	if status == nil {
+		return "No remote server configured. Set DOZOR_REMOTE_HOST and/or DOZOR_REMOTE_URL in .env."
+	}
+	return FormatRemoteStatus(status)
+}
+
+// systemctlIsActive checks service status, trying --user first then system.
+func (a *ServerAgent) systemctlIsActive(ctx context.Context, svc string) string {
+	// Try user service first
+	res := a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("systemctl --user is-active %s 2>/dev/null", svc))
+	state := strings.TrimSpace(res.Stdout)
+	if state == "active" || state == "activating" || state == "deactivating" {
+		return state
+	}
+	// Fall back to system service
+	res = a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("systemctl is-active %s 2>/dev/null", svc))
+	state = strings.TrimSpace(res.Stdout)
+	if state == "" {
+		return "unknown"
+	}
+	return state
+}
+
+// systemctlShow gets properties from systemctl show, trying --user first.
+func (a *ServerAgent) systemctlShow(ctx context.Context, svc, properties string) string {
+	res := a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("systemctl --user show %s --property=%s 2>/dev/null", svc, properties))
+	if res.Success && res.Stdout != "" && !strings.Contains(res.Stdout, "No such file") {
+		return res.Stdout
+	}
+	res = a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("systemctl show %s --property=%s 2>/dev/null", svc, properties))
+	return res.Stdout
+}
+
+// bytesToMB converts a byte count string to megabytes.
+func bytesToMB(s string) (float64, bool) {
+	var n int64
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			n = n*10 + int64(c-'0')
+		} else {
+			return 0, false
+		}
+	}
+	if n <= 0 {
+		return 0, false
+	}
+	return float64(n) / (1024 * 1024), true
 }
 
 // PruneDocker cleans up docker resources.

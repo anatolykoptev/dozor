@@ -7,6 +7,16 @@ import (
 	"time"
 )
 
+// HasDocker returns true if Docker commands should be available.
+func (c Config) HasDocker() bool {
+	return c.ComposePath != ""
+}
+
+// HasRemote returns true if remote monitoring is configured.
+func (c Config) HasRemote() bool {
+	return c.RemoteHost != "" || c.RemoteURL != ""
+}
+
 // Config holds all dozor configuration.
 type Config struct {
 	Host        string
@@ -28,6 +38,9 @@ type Config struct {
 	RemoteHost     string
 	RemoteURL      string
 	RemoteServices []string
+
+	SystemdServices  []string
+	RequiredAuthVars []string
 }
 
 // IsLocal returns true if the host is a local machine.
@@ -55,6 +68,8 @@ func Init() Config {
 		RemoteHost:       env("DOZOR_REMOTE_HOST", ""),
 		RemoteURL:        env("DOZOR_REMOTE_URL", ""),
 		RemoteServices:   envList("DOZOR_REMOTE_SERVICES", ""),
+		SystemdServices:  envList("DOZOR_SYSTEMD_SERVICES", ""),
+		RequiredAuthVars: envList("DOZOR_REQUIRED_AUTH_VARS", ""),
 	}
 }
 

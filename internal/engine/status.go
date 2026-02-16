@@ -85,6 +85,39 @@ func (c *StatusCollector) GetContainerStatus(ctx context.Context, service string
 	return status
 }
 
+// DiscoverServices auto-discovers docker compose services.
+// Returns service names from `docker compose ps --format json -a`.
+func (c *StatusCollector) DiscoverServices(ctx context.Context) []string {
+	res := c.transport.DockerComposeCommand(ctx, "ps --format json -a")
+	if !res.Success || res.Stdout == "" {
+		return nil
+	}
+	var names []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry struct {
+			Service string `json:"Service"`
+			Name    string `json:"Name"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		// Prefer Service field (compose service name), fall back to Name
+		svc := entry.Service
+		if svc == "" {
+			svc = entry.Name
+		}
+		if svc != "" && !seen[svc] {
+			seen[svc] = true
+			names = append(names, svc)
+		}
+	}
+	return names
+}
+
 // GetAllStatuses returns status for all configured services.
 func (c *StatusCollector) GetAllStatuses(ctx context.Context, services []string) []ServiceStatus {
 	statuses := make([]ServiceStatus, 0, len(services))

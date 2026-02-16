@@ -19,7 +19,10 @@ func registerInspect(server *mcp.Server) {
 - diagnose: full diagnostics with alerts and health assessment
 - logs: recent logs for a service (supports line count)
 - analyze: error pattern analysis with remediation suggestions
-- security: security audit (network, containers, auth, API hardening)`,
+- security: security audit (network, containers, auth, API hardening)
+- overview: system dashboard (disk, memory, load, top processes, docker summary)
+- remote: remote server monitoring (HTTP, SSL, systemd services via SSH)
+- systemd: local systemd service monitoring`,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.InspectInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		switch input.Mode {
@@ -87,8 +90,17 @@ func registerInspect(server *mcp.Server) {
 			issues := agent.CheckSecurity(ctx)
 			return nil, engine.TextOutput{Text: engine.FormatSecurityReport(issues)}, nil
 
+		case "overview":
+			return nil, engine.TextOutput{Text: agent.GetOverview(ctx)}, nil
+
+		case "remote":
+			return nil, engine.TextOutput{Text: agent.GetRemoteStatus(ctx)}, nil
+
+		case "systemd":
+			return nil, engine.TextOutput{Text: agent.GetSystemdStatus(ctx, input.Services)}, nil
+
 		default:
-			return nil, engine.TextOutput{}, fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, security", input.Mode)
+			return nil, engine.TextOutput{}, fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, security, overview, remote, systemd", input.Mode)
 		}
 	})
 }

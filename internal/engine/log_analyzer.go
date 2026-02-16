@@ -6,116 +6,51 @@ import (
 )
 
 var errorPatterns = []ErrorPattern{
+	// Database errors (generic — works with any SQL database)
 	{
 		Pattern:         `(?i)(FATAL|authentication failed|could not connect to server|password authentication failed)`,
 		Level:           AlertCritical,
 		Category:        "database",
-		Description:     "PostgreSQL authentication or startup failure",
-		SuggestedAction: "Check PostgreSQL credentials and connectivity. Verify pg_hba.conf and POSTGRES_PASSWORD env var.",
-		Services:        []string{"postgres"},
+		Description:     "Database authentication or connection failure",
+		SuggestedAction: "Check database credentials and connectivity. Verify password and access configuration.",
 	},
 	{
-		Pattern:         `(?i)(relation .+ does not exist|column .+ does not exist|schema .+ does not exist)`,
+		Pattern:         `(?i)(relation .+ does not exist|column .+ does not exist|schema .+ does not exist|table .+ doesn't exist)`,
 		Level:           AlertError,
 		Category:        "database",
 		Description:     "Database schema error",
 		SuggestedAction: "Run database migrations. Check if the schema is up to date.",
-		Services:        []string{"postgres", "hasura"},
 	},
 	{
-		Pattern:         `(?i)(too many connections|remaining connection slots are reserved)`,
+		Pattern:         `(?i)(too many connections|remaining connection slots are reserved|max_connections)`,
 		Level:           AlertCritical,
 		Category:        "database",
-		Description:     "PostgreSQL connection limit reached",
+		Description:     "Database connection limit reached",
 		SuggestedAction: "Check for connection leaks. Increase max_connections or use connection pooling.",
-		Services:        []string{"postgres"},
 	},
-	{
-		Pattern:         `(?i)(collation version mismatch)`,
-		Level:           AlertWarning,
-		Category:        "database",
-		Description:     "Collation version mismatch",
-		SuggestedAction: "Run ALTER COLLATION to update or reindex affected databases.",
-		Services:        []string{"postgres"},
-	},
-	{
-		Pattern:         `(?i)(metadata inconsistency|inconsistent object)`,
-		Level:           AlertError,
-		Category:        "graphql",
-		Description:     "Hasura metadata inconsistency",
-		SuggestedAction: "Reload Hasura metadata. Check if database schema matches Hasura expectations.",
-		Services:        []string{"hasura"},
-	},
+	// Auth errors (generic)
 	{
 		Pattern:         `(?i)(jwt|token).*(expired|invalid|malformed)`,
 		Level:           AlertError,
 		Category:        "auth",
-		Description:     "JWT token error",
-		SuggestedAction: "Check JWT secret configuration. Verify token expiry settings.",
-		Services:        []string{"hasura", "supabase-auth"},
+		Description:     "Authentication token error",
+		SuggestedAction: "Check auth secret configuration. Verify token expiry settings.",
 	},
-	{
-		Pattern:         `(?i)(workflow.*failed|execution.*error)`,
-		Level:           AlertWarning,
-		Category:        "workflow",
-		Description:     "n8n workflow execution failure",
-		SuggestedAction: "Check n8n workflow logs for specific error details.",
-		Services:        []string{"n8n"},
-	},
+	// Network errors (generic)
 	{
 		Pattern:         `(?i)(connection refused|ECONNREFUSED)`,
 		Level:           AlertError,
 		Category:        "network",
 		Description:     "Connection refused",
 		SuggestedAction: "Check if the target service is running and accessible.",
-		Services:        []string{"n8n"},
 	},
-	{
-		Pattern:         `(?i)(credential.*not found|credentials.*missing)`,
-		Level:           AlertError,
-		Category:        "credentials",
-		Description:     "Missing credentials",
-		SuggestedAction: "Re-configure credentials in n8n settings.",
-		Services:        []string{"n8n"},
-	},
-	{
-		Pattern:         `(?i)(gotrue.*error|auth.*service.*error)`,
-		Level:           AlertError,
-		Category:        "auth",
-		Description:     "Supabase GoTrue auth error",
-		SuggestedAction: "Check GoTrue configuration and database connectivity.",
-		Services:        []string{"supabase-auth"},
-	},
-	{
-		Pattern:         `(?i)(oauth.*fail|oauth.*error|provider.*error)`,
-		Level:           AlertError,
-		Category:        "auth",
-		Description:     "OAuth authentication failure",
-		SuggestedAction: "Verify OAuth provider credentials and callback URLs.",
-		Services:        []string{"supabase-auth"},
-	},
-	{
-		Pattern:         `(?i)(cuda|gpu).*(error|fail|unavailable)`,
-		Level:           AlertError,
-		Category:        "gpu",
-		Description:     "GPU/CUDA error",
-		SuggestedAction: "Check GPU drivers and CUDA installation. Verify nvidia-docker runtime.",
-		Services:        []string{"embedding-service"},
-	},
-	{
-		Pattern:         `(?i)(model.*load.*fail|failed to load model|model not found)`,
-		Level:           AlertCritical,
-		Category:        "model",
-		Description:     "ML model loading failure",
-		SuggestedAction: "Check model file path and permissions. Verify model download.",
-		Services:        []string{"embedding-service"},
-	},
+	// Resource errors
 	{
 		Pattern:         `(?i)(OOM|out of memory|Cannot allocate memory|oom-kill)`,
 		Level:           AlertCritical,
 		Category:        "resources",
 		Description:     "Out of memory",
-		SuggestedAction: "Increase container memory limits or reduce workload. Check for memory leaks.",
+		SuggestedAction: "Increase memory limits or reduce workload. Check for memory leaks.",
 	},
 	{
 		Pattern:         `(?i)(No space left on device|disk full|ENOSPC)`,
@@ -124,6 +59,7 @@ var errorPatterns = []ErrorPattern{
 		Description:     "Disk full",
 		SuggestedAction: "Free disk space. Run docker system prune. Check for large log files.",
 	},
+	// Process signals
 	{
 		Pattern:         `(?i)(SIGTERM|SIGKILL|killed by signal)`,
 		Level:           AlertWarning,
@@ -131,6 +67,7 @@ var errorPatterns = []ErrorPattern{
 		Description:     "Process terminated by signal",
 		SuggestedAction: "Check if the service was intentionally stopped or hit resource limits.",
 	},
+	// Performance
 	{
 		Pattern:         `(?i)(timeout|timed out|deadline exceeded|context canceled)`,
 		Level:           AlertWarning,
@@ -144,6 +81,14 @@ var errorPatterns = []ErrorPattern{
 		Category:        "rate_limit",
 		Description:     "Rate limiting triggered",
 		SuggestedAction: "Review rate limit configuration. Check for misbehaving clients.",
+	},
+	// Permission errors
+	{
+		Pattern:         `(?i)(permission denied|access denied|forbidden|401 unauthorized)`,
+		Level:           AlertError,
+		Category:        "auth",
+		Description:     "Permission or access denied",
+		SuggestedAction: "Check file permissions, user roles, and service credentials.",
 	},
 }
 
