@@ -74,7 +74,7 @@ func (g *AlertGenerator) GenerateAlerts(statuses []ServiceStatus) []Alert {
 				Service:         s.Name,
 				Title:           fmt.Sprintf("%s has %d errors", s.Name, s.ErrorCount),
 				Description:     fmt.Sprintf("Container has %d errors in recent logs (threshold: %d)", s.ErrorCount, g.cfg.ErrorThreshold),
-				SuggestedAction: "Analyze logs for error patterns: server_analyze_logs",
+				SuggestedAction: "Analyze logs: server_inspect({mode: 'analyze', service: '" + s.Name + "'})",
 				Timestamp:       now,
 			})
 		}

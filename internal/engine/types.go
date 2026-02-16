@@ -190,30 +190,19 @@ type TextOutput struct {
 
 // --- MCP tool input structs ---
 
-type DiagnoseInput struct {
-	Services []string `json:"services,omitempty" jsonschema:"Specific services to diagnose (all if omitted)"`
-}
-
-type StatusInput struct {
-	Service string `json:"service" jsonschema:"Service name to check"`
-}
-
-type LogsInput struct {
-	Service    string `json:"service" jsonschema:"Service name"`
-	Lines      int    `json:"lines,omitempty" jsonschema:"Number of log lines (default 100)"`
-	ErrorsOnly bool   `json:"errors_only,omitempty" jsonschema:"Only show error logs"`
-}
-
-type RestartInput struct {
-	Service string `json:"service" jsonschema:"Service to restart"`
+type InspectInput struct {
+	Mode     string   `json:"mode" jsonschema:"Inspection mode: health, status, diagnose, logs, analyze, security"`
+	Service  string   `json:"service,omitempty" jsonschema:"Service name (required for status, logs, analyze modes)"`
+	Services []string `json:"services,omitempty" jsonschema:"Services to diagnose (all if omitted, only for diagnose mode)"`
+	Lines    int      `json:"lines,omitempty" jsonschema:"Number of log lines (default 100, only for logs mode)"`
 }
 
 type ExecInput struct {
 	Command string `json:"command" jsonschema:"Shell command to execute"`
 }
 
-type AnalyzeLogsInput struct {
-	Service string `json:"service" jsonschema:"Service to analyze logs for"`
+type RestartInput struct {
+	Service string `json:"service" jsonschema:"Service to restart"`
 }
 
 type PruneInput struct {
@@ -224,12 +213,9 @@ type PruneInput struct {
 }
 
 type DeployInput struct {
+	DeployID    string   `json:"deploy_id,omitempty" jsonschema:"Deploy ID to check status (if provided, checks existing deploy instead of starting new one)"`
 	ProjectPath string   `json:"project_path,omitempty" jsonschema:"Path to docker-compose project"`
 	Services    []string `json:"services,omitempty" jsonschema:"Specific services to deploy"`
 	Build       *bool    `json:"build,omitempty" jsonschema:"Build images before deploy (default true)"`
 	Pull        *bool    `json:"pull,omitempty" jsonschema:"Pull images before deploy (default true)"`
-}
-
-type DeployStatusInput struct {
-	DeployID string `json:"deploy_id" jsonschema:"Deploy ID to check status"`
 }
