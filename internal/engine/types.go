@@ -191,8 +191,8 @@ type TextOutput struct {
 // --- MCP tool input structs ---
 
 type InspectInput struct {
-	Mode     string   `json:"mode" jsonschema:"Inspection mode: health, status, diagnose, logs, analyze, security, overview, remote, systemd"`
-	Service  string   `json:"service,omitempty" jsonschema:"Service name (required for status, logs, analyze modes)"`
+	Mode     string   `json:"mode" jsonschema:"Inspection mode: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd"`
+	Service  string   `json:"service,omitempty" jsonschema:"Service name (required for status, logs modes; optional for analyze)"`
 	Services []string `json:"services,omitempty" jsonschema:"Services to diagnose (all if omitted, only for diagnose mode)"`
 	Lines    int      `json:"lines,omitempty" jsonschema:"Number of log lines (default 100, only for logs mode)"`
 }
@@ -224,6 +224,10 @@ type CleanupInput struct {
 	Targets []string `json:"targets,omitempty" jsonschema:"Cleanup targets: docker, go, npm, uv, pip, journal, tmp, caches, all"`
 	Report  *bool    `json:"report,omitempty" jsonschema:"Dry-run: scan sizes without deleting (default true)"`
 	MinAge  string   `json:"min_age,omitempty" jsonschema:"Minimum age for cleanup (e.g. 7d, 24h, 3d)"`
+}
+
+type TriageInput struct {
+	Services []string `json:"services,omitempty" jsonschema:"Specific services to triage (all if omitted)"`
 }
 
 // CleanupTarget represents a single cleanup target result.

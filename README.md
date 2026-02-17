@@ -15,11 +15,13 @@ AI-native server monitoring agent. Unlike traditional monitoring tools (Promethe
 
 ## Features
 
+- **Auto-Triage** — One-call full diagnosis: health check, error analysis, disk pressure
 - **System Overview** — Memory, disk, load, top processes in one view
 - **Docker Monitoring** — Auto-discovers compose services, status, CPU/memory
 - **Systemd Services** — User and system service monitoring with memory/uptime
 - **Remote Servers** — HTTP availability, SSL expiry, systemd via SSH
 - **Log Analysis** — Pattern matching for common errors (DB, auth, OOM, timeouts)
+- **System Cleanup** — Scan/clean docker, go, npm, pip, journals, caches with dry-run
 - **Security Audit** — Exposed ports, dangerous mounts, bot scanner detection
 - **Background Deploy** — Non-blocking deploys with status tracking
 - **Command Execution** — Allowlist/blocklist validated shell commands
@@ -66,11 +68,13 @@ cp .env.example .env  # optional — works without it
 
 | Tool | Description |
 |------|-------------|
-| `server_inspect` | Inspect server state (9 modes — see below) |
+| `server_inspect` | Inspect server state (10 modes — see below) |
+| `server_triage` | Full auto-diagnosis: discover, check health, analyze errors, disk pressure |
 | `server_exec` | Execute validated shell commands |
 | `server_restart` | Restart a docker compose service |
 | `server_deploy` | Background deploy with status tracking |
 | `server_prune` | Clean up Docker resources |
+| `server_cleanup` | Scan/clean system resources (docker, go, npm, pip, caches, journals) |
 
 ### Inspection Modes
 
@@ -81,7 +85,8 @@ cp .env.example .env  # optional — works without it
 | `status` | Detailed status for one service (CPU, memory, uptime, restarts) |
 | `diagnose` | Full diagnostics with alerts and health assessment |
 | `logs` | Recent logs for a service (with line count) |
-| `analyze` | Error pattern analysis with remediation suggestions |
+| `analyze` | Error pattern analysis with remediation (single service or all) |
+| `errors` | ERROR/FATAL log lines from all services in one call |
 | `security` | Security audit: exposed ports, containers, bot scanners |
 | `systemd` | Local systemd service monitoring (user + system) |
 | `remote` | Remote server: HTTP check, SSL expiry, systemd services via SSH |
@@ -149,11 +154,13 @@ Defense-in-depth command validation:
 dozor/
 ├── main.go                     # Entry point: serve/check/watch
 ├── register.go                 # MCP tool registration
-├── tool_inspect.go             # server_inspect (9 modes)
+├── tool_inspect.go             # server_inspect (10 modes)
+├── tool_triage.go              # server_triage
 ├── tool_exec.go                # server_exec
 ├── tool_restart.go             # server_restart
 ├── tool_deploy.go              # server_deploy
 ├── tool_prune.go               # server_prune
+├── tool_cleanup.go             # server_cleanup
 └── internal/engine/
     ├── agent.go                # Orchestrator
     ├── config.go               # Environment config
@@ -164,6 +171,7 @@ dozor/
     ├── logs.go                 # Log collection & parsing
     ├── log_analyzer.go         # Error pattern analysis
     ├── alerts.go               # Alert generation
+    ├── cleanup.go              # System cleanup (docker, go, npm, pip, caches)
     ├── security.go             # Security audit
     ├── remote.go               # Remote server monitoring
     ├── watch.go                # Periodic monitoring + webhooks

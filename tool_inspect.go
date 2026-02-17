@@ -19,6 +19,7 @@ func registerInspect(server *mcp.Server) {
 - diagnose: full diagnostics with alerts and health assessment
 - logs: recent logs for a service (supports line count)
 - analyze: error pattern analysis with remediation suggestions
+- errors: ERROR/FATAL log lines from all services in one call
 - security: security audit (network, containers, auth, API hardening)
 - overview: system dashboard (disk, memory, load, top processes, docker summary)
 - remote: remote server monitoring (HTTP, SSL, systemd services via SSH)
@@ -78,13 +79,17 @@ func registerInspect(server *mcp.Server) {
 
 		case "analyze":
 			if input.Service == "" {
-				return nil, engine.TextOutput{}, fmt.Errorf("service is required for analyze mode")
+				// Analyze all services
+				return nil, engine.TextOutput{Text: agent.AnalyzeAll(ctx)}, nil
 			}
 			if ok, reason := engine.ValidateServiceName(input.Service); !ok {
 				return nil, engine.TextOutput{}, fmt.Errorf("invalid service: %s", reason)
 			}
 			result := agent.AnalyzeLogs(ctx, input.Service)
 			return nil, engine.TextOutput{Text: engine.FormatAnalysis(result)}, nil
+
+		case "errors":
+			return nil, engine.TextOutput{Text: agent.GetAllErrors(ctx)}, nil
 
 		case "security":
 			issues := agent.CheckSecurity(ctx)
@@ -100,7 +105,7 @@ func registerInspect(server *mcp.Server) {
 			return nil, engine.TextOutput{Text: agent.GetSystemdStatus(ctx, input.Services)}, nil
 
 		default:
-			return nil, engine.TextOutput{}, fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, security, overview, remote, systemd", input.Mode)
+			return nil, engine.TextOutput{}, fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd", input.Mode)
 		}
 	})
 }
