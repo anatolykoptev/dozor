@@ -18,7 +18,7 @@ func (a *ServerAgent) StartDeploy(ctx context.Context, projectPath string, servi
 	}
 
 	deployID := fmt.Sprintf("deploy-%d", time.Now().Unix())
-	logFile := fmt.Sprintf("/tmp/%s.log", deployID)
+	logFile := fmt.Sprintf("${TMPDIR:-/tmp}/%s.log", deployID)
 
 	// Build the deploy command
 	var parts []string
@@ -58,7 +58,7 @@ func (a *ServerAgent) StartDeploy(ctx context.Context, projectPath string, servi
 
 // GetDeployStatus checks a running deploy.
 func (a *ServerAgent) GetDeployStatus(ctx context.Context, deployID string) DeployStatus {
-	logFile := fmt.Sprintf("/tmp/%s.log", deployID)
+	logFile := fmt.Sprintf("${TMPDIR:-/tmp}/%s.log", deployID)
 
 	// Check if process is still running
 	pRes := a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("pgrep -f %s 2>/dev/null", deployID))

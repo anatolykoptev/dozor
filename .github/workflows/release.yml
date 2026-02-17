@@ -29,8 +29,10 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          TAG_NAME: ${{ github.ref_name }}
         run: |
-          go build -o "dozor-${GOOS}-${GOARCH}" .
+          go build -ldflags "-s -w -X main.version=${TAG_NAME}" -o "dozor-${GOOS}-${GOARCH}" .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

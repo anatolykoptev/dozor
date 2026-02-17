@@ -2,9 +2,11 @@
 
 BINARY=dozor
 INSTALL_PATH=$(HOME)/.local/bin
+VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION)"
 
 build:
-	go build -o $(BINARY) .
+	go build $(LDFLAGS) -o $(BINARY) .
 
 install: build
 	mkdir -p $(INSTALL_PATH)

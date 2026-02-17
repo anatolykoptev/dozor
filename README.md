@@ -1,5 +1,9 @@
 # Dozor — AI-First Server Monitoring
 
+[![CI](https://github.com/anatolykoptev/dozor/actions/workflows/ci.yml/badge.svg)](https://github.com/anatolykoptev/dozor/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/anatolykoptev/dozor)](https://github.com/anatolykoptev/dozor/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > MCP server for AI agents to monitor any Linux server: Docker, systemd, remote hosts.
 
 AI-native server monitoring agent. Unlike traditional monitoring tools (Prometheus, Datadog) built for humans with dashboards, Dozor outputs are optimized for LLM consumption via [Model Context Protocol](https://modelcontextprotocol.io/).
@@ -29,6 +33,16 @@ AI-native server monitoring agent. Unlike traditional monitoring tools (Promethe
 - **Zero Config** — Auto-detects compose path and services, works out of the box
 
 ## Quick Start
+
+**Install from release** (recommended):
+
+```bash
+curl -L https://github.com/anatolykoptev/dozor/releases/latest/download/dozor-linux-amd64 -o dozor
+chmod +x dozor
+mv dozor ~/.local/bin/
+```
+
+**Build from source**:
 
 ```bash
 git clone https://github.com/anatolykoptev/dozor.git
@@ -197,6 +211,12 @@ dozor/
     ├── updates.go              # Binary update checking + install
     └── validation.go           # Command validation
 ```
+
+## Contributing
+
+Contributions are welcome! Please open an issue first to discuss what you'd like to change.
+
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## License
 

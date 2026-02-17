@@ -16,7 +16,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-var agent *engine.ServerAgent
+var (
+	version = "dev"
+	agent   *engine.ServerAgent
+)
 
 func main() {
 	// Load .env
@@ -65,7 +68,7 @@ func runServe(cfg engine.Config) {
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "dozor",
-		Version: "1.0.0",
+		Version: version,
 	}, nil)
 
 	registerTools(server)
@@ -97,7 +100,7 @@ func runServe(cfg engine.Config) {
 	mx.Handle("/mcp/", handler)
 	mx.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok","service":"dozor","version":"1.0.0"}`))
+		fmt.Fprintf(w, `{"status":"ok","service":"dozor","version":"%s"}`, version)
 	})
 
 	srv := &http.Server{

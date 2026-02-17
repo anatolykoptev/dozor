@@ -333,7 +333,7 @@ func (u *UpdatesCollector) downloadAndInstall(ctx context.Context, b *TrackedBin
 	}
 
 	// Create temp dir with mktemp (secure, unpredictable)
-	res := u.transport.ExecuteUnsafe(ctx, "mktemp -d /tmp/dozor-update-XXXXXXXXXX")
+	res := u.transport.ExecuteUnsafe(ctx, "mktemp -d ${TMPDIR:-/tmp}/dozor-update-XXXXXXXXXX")
 	if !res.Success {
 		return "", fmt.Errorf("failed to create temp dir: %s", res.Stderr)
 	}
