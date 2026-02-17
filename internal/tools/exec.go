@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerExec(server *mcp.Server) {
+func registerExec(server *mcp.Server, agent *engine.ServerAgent) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "server_exec",
 		Description: "Execute a validated shell command on the server. Commands are checked against a blocklist for safety.",

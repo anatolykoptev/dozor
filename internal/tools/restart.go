@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerRestart(server *mcp.Server) {
+func registerRestart(server *mcp.Server, agent *engine.ServerAgent) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "server_restart",
 		Description: "Restart a docker compose service.",

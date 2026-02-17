@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerServices(server *mcp.Server) {
+func registerServices(server *mcp.Server, agent *engine.ServerAgent) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "server_services",
 		Description: `Manage user-level systemd services. Actions:
@@ -25,7 +25,7 @@ func registerServices(server *mcp.Server) {
 
 		switch input.Action {
 		case "status":
-			return nil, engine.TextOutput{Text: userServicesStatus(ctx, cfg, input.Service)}, nil
+			return nil, engine.TextOutput{Text: userServicesStatus(ctx, cfg, agent, input.Service)}, nil
 
 		case "restart":
 			if input.Service == "" {
@@ -34,10 +34,10 @@ func registerServices(server *mcp.Server) {
 			if cfg.FindUserService(input.Service) == nil {
 				return nil, engine.TextOutput{}, fmt.Errorf("unknown service %q, available: %s", input.Service, strings.Join(cfg.UserServiceNames(), ", "))
 			}
-			return nil, engine.TextOutput{Text: userServiceRestart(ctx, cfg, input.Service)}, nil
+			return nil, engine.TextOutput{Text: userServiceRestart(ctx, cfg, agent, input.Service)}, nil
 
 		case "restart-all":
-			return nil, engine.TextOutput{Text: userServicesRestartAll(ctx, cfg)}, nil
+			return nil, engine.TextOutput{Text: userServicesRestartAll(ctx, cfg, agent)}, nil
 
 		case "logs":
 			if input.Service == "" {
@@ -53,7 +53,7 @@ func registerServices(server *mcp.Server) {
 			if lines > 5000 {
 				lines = 5000
 			}
-			return nil, engine.TextOutput{Text: userServiceLogs(ctx, cfg, input.Service, lines)}, nil
+			return nil, engine.TextOutput{Text: userServiceLogs(ctx, cfg, agent, input.Service, lines)}, nil
 
 		default:
 			return nil, engine.TextOutput{}, fmt.Errorf("unknown action %q, use: status, restart, restart-all, logs", input.Action)
@@ -71,7 +71,7 @@ func userJournalCmd(_ engine.Config, unit string, lines int) string {
 	return fmt.Sprintf("journalctl --user-unit %s --no-pager -n %d", unit, lines)
 }
 
-func userServicesStatus(ctx context.Context, cfg engine.Config, singleService string) string {
+func userServicesStatus(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent, singleService string) string {
 	services := cfg.UserServices
 	if singleService != "" {
 		svc := cfg.FindUserService(singleService)
@@ -131,7 +131,7 @@ func userServicesStatus(ctx context.Context, cfg engine.Config, singleService st
 	return b.String()
 }
 
-func userServiceRestart(ctx context.Context, cfg engine.Config, service string) string {
+func userServiceRestart(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent, service string) string {
 	cmd := userCmd(cfg, fmt.Sprintf("restart %s", service))
 	res := agent.ExecuteCommand(ctx, cmd)
 	if !res.Success {
@@ -149,19 +149,19 @@ func userServiceRestart(ctx context.Context, cfg engine.Config, service string) 
 	return fmt.Sprintf("Service %s restarted but state is: %s", service, state)
 }
 
-func userServicesRestartAll(ctx context.Context, cfg engine.Config) string {
+func userServicesRestartAll(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Restarting %d services...\n\n", len(cfg.UserServices))
 
 	for _, svc := range cfg.UserServices {
-		result := userServiceRestart(ctx, cfg, svc.Name)
+		result := userServiceRestart(ctx, cfg, agent, svc.Name)
 		fmt.Fprintf(&b, "%s\n", result)
 	}
 
 	return b.String()
 }
 
-func userServiceLogs(ctx context.Context, cfg engine.Config, service string, lines int) string {
+func userServiceLogs(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent, service string, lines int) string {
 	cmd := userJournalCmd(cfg, service, lines)
 	res := agent.ExecuteCommand(ctx, cmd)
 	if !res.Success {

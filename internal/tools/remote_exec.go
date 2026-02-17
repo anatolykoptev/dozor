@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerRemoteExec(server *mcp.Server) {
+func registerRemoteExec(server *mcp.Server, agent *engine.ServerAgent) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "server_remote_exec",
 		Description: "Execute a validated shell command on the remote server via SSH. Commands are checked against a blocklist for safety. Requires DOZOR_REMOTE_HOST to be configured.",

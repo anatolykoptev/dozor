@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerDeploy(server *mcp.Server) {
+func registerDeploy(server *mcp.Server, agent *engine.ServerAgent) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "server_deploy",
 		Description: "Deploy or check deploy status. If deploy_id is provided, checks existing deploy status. Otherwise starts a new background deployment (pulls, builds, docker compose up).",

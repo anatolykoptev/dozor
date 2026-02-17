@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerPrune(server *mcp.Server) {
+func registerPrune(server *mcp.Server, agent *engine.ServerAgent) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "server_prune",
 		Description: "Clean up Docker resources (unused images, build cache, volumes). Shows disk usage after cleanup.",

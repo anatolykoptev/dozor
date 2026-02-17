@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerInspect(server *mcp.Server) {
+func registerInspect(server *mcp.Server, agent *engine.ServerAgent) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "server_inspect",
 		Description: `Inspect server state. Modes:

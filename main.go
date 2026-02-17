@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,20 +14,18 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
+	"github.com/anatolykoptev/dozor/internal/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-var (
-	version = "dev"
-	agent   *engine.ServerAgent
-)
+var version = "dev"
 
 func main() {
 	// Load .env
 	loadDotenv(".env")
 
 	cfg := engine.Init()
-	agent = engine.NewAgent(cfg)
+	agent := engine.NewAgent(cfg)
 
 	if len(os.Args) < 2 {
 		printUsage()
@@ -35,9 +34,9 @@ func main() {
 
 	switch os.Args[1] {
 	case "serve":
-		runServe(cfg)
+		runServe(cfg, agent)
 	case "check":
-		runCheck(cfg)
+		runCheck(cfg, agent)
 	case "watch":
 		runWatch(cfg)
 	default:
@@ -56,7 +55,7 @@ Usage:
 `)
 }
 
-func runServe(cfg engine.Config) {
+func runServe(cfg engine.Config, agent *engine.ServerAgent) {
 	stdio := hasFlag("--stdio")
 
 	logWriter := os.Stdout
@@ -71,7 +70,7 @@ func runServe(cfg engine.Config) {
 		Version: version,
 	}, nil)
 
-	registerTools(server)
+	tools.RegisterAll(server, agent)
 	logger.Info("dozor MCP server", slog.Int("tools", 11))
 
 	if stdio {
@@ -130,7 +129,7 @@ func runServe(cfg engine.Config) {
 	logger.Info("stopped")
 }
 
-func runCheck(cfg engine.Config) {
+func runCheck(cfg engine.Config, agent *engine.ServerAgent) {
 	ctx := context.Background()
 	asJSON := hasFlag("--json")
 
@@ -199,4 +198,31 @@ func getFlagValue(flag string) string {
 		}
 	}
 	return ""
+}
+
+// loadDotenv loads a .env file into os environment if it exists.
+func loadDotenv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		// Don't override existing env vars
+		if os.Getenv(key) == "" {
+			os.Setenv(key, val)
+		}
+	}
 }

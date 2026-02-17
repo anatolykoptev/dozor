@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerTriage(server *mcp.Server) {
+func registerTriage(server *mcp.Server, agent *engine.ServerAgent) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "server_triage",
 		Description: `Full auto-diagnosis in one call. Discovers all services, checks health, and for problematic services automatically analyzes error patterns, shows recent errors, and suggests remediation. Includes disk pressure alerts.`,

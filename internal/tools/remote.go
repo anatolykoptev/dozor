@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerRemote(server *mcp.Server) {
+func registerRemote(server *mcp.Server, agent *engine.ServerAgent) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "server_remote",
 		Description: `Manage remote server services (system-level systemd via sudo). Actions:

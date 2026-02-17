@@ -171,20 +171,21 @@ Defense-in-depth command validation:
 ```
 dozor/
 ├── main.go                     # Entry point: serve/check/watch
-├── config.go                   # CLI config & flag parsing
-├── register.go                 # MCP tool registration
-├── tool_inspect.go             # server_inspect (10 modes)
-├── tool_triage.go              # server_triage
-├── tool_exec.go                # server_exec
-├── tool_restart.go             # server_restart
-├── tool_deploy.go              # server_deploy
-├── tool_prune.go               # server_prune
-├── tool_cleanup.go             # server_cleanup
-├── tool_services.go            # server_services
-├── tool_updates.go             # server_updates
-├── tool_remote.go              # server_remote
-├── tool_remote_exec.go         # server_remote_exec
-└── internal/engine/
+├── internal/
+│   ├── tools/                  # MCP tool handlers (dependency-injected)
+│   │   ├── register.go         # RegisterAll(server, agent)
+│   │   ├── inspect.go          # server_inspect (10 modes)
+│   │   ├── triage.go           # server_triage
+│   │   ├── exec.go             # server_exec
+│   │   ├── restart.go          # server_restart
+│   │   ├── deploy.go           # server_deploy
+│   │   ├── prune.go            # server_prune
+│   │   ├── cleanup.go          # server_cleanup
+│   │   ├── services.go         # server_services
+│   │   ├── updates.go          # server_updates
+│   │   ├── remote.go           # server_remote
+│   │   └── remote_exec.go      # server_remote_exec
+│   └── engine/
     ├── agent.go                # Orchestrator
     ├── config.go               # Environment config
     ├── types.go                # Data structures
