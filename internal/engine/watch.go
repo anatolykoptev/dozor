@@ -46,6 +46,15 @@ func runCheck(ctx context.Context, agent *ServerAgent, cfg Config, prevHash stri
 	pressures := agent.GetDiskPressure(ctx)
 	diskAlerts := GenerateDiskAlerts(pressures, cfg)
 	report.Alerts = append(report.Alerts, diskAlerts...)
+
+	// Remote server monitoring
+	if cfg.HasRemote() {
+		remote := CheckRemoteServer(ctx, cfg)
+		if remote != nil {
+			report.Alerts = append(report.Alerts, remote.Alerts...)
+		}
+	}
+
 	report.CalculateHealth()
 
 	// Hash the alerts to detect changes
