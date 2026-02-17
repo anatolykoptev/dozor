@@ -359,19 +359,20 @@ func (u *UpdatesCollector) downloadAndInstall(ctx context.Context, b *TrackedBin
 	}
 
 	// Handle "text file busy" — move old binary first
-	u.transport.ExecuteUnsafe(ctx, fmt.Sprintf("mv '%s' '%s.old' 2>/dev/null; true", installPath, installPath))
+	// Use double quotes for installPath since it may contain $HOME
+	u.transport.ExecuteUnsafe(ctx, fmt.Sprintf("mv \"%s\" \"%s.old\" 2>/dev/null; true", installPath, installPath))
 
 	// Install new binary
-	res = u.transport.ExecuteUnsafe(ctx, fmt.Sprintf("cp '%s' '%s' && chmod +x '%s'", binaryPath, installPath, installPath))
+	res = u.transport.ExecuteUnsafe(ctx, fmt.Sprintf("cp '%s' \"%s\" && chmod +x \"%s\"", binaryPath, installPath, installPath))
 	if !res.Success {
 		// Try to restore old binary
-		u.transport.ExecuteUnsafe(ctx, fmt.Sprintf("mv '%s.old' '%s' 2>/dev/null; true", installPath, installPath))
+		u.transport.ExecuteUnsafe(ctx, fmt.Sprintf("mv \"%s.old\" \"%s\" 2>/dev/null; true", installPath, installPath))
 		u.transport.ExecuteUnsafe(ctx, "rm -rf '"+tmpDir+"'")
 		return "", fmt.Errorf("install failed: %s", res.Stderr)
 	}
 
 	// Clean up
-	u.transport.ExecuteUnsafe(ctx, fmt.Sprintf("rm -f '%s.old'", installPath))
+	u.transport.ExecuteUnsafe(ctx, fmt.Sprintf("rm -f \"%s.old\"", installPath))
 	u.transport.ExecuteUnsafe(ctx, "rm -rf '"+tmpDir+"'")
 
 	// Verify new version
