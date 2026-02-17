@@ -26,7 +26,7 @@ var blockedPatterns = []*regexp.Regexp{
 
 	// Shell eval/exec/source
 	regexp.MustCompile(`(?i)\beval\s`),
-	regexp.MustCompile(`(?i)\bexec\s`),
+	regexp.MustCompile(`(?i)^exec\s`),
 	regexp.MustCompile(`(?i)\bsource\s`),
 	regexp.MustCompile(`(?i)\.\s+/`),
 
