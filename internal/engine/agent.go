@@ -18,6 +18,7 @@ type ServerAgent struct {
 	security  *SecurityCollector
 	alerts    *AlertGenerator
 	cleanup   *CleanupCollector
+	updates   *UpdatesCollector
 }
 
 // NewAgent creates a new server agent with all collectors.
@@ -32,6 +33,7 @@ func NewAgent(cfg Config) *ServerAgent {
 		security:  &SecurityCollector{transport: t, cfg: cfg},
 		alerts:    &AlertGenerator{cfg: cfg},
 		cleanup:   &CleanupCollector{transport: t},
+		updates:   &UpdatesCollector{transport: t, cfg: cfg},
 	}
 }
 
@@ -348,6 +350,16 @@ func (a *ServerAgent) GetAllErrors(ctx context.Context) string {
 	}
 
 	return b.String()
+}
+
+// CheckUpdates scans binaries for available updates.
+func (a *ServerAgent) CheckUpdates(ctx context.Context) []TrackedBinary {
+	return a.updates.CheckUpdates(ctx)
+}
+
+// InstallUpdate downloads and installs the latest release for a binary.
+func (a *ServerAgent) InstallUpdate(ctx context.Context, binary string) (string, error) {
+	return a.updates.InstallUpdate(ctx, binary)
 }
 
 // RestartService restarts a docker compose service.

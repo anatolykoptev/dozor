@@ -24,6 +24,7 @@ AI-native server monitoring agent. Unlike traditional monitoring tools (Promethe
 - **System Cleanup** — Scan/clean docker, go, npm, pip, journals, caches with dry-run
 - **Security Audit** — Exposed ports, dangerous mounts, bot scanner detection
 - **Background Deploy** — Non-blocking deploys with status tracking
+- **Binary Updates** — Check and install updates for ~60 popular CLI tools from GitHub releases
 - **Command Execution** — Allowlist/blocklist validated shell commands
 - **Zero Config** — Auto-detects compose path and services, works out of the box
 
@@ -75,6 +76,8 @@ cp .env.example .env  # optional — works without it
 | `server_deploy` | Background deploy with status tracking |
 | `server_prune` | Clean up Docker resources |
 | `server_cleanup` | Scan/clean system resources (docker, go, npm, pip, caches, journals) |
+| `server_services` | Manage user-level systemd services (status, restart, logs) |
+| `server_updates` | Check and install updates for CLI binaries from GitHub releases |
 
 ### Inspection Modes
 
@@ -161,6 +164,8 @@ dozor/
 ├── tool_deploy.go              # server_deploy
 ├── tool_prune.go               # server_prune
 ├── tool_cleanup.go             # server_cleanup
+├── tool_services.go            # server_services
+├── tool_updates.go             # server_updates
 └── internal/engine/
     ├── agent.go                # Orchestrator
     ├── config.go               # Environment config
@@ -176,6 +181,7 @@ dozor/
     ├── remote.go               # Remote server monitoring
     ├── watch.go                # Periodic monitoring + webhooks
     ├── deploy.go               # Background deployments
+    ├── updates.go              # Binary update checking + install
     └── validation.go           # Command validation
 ```
 

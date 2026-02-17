@@ -129,6 +129,38 @@ func ValidateServiceName(name string) (bool, string) {
 	return true, ""
 }
 
+var binaryNameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9._-]*$`)
+
+// ValidateBinaryName checks if a binary name is valid.
+func ValidateBinaryName(name string) (bool, string) {
+	if name == "" {
+		return false, "binary name is required"
+	}
+	if len(name) > 63 {
+		return false, "binary name too long (max 63 characters)"
+	}
+	if !binaryNameRe.MatchString(name) {
+		return false, "invalid binary name: must start with letter, contain only alphanumeric, underscore, hyphen, or dot"
+	}
+	return true, ""
+}
+
+var githubNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
+// ValidateGitHubName checks if a GitHub owner or repo name is valid.
+func ValidateGitHubName(name string) (bool, string) {
+	if name == "" {
+		return false, "name is required"
+	}
+	if len(name) > 100 {
+		return false, "name too long (max 100 characters)"
+	}
+	if !githubNameRe.MatchString(name) {
+		return false, "invalid GitHub name"
+	}
+	return true, ""
+}
+
 var timeDurationRe = regexp.MustCompile(`^\d+[smhd]$`)
 
 // ValidateTimeDuration checks if a time duration string is valid (e.g., "24h", "30m").

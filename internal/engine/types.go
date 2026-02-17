@@ -243,6 +243,32 @@ type ServicesInput struct {
 	Lines   int    `json:"lines,omitempty" jsonschema:"Number of log lines (default 50, for logs action)"`
 }
 
+// UpdatesInput is the MCP tool input for server_updates.
+type UpdatesInput struct {
+	Action string `json:"action" jsonschema:"Action: check (scan binaries for updates), install (download and replace binary)"`
+	Binary string `json:"binary,omitempty" jsonschema:"Binary name to install update for (required for install action)"`
+}
+
+// TrackedBinaryConfig is a user-configured binary to track (owner/repo:binary).
+type TrackedBinaryConfig struct {
+	Owner  string
+	Repo   string
+	Binary string
+}
+
+// TrackedBinary represents a binary with version info from GitHub.
+type TrackedBinary struct {
+	Name           string `json:"name"`
+	Path           string `json:"path"`
+	Owner          string `json:"owner"`
+	Repo           string `json:"repo"`
+	CurrentVersion string `json:"current_version"`
+	LatestVersion  string `json:"latest_version,omitempty"`
+	Status         string `json:"status"` // UPDATE, OK, SKIP, ERROR
+	ReleaseURL     string `json:"release_url,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
 // CleanupTarget represents a single cleanup target result.
 type CleanupTarget struct {
 	Name      string  `json:"name"`

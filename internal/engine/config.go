@@ -71,6 +71,9 @@ type Config struct {
 
 	UserServices     []UserService
 	UserServicesUser string
+
+	TrackedBinaries []TrackedBinaryConfig
+	GitHubToken     string
 }
 
 // IsLocal returns true if the host is a local machine.
@@ -104,7 +107,57 @@ func Init() Config {
 		DiskCritical:     envFloat("DOZOR_DISK_CRITICAL", 95),
 		UserServices:     parseUserServices(env("DOZOR_USER_SERVICES", "")),
 		UserServicesUser: env("DOZOR_USER_SERVICES_USER", ""),
+		TrackedBinaries: parseTrackedBinaries(env("DOZOR_TRACKED_BINARIES", "")),
+		GitHubToken:     env("DOZOR_GITHUB_TOKEN", ""),
 	}
+}
+
+// parseTrackedBinaries parses "owner/repo:binary,owner/repo:binary" format.
+func parseTrackedBinaries(raw string) []TrackedBinaryConfig {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	binaries := make([]TrackedBinaryConfig, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		// Split "owner/repo:binary" or "owner/repo" (binary = repo)
+		var ownerRepo, binary string
+		if idx := strings.Index(p, ":"); idx > 0 {
+			ownerRepo = p[:idx]
+			binary = p[idx+1:]
+		} else {
+			ownerRepo = p
+		}
+		slashIdx := strings.Index(ownerRepo, "/")
+		if slashIdx <= 0 || slashIdx == len(ownerRepo)-1 {
+			continue
+		}
+		owner := ownerRepo[:slashIdx]
+		repo := ownerRepo[slashIdx+1:]
+		if binary == "" {
+			binary = repo
+		}
+		// Validate all parts
+		if ok, _ := ValidateGitHubName(owner); !ok {
+			continue
+		}
+		if ok, _ := ValidateGitHubName(repo); !ok {
+			continue
+		}
+		if ok, _ := ValidateBinaryName(binary); !ok {
+			continue
+		}
+		binaries = append(binaries, TrackedBinaryConfig{
+			Owner:  owner,
+			Repo:   repo,
+			Binary: binary,
+		})
+	}
+	return binaries
 }
 
 // parseUserServices parses "name:port,name:port" format.
