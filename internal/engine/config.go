@@ -62,6 +62,7 @@ type Config struct {
 	RemoteHost     string
 	RemoteURL      string
 	RemoteServices []string
+	RemoteSSHPort  int
 
 	SystemdServices  []string
 	RequiredAuthVars []string
@@ -101,6 +102,7 @@ func Init() Config {
 		RemoteHost:       env("DOZOR_REMOTE_HOST", ""),
 		RemoteURL:        env("DOZOR_REMOTE_URL", ""),
 		RemoteServices:   envList("DOZOR_REMOTE_SERVICES", ""),
+		RemoteSSHPort:    envInt("DOZOR_REMOTE_SSH_PORT", 22),
 		SystemdServices:  envList("DOZOR_SYSTEMD_SERVICES", ""),
 		RequiredAuthVars: envList("DOZOR_REQUIRED_AUTH_VARS", ""),
 		DiskThreshold:    envFloat("DOZOR_DISK_THRESHOLD", 80),

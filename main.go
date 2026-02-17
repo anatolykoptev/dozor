@@ -69,7 +69,7 @@ func runServe(cfg engine.Config) {
 	}, nil)
 
 	registerTools(server)
-	logger.Info("dozor MCP server", slog.Int("tools", 9))
+	logger.Info("dozor MCP server", slog.Int("tools", 10))
 
 	if stdio {
 		logger.Info("running in stdio mode")

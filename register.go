@@ -12,4 +12,5 @@ func registerTools(server *mcp.Server) {
 	registerCleanup(server)
 	registerServices(server)
 	registerUpdates(server)
+	registerRemote(server)
 }

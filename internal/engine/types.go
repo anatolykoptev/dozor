@@ -249,6 +249,13 @@ type UpdatesInput struct {
 	Binary string `json:"binary,omitempty" jsonschema:"Binary name to install update for (required for install action)"`
 }
 
+// RemoteInput is the MCP tool input for server_remote.
+type RemoteInput struct {
+	Action  string `json:"action" jsonschema:"Action: status (show all remote services), restart (restart a service), logs (view service logs)"`
+	Service string `json:"service,omitempty" jsonschema:"Service name (required for restart and logs actions)"`
+	Lines   int    `json:"lines,omitempty" jsonschema:"Number of log lines (default 50, max 5000, for logs action)"`
+}
+
 // TrackedBinaryConfig is a user-configured binary to track (owner/repo:binary).
 type TrackedBinaryConfig struct {
 	Owner  string
