@@ -53,11 +53,11 @@ type Config struct {
 	WebhookURL    string
 	WatchInterval time.Duration
 
-	CPUThreshold    float64
-	MemoryThreshold float64
-	ErrorThreshold  int
+	CPUThreshold     float64
+	MemoryThreshold  float64
+	ErrorThreshold   int
 	RestartThreshold int
-	LogLines        int
+	LogLines         int
 
 	RemoteHost     string
 	RemoteURL      string
@@ -109,8 +109,8 @@ func Init() Config {
 		DiskCritical:     envFloat("DOZOR_DISK_CRITICAL", 95),
 		UserServices:     parseUserServices(env("DOZOR_USER_SERVICES", "")),
 		UserServicesUser: env("DOZOR_USER_SERVICES_USER", ""),
-		TrackedBinaries: parseTrackedBinaries(env("DOZOR_TRACKED_BINARIES", "")),
-		GitHubToken:     env("DOZOR_GITHUB_TOKEN", ""),
+		TrackedBinaries:  parseTrackedBinaries(env("DOZOR_TRACKED_BINARIES", "")),
+		GitHubToken:      env("DOZOR_GITHUB_TOKEN", ""),
 	}
 }
 

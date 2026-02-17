@@ -6,6 +6,7 @@ func registerTools(server *mcp.Server) {
 	registerInspect(server)
 	registerTriage(server)
 	registerExec(server)
+	registerRemoteExec(server)
 	registerRestart(server)
 	registerDeploy(server)
 	registerPrune(server)

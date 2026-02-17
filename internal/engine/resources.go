@@ -29,7 +29,7 @@ func (c *ResourceCollector) GetResourceUsage(ctx context.Context, statuses []Ser
 		cpu, _ := strconv.ParseFloat(cpuStr, 64)
 
 		memStr := strings.TrimSpace(parts[2])
-		memMB := parseMemoryMB(memStr)
+		memMB := ParseDockerMemoryMB(memStr)
 
 		usage[name] = [2]float64{cpu, memMB}
 	}
@@ -62,27 +62,3 @@ func (c *ResourceCollector) GetSystemLoad(ctx context.Context) string {
 	return strings.TrimSpace(res.Stdout)
 }
 
-// parseMemoryMB parses docker stats memory format like "123.4MiB / 1.5GiB"
-func parseMemoryMB(s string) float64 {
-	parts := strings.SplitN(s, "/", 2)
-	if len(parts) == 0 {
-		return 0
-	}
-	used := strings.TrimSpace(parts[0])
-	used = strings.ToLower(used)
-
-	var val float64
-	if strings.HasSuffix(used, "gib") {
-		v, _ := strconv.ParseFloat(strings.TrimSuffix(used, "gib"), 64)
-		val = v * 1024
-	} else if strings.HasSuffix(used, "mib") {
-		val, _ = strconv.ParseFloat(strings.TrimSuffix(used, "mib"), 64)
-	} else if strings.HasSuffix(used, "kib") {
-		v, _ := strconv.ParseFloat(strings.TrimSuffix(used, "kib"), 64)
-		val = v / 1024
-	} else if strings.HasSuffix(used, "b") {
-		v, _ := strconv.ParseFloat(strings.TrimSuffix(used, "b"), 64)
-		val = v / (1024 * 1024)
-	}
-	return val
-}

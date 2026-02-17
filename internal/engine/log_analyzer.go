@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"fmt"
 	"regexp"
 )
 
@@ -196,25 +195,3 @@ func AnalyzeLogs(entries []LogEntry, service string) AnalyzeResult {
 	return result
 }
 
-// FormatAnalysis returns a human-readable analysis report.
-func FormatAnalysis(r AnalyzeResult) string {
-	s := fmt.Sprintf("Log Analysis: %s\nTotal lines: %d | Errors: %d | Warnings: %d\n",
-		r.Service, r.TotalLines, r.ErrorCount, r.WarningCount)
-
-	if len(r.Issues) == 0 {
-		s += "\nNo known error patterns detected."
-		return s
-	}
-
-	s += fmt.Sprintf("\nDetected %d issue type(s):\n", len(r.Issues))
-	for _, issue := range r.Issues {
-		s += fmt.Sprintf("\n[%s] %s (%d occurrences)\n", issue.Level, issue.Description, issue.Count)
-		s += fmt.Sprintf("  Category: %s\n", issue.Category)
-		s += fmt.Sprintf("  Action: %s\n", issue.Action)
-		if issue.Example != "" {
-			s += fmt.Sprintf("  Example: %s\n", issue.Example)
-		}
-	}
-
-	return s
-}

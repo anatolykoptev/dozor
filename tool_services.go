@@ -120,8 +120,8 @@ func userServicesStatus(ctx context.Context, cfg engine.Config, singleService st
 			if strings.HasPrefix(line, "MemoryCurrent=") {
 				mem := strings.TrimPrefix(line, "MemoryCurrent=")
 				if mem != "" && mem != "[not set]" && mem != "18446744073709551615" {
-					if mb, ok := engine.BytesToMB(mem); ok {
-						fmt.Fprintf(&b, "  Memory: %.1f MB\n", mb)
+					if mb, ok := engine.FormatBytesMB(mem); ok {
+						fmt.Fprintf(&b, "  Memory: %s\n", mb)
 					}
 				}
 			}
@@ -138,6 +138,7 @@ func userServiceRestart(ctx context.Context, cfg engine.Config, service string) 
 		return fmt.Sprintf("Failed to restart %s: %s", service, res.Output())
 	}
 
+	// Verify it started
 	cmd = userCmd(cfg, fmt.Sprintf("is-active %s", service))
 	res = agent.ExecuteCommand(ctx, cmd)
 	state := strings.TrimSpace(res.Stdout)
@@ -172,4 +173,3 @@ func userServiceLogs(ctx context.Context, cfg engine.Config, service string, lin
 	}
 	return fmt.Sprintf("Logs for %s (last %d lines):\n\n%s", service, lines, output)
 }
-

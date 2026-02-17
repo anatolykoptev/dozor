@@ -267,32 +267,3 @@ func (c *SecurityCollector) checkUpstreamVulns(_ context.Context) []SecurityIssu
 	return nil
 }
 
-// FormatSecurityReport formats security issues as a human-readable report.
-func FormatSecurityReport(issues []SecurityIssue) string {
-	if len(issues) == 0 {
-		return "Security Audit: No issues detected."
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "Security Audit: %d issue(s) found\n", len(issues))
-
-	// Group by category
-	categories := make(map[string][]SecurityIssue)
-	for _, issue := range issues {
-		categories[issue.Category] = append(categories[issue.Category], issue)
-	}
-
-	for cat, catIssues := range categories {
-		fmt.Fprintf(&b, "\n## %s\n", strings.ToUpper(cat))
-		for _, issue := range catIssues {
-			fmt.Fprintf(&b, "  [%s] %s\n", issue.Level, issue.Title)
-			fmt.Fprintf(&b, "    %s\n", issue.Description)
-			fmt.Fprintf(&b, "    Fix: %s\n", issue.Remediation)
-			if issue.Evidence != "" {
-				fmt.Fprintf(&b, "    Evidence: %s\n", issue.Evidence)
-			}
-		}
-	}
-
-	return b.String()
-}

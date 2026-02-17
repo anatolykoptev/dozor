@@ -26,13 +26,15 @@ var blockedPatterns = []*regexp.Regexp{
 
 	// Shell eval/exec/source
 	regexp.MustCompile(`(?i)\beval\s`),
-	regexp.MustCompile(`(?i)^exec\s`),
+	regexp.MustCompile(`(?i)\bexec\s`),
 	regexp.MustCompile(`(?i)\bsource\s`),
 	regexp.MustCompile(`(?i)\.\s+/`),
 
 	// Write redirects to home
 	regexp.MustCompile(`>\s*~/`),
 	regexp.MustCompile(`>>\s*~/`),
+	// Write redirects to system paths (> / and >> /) are checked separately
+	// to allow 2>/dev/null
 
 	// Remote code execution
 	regexp.MustCompile(`(?i)curl.*\|\s*(bash|sh|zsh|python|perl)`),
@@ -101,9 +103,12 @@ func IsCommandAllowed(command string) (bool, string) {
 
 	// Check write redirects to system paths, allowing /dev/null
 	if redirectAppendSystemRe.MatchString(cmd) {
+		// >> /anything is always blocked
 		return false, "blocked: append redirect to system path"
 	}
 	if redirectToSystemRe.MatchString(cmd) || strings.HasPrefix(cmd, ">/") {
+		// Has redirect to system path — check if it's only /dev/null
+		// Remove all 2>/dev/null and >/dev/null occurrences, then re-check
 		cleaned := devNullRe.ReplaceAllString(cmd, "")
 		if redirectToSystemRe.MatchString(cleaned) || strings.HasPrefix(cleaned, ">/") {
 			return false, "blocked: write redirect to system path"
