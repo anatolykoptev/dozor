@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
 
 env:
-  REMOTE_HOST: krolik
-  REMOTE_DIR: ~/dozor
   BINARY_NAME: dozor
+  INSTALL_DIR: /home/krolik/.local/bin
+  SERVICE_USER: krolik
 
 jobs:
   deploy:
@@ -38,30 +38,32 @@ jobs:
           ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
           cat > ~/.ssh/config << EOF
-          Host krolik
+          Host server
             HostName $SSH_HOST
             User $SSH_USER
             IdentityFile ~/.ssh/id_rsa
             StrictHostKeyChecking no
           EOF
 
-      - name: Sync source and binary
+      - name: Deploy binary
         run: |
-          rsync -avz --delete \
-            --exclude '.git' \
-            --exclude '.github' \
-            --exclude '.env' \
-            ./ krolik:$REMOTE_DIR/
+          scp $BINARY_NAME server:/tmp/$BINARY_NAME
+          ssh server "
+            sudo systemctl --user -M $SERVICE_USER@ stop $BINARY_NAME || true
+            sudo cp /tmp/$BINARY_NAME $INSTALL_DIR/$BINARY_NAME
+            sudo chown $SERVICE_USER:$SERVICE_USER $INSTALL_DIR/$BINARY_NAME
+            sudo chmod +x $INSTALL_DIR/$BINARY_NAME
+            sudo systemctl --user -M $SERVICE_USER@ start $BINARY_NAME
+            rm /tmp/$BINARY_NAME
+          "
 
-      - name: Install binary
+      - name: Health check
         run: |
-          ssh krolik "mkdir -p ~/.local/bin && cp $REMOTE_DIR/$BINARY_NAME ~/.local/bin/$BINARY_NAME && chmod +x ~/.local/bin/$BINARY_NAME"
+          sleep 2
+          ssh server "sudo systemctl --user -M $SERVICE_USER@ is-active $BINARY_NAME"
+          ssh server "curl -sf http://localhost:8765/health"
 
-      - name: Verify
-        run: |
-          ssh krolik "~/.local/bin/dozor check 2>&1 | head -20" || echo "Check completed"
-
-      - name: Show version
+      - name: Show status
         if: always()
         run: |
-          ssh krolik "ls -la ~/.local/bin/dozor"
+          ssh server "sudo systemctl --user -M $SERVICE_USER@ status $BINARY_NAME --no-pager" || true
