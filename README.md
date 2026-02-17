@@ -25,7 +25,7 @@ AI-native server monitoring agent. Unlike traditional monitoring tools (Promethe
 - **Security Audit** — Exposed ports, dangerous mounts, bot scanner detection
 - **Background Deploy** — Non-blocking deploys with status tracking
 - **Binary Updates** — Check and install updates for ~60 popular CLI tools from GitHub releases
-- **Command Execution** — Allowlist/blocklist validated shell commands
+- **Command Execution** — Blocklist-validated shell commands
 - **Zero Config** — Auto-detects compose path and services, works out of the box
 
 ## Quick Start
@@ -78,6 +78,8 @@ cp .env.example .env  # optional — works without it
 | `server_cleanup` | Scan/clean system resources (docker, go, npm, pip, caches, journals) |
 | `server_services` | Manage user-level systemd services (status, restart, logs) |
 | `server_updates` | Check and install updates for CLI binaries from GitHub releases |
+| `server_remote` | Manage remote server services (status, restart, logs via SSH+sudo) |
+| `server_remote_exec` | Execute validated commands on remote server via SSH |
 
 ### Inspection Modes
 
@@ -145,8 +147,7 @@ Dozor detects common error patterns across any service:
 
 Defense-in-depth command validation:
 
-- **Allowlist** — Only safe commands (docker, ps, df, free, systemctl, etc.)
-- **Blocklist** — Destructive commands, injection patterns, sensitive files
+- **Blocklist** — Blocks destructive commands, injection patterns, sensitive file access
 - **Input Sanitization** — Service names, deploy IDs, durations validated via regex
 - **Shell Escaping** — Single-quote wrapping for all interpolated values
 - **No Shell Injection** — Process groups with proper signal handling
@@ -156,6 +157,7 @@ Defense-in-depth command validation:
 ```
 dozor/
 ├── main.go                     # Entry point: serve/check/watch
+├── config.go                   # CLI config & flag parsing
 ├── register.go                 # MCP tool registration
 ├── tool_inspect.go             # server_inspect (10 modes)
 ├── tool_triage.go              # server_triage
@@ -166,17 +168,28 @@ dozor/
 ├── tool_cleanup.go             # server_cleanup
 ├── tool_services.go            # server_services
 ├── tool_updates.go             # server_updates
+├── tool_remote.go              # server_remote
+├── tool_remote_exec.go         # server_remote_exec
 └── internal/engine/
     ├── agent.go                # Orchestrator
     ├── config.go               # Environment config
     ├── types.go                # Data structures
+    ├── inputs.go               # Input parsing & validation helpers
+    ├── format.go               # Output formatting utilities
+    ├── sizeparse.go            # Human-readable size parsing
     ├── transport.go            # Local/SSH execution + compose auto-detect
+    ├── docker.go               # Docker container operations
     ├── status.go               # Docker status + auto-discovery
+    ├── systemd.go              # Systemd service operations
+    ├── overview.go             # System overview (memory, disk, load)
     ├── resources.go            # CPU/memory/disk
     ├── logs.go                 # Log collection & parsing
     ├── log_analyzer.go         # Error pattern analysis
+    ├── analysis.go             # Advanced error analysis
+    ├── triage.go               # Auto-triage orchestration
     ├── alerts.go               # Alert generation
-    ├── cleanup.go              # System cleanup (docker, go, npm, pip, caches)
+    ├── cleanup.go              # System cleanup orchestrator
+    ├── cleanup_targets.go      # Cleanup target definitions
     ├── security.go             # Security audit
     ├── remote.go               # Remote server monitoring
     ├── watch.go                # Periodic monitoring + webhooks
