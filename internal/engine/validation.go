@@ -6,72 +6,85 @@ import (
 	"strings"
 )
 
-var allowedCommands = []*regexp.Regexp{
-	regexp.MustCompile(`^docker\s+(ps|logs|inspect|stats|top|images|info|version)(\s|$)`),
-	regexp.MustCompile(`^docker\s+compose\s+(ps|logs|config|images|top|version)(\s|$)`),
-	regexp.MustCompile(`^(cat|head|tail)\s+/var/log/[a-zA-Z0-9._/-]+$`),
-	regexp.MustCompile(`^(ls|ll)\s+(-[lah]+\s+)?(/var/log/|~/|/home/)[a-zA-Z0-9._/-]*$`),
-	regexp.MustCompile(`^(df|free|uptime|uname|hostname|whoami|pwd|date)(\s+-[a-z]+)?$`),
-	regexp.MustCompile(`^echo\s+['"][a-zA-Z0-9_]+['"]$`),
-	regexp.MustCompile(`^(du)\s+-[sh]+\s+(/var/log/|~/|/tmp/)[a-zA-Z0-9._/-]*$`),
-	regexp.MustCompile(`^(ps)\s+(aux|ef|-ef)$`),
-	regexp.MustCompile(`^(netstat|ss)\s+-[tlnup]+$`),
-	regexp.MustCompile(`^lsof\s+-i\s*$`),
-	regexp.MustCompile(`^systemctl\s+(status|is-active|is-enabled)\s+[a-zA-Z0-9_.-]+$`),
-	regexp.MustCompile(`^systemctl\s+list-units(\s+--type=[a-z]+)?$`),
-	regexp.MustCompile(`^journalctl\s+(-u\s+[a-zA-Z0-9_.-]+|--since\s+"[^"]+"|--no-pager|-n\s+\d+|\s)+$`),
-	regexp.MustCompile(`^ping\s+-c\s+\d+\s+[a-zA-Z0-9.-]+$`),
-	regexp.MustCompile(`^(dig|nslookup|host)\s+[a-zA-Z0-9.-]+$`),
-	regexp.MustCompile(`^cat\s+~/[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+\.(yml|yaml|json|conf|env\.example|txt|log)$`),
-	regexp.MustCompile(`^cat\s+/var/log/[a-zA-Z0-9._/-]+$`),
-	regexp.MustCompile(`^grep\s+(-[ivnc]+\s+)?["'][^"']+["']\s+(/var/log/|~/)[a-zA-Z0-9._/-]+$`),
-	regexp.MustCompile(`^find\s+~/[a-zA-Z0-9_/-]*\s+-name\s+["'][a-zA-Z0-9.*_-]+["'](\s+-type\s+[fd])?$`),
-}
-
 var blockedPatterns = []*regexp.Regexp{
+	// Destructive file operations
 	regexp.MustCompile(`(?i)rm\s+(-r|-f|-rf|--recursive|--force)`),
-	regexp.MustCompile(`(?i)>\s*/dev/`),
 	regexp.MustCompile(`(?i)mkfs`),
 	regexp.MustCompile(`(?i)dd\s+if=`),
+
+	// Permissions (only block recursive chmod on root and all chown)
 	regexp.MustCompile(`(?i)chmod\s+(-R\s+)?[0-7]{3,4}\s+/`),
 	regexp.MustCompile(`(?i)chown\s+(-R\s+)?`),
+
+	// Fork bomb
 	regexp.MustCompile(`(?i):\(\)\s*\{`),
-	regexp.MustCompile(`\$\(`),
-	regexp.MustCompile(`\$\{`),
-	regexp.MustCompile("`"),
-	regexp.MustCompile(`\$\w+`),
+
+	// Dangerous chained commands
 	regexp.MustCompile(`(?i);\s*(rm|dd|mkfs|chmod|chown|mv|cp\s+-r|tar|zip|curl|wget|python|perl|ruby|node|bash|sh)`),
 	regexp.MustCompile(`(?i)\|\s*(rm|dd|mkfs|chmod|chown|bash|sh|zsh|python|perl|ruby|node|xargs)`),
 	regexp.MustCompile(`(?i)&&\s*(rm|dd|mkfs|chmod|chown|mv|cp\s+-r)`),
-	regexp.MustCompile(`(?i)eval\s`),
-	regexp.MustCompile(`(?i)exec\s`),
-	regexp.MustCompile(`(?i)source\s`),
+
+	// Shell eval/exec/source
+	regexp.MustCompile(`(?i)\beval\s`),
+	regexp.MustCompile(`(?i)\bexec\s`),
+	regexp.MustCompile(`(?i)\bsource\s`),
 	regexp.MustCompile(`(?i)\.\s+/`),
-	regexp.MustCompile(`>\s*/`),
-	regexp.MustCompile(`>>\s*/`),
+
+	// Write redirects to home
 	regexp.MustCompile(`>\s*~/`),
 	regexp.MustCompile(`>>\s*~/`),
+
+	// Remote code execution
 	regexp.MustCompile(`(?i)curl.*\|\s*(bash|sh|zsh|python|perl)`),
 	regexp.MustCompile(`(?i)wget.*\|\s*(bash|sh|zsh|python|perl)`),
 	regexp.MustCompile(`(?i)curl.*-o\s`),
 	regexp.MustCompile(`(?i)wget.*-O\s`),
+
+	// Path traversal
 	regexp.MustCompile(`\.\.`),
+
+	// Sensitive files
 	regexp.MustCompile(`/etc/shadow`),
 	regexp.MustCompile(`/etc/passwd`),
 	regexp.MustCompile(`\.ssh/`),
 	regexp.MustCompile(`\.gnupg/`),
 	regexp.MustCompile(`\.aws/`),
 	regexp.MustCompile(`\.kube/config`),
-	regexp.MustCompile(`(?i)grep\s+-r`),
-	regexp.MustCompile(`(?i)find\s+/`),
+
+	// Dangerous exec patterns
 	regexp.MustCompile(`(?i)-exec\s`),
 	regexp.MustCompile(`(?i)-delete`),
-	regexp.MustCompile(`(?i)nc\s`),
-	regexp.MustCompile(`(?i)ncat\s`),
-	regexp.MustCompile(`(?i)socat\s`),
+
+	// Network tools (potential reverse shells)
+	regexp.MustCompile(`(?i)\bnc\s`),
+	regexp.MustCompile(`(?i)\bncat\s`),
+	regexp.MustCompile(`(?i)\bsocat\s`),
+
+	// Cron modification
+	regexp.MustCompile(`(?i)crontab\s+-[re]`),
+
+	// Process killing
+	regexp.MustCompile(`(?i)\bkill\b`),
+
+	// System reboot/shutdown
+	regexp.MustCompile(`(?i)\breboot\b|\bshutdown\b|\bhalt\b|\bpoweroff\b`),
+
+	// Firewall modification
+	regexp.MustCompile(`(?i)\biptables\b|\bufw\b|\bnft\b`),
+
+	// User management
+	regexp.MustCompile(`(?i)\buseradd\b|\buserdel\b|\busermod\b|\bpasswd\b`),
+
+	// Mount operations
+	regexp.MustCompile(`(?i)\bmount\b|\bumount\b`),
 }
 
-// IsCommandAllowed checks if a command passes the allowlist/blocklist.
+// redirectToSystemPath matches > /path or >> /path but not 2>/dev/null or >/dev/null.
+var redirectToSystemRe = regexp.MustCompile(`[^2]>\s*/|^>\s*/`)
+var redirectAppendSystemRe = regexp.MustCompile(`>>\s*/`)
+var devNullRe = regexp.MustCompile(`>\s*/dev/null`)
+
+// IsCommandAllowed checks if a command passes the blocklist.
 // Returns (allowed, reason).
 func IsCommandAllowed(command string) (bool, string) {
 	cmd := strings.TrimSpace(command)
@@ -79,21 +92,25 @@ func IsCommandAllowed(command string) (bool, string) {
 		return false, "empty command"
 	}
 
-	// Check blocklist first
+	// Check blocklist
 	for _, p := range blockedPatterns {
 		if p.MatchString(cmd) {
 			return false, fmt.Sprintf("blocked pattern: %s", p.String())
 		}
 	}
 
-	// Check allowlist
-	for _, p := range allowedCommands {
-		if p.MatchString(cmd) {
-			return true, ""
+	// Check write redirects to system paths, allowing /dev/null
+	if redirectAppendSystemRe.MatchString(cmd) {
+		return false, "blocked: append redirect to system path"
+	}
+	if redirectToSystemRe.MatchString(cmd) || strings.HasPrefix(cmd, ">/") {
+		cleaned := devNullRe.ReplaceAllString(cmd, "")
+		if redirectToSystemRe.MatchString(cleaned) || strings.HasPrefix(cleaned, ">/") {
+			return false, "blocked: write redirect to system path"
 		}
 	}
 
-	return false, "command not in allowlist"
+	return true, ""
 }
 
 var serviceNameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_.-]*$`)

@@ -17,6 +17,30 @@ func (c Config) HasRemote() bool {
 	return c.RemoteHost != "" || c.RemoteURL != ""
 }
 
+// HasUserServices returns true if user-level systemd services are configured.
+func (c Config) HasUserServices() bool {
+	return len(c.UserServices) > 0 && c.UserServicesUser != ""
+}
+
+// UserServiceNames returns just the names of configured user services.
+func (c Config) UserServiceNames() []string {
+	names := make([]string, len(c.UserServices))
+	for i, s := range c.UserServices {
+		names[i] = s.Name
+	}
+	return names
+}
+
+// FindUserService returns the UserService by name, or nil if not found.
+func (c Config) FindUserService(name string) *UserService {
+	for _, s := range c.UserServices {
+		if s.Name == name {
+			return &s
+		}
+	}
+	return nil
+}
+
 // Config holds all dozor configuration.
 type Config struct {
 	Host        string
@@ -44,6 +68,9 @@ type Config struct {
 
 	DiskThreshold float64
 	DiskCritical  float64
+
+	UserServices     []UserService
+	UserServicesUser string
 }
 
 // IsLocal returns true if the host is a local machine.
@@ -75,7 +102,39 @@ func Init() Config {
 		RequiredAuthVars: envList("DOZOR_REQUIRED_AUTH_VARS", ""),
 		DiskThreshold:    envFloat("DOZOR_DISK_THRESHOLD", 80),
 		DiskCritical:     envFloat("DOZOR_DISK_CRITICAL", 95),
+		UserServices:     parseUserServices(env("DOZOR_USER_SERVICES", "")),
+		UserServicesUser: env("DOZOR_USER_SERVICES_USER", ""),
 	}
+}
+
+// parseUserServices parses "name:port,name:port" format.
+func parseUserServices(raw string) []UserService {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	services := make([]UserService, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		svc := UserService{}
+		if idx := strings.LastIndex(p, ":"); idx > 0 {
+			svc.Name = strings.TrimSpace(p[:idx])
+			if port, err := strconv.Atoi(strings.TrimSpace(p[idx+1:])); err == nil {
+				svc.Port = port
+			} else {
+				svc.Name = p
+			}
+		} else {
+			svc.Name = p
+		}
+		if svc.Name != "" {
+			services = append(services, svc)
+		}
+	}
+	return services
 }
 
 func env(key, def string) string {

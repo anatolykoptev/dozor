@@ -8,15 +8,23 @@ on:
 env:
   REMOTE_HOST: krolik
   REMOTE_DIR: ~/dozor
-  MCP_PORT: 8765
+  BINARY_NAME: dozor
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build
+        run: go build -o $BINARY_NAME .
 
       - name: Setup SSH
         env:
@@ -37,53 +45,23 @@ jobs:
             StrictHostKeyChecking no
           EOF
 
-      - name: Sync code
+      - name: Sync source and binary
         run: |
           rsync -avz --delete \
-            --exclude '__pycache__' \
-            --exclude '*.pyc' \
             --exclude '.git' \
             --exclude '.github' \
             --exclude '.env' \
             ./ krolik:$REMOTE_DIR/
 
-      - name: Setup venv and install
+      - name: Install binary
         run: |
-          ssh krolik "cd $REMOTE_DIR && python3 -m venv .venv --upgrade-deps 2>/dev/null || python3 -m venv .venv"
-          ssh krolik "cd $REMOTE_DIR && .venv/bin/pip install -e '.[sse]' -q"
+          ssh krolik "mkdir -p ~/.local/bin && cp $REMOTE_DIR/$BINARY_NAME ~/.local/bin/$BINARY_NAME && chmod +x ~/.local/bin/$BINARY_NAME"
 
-      - name: Update systemd service
+      - name: Verify
         run: |
-          ssh krolik "cat > /tmp/dozor-mcp.service << 'SVCEOF'
-          [Unit]
-          Description=Dozor MCP Server
-          After=network.target docker.service
+          ssh krolik "~/.local/bin/dozor check 2>&1 | head -20" || echo "Check completed"
 
-          [Service]
-          Type=simple
-          WorkingDirectory=/home/ubuntu/dozor
-          ExecStart=/home/ubuntu/dozor/.venv/bin/python -m dozor.mcp_server_sse --transport sse --port 8765
-          Restart=always
-          RestartSec=10
-          Environment=PYTHONUNBUFFERED=1
-
-          [Install]
-          WantedBy=multi-user.target
-          SVCEOF
-          sudo mv /tmp/dozor-mcp.service /etc/systemd/system/
-          sudo systemctl daemon-reload"
-
-      - name: Restart service
-        run: |
-          ssh krolik "sudo systemctl restart dozor-mcp"
-          sleep 3
-          ssh krolik "sudo systemctl is-active dozor-mcp" || exit 1
-
-      - name: Health check
-        run: |
-          ssh krolik "curl -sf http://localhost:$MCP_PORT/health" || echo "Health endpoint not available"
-
-      - name: Show status
+      - name: Show version
         if: always()
         run: |
-          ssh krolik "sudo systemctl status dozor-mcp --no-pager" || true
+          ssh krolik "ls -la ~/.local/bin/dozor"

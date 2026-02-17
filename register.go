@@ -10,4 +10,5 @@ func registerTools(server *mcp.Server) {
 	registerDeploy(server)
 	registerPrune(server)
 	registerCleanup(server)
+	registerServices(server)
 }

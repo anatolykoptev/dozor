@@ -35,6 +35,11 @@ func NewAgent(cfg Config) *ServerAgent {
 	}
 }
 
+// GetConfig returns the agent configuration.
+func (a *ServerAgent) GetConfig() Config {
+	return a.cfg
+}
+
 // resolveServices returns the services list: explicit > config > auto-discover.
 func (a *ServerAgent) resolveServices(ctx context.Context, services []string) []string {
 	if len(services) > 0 {

@@ -11,7 +11,7 @@ import (
 func registerExec(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "server_exec",
-		Description: "Execute a validated shell command on the server. Commands are checked against an allowlist for safety.",
+		Description: "Execute a validated shell command on the server. Commands are checked against a blocklist for safety.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ExecInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		if input.Command == "" {
 			return nil, engine.TextOutput{}, fmt.Errorf("command is required")

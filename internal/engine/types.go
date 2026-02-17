@@ -230,6 +230,19 @@ type TriageInput struct {
 	Services []string `json:"services,omitempty" jsonschema:"Specific services to triage (all if omitted)"`
 }
 
+// UserService represents a user-level systemd service with optional port.
+type UserService struct {
+	Name string `json:"name"`
+	Port int    `json:"port,omitempty"` // 0 if not specified
+}
+
+// ServicesInput is the MCP tool input for server_services.
+type ServicesInput struct {
+	Action  string `json:"action" jsonschema:"Action: status, restart, logs, restart-all"`
+	Service string `json:"service,omitempty" jsonschema:"Service name (required for restart, logs)"`
+	Lines   int    `json:"lines,omitempty" jsonschema:"Number of log lines (default 50, for logs action)"`
+}
+
 // CleanupTarget represents a single cleanup target result.
 type CleanupTarget struct {
 	Name      string  `json:"name"`
