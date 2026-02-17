@@ -65,7 +65,7 @@ func CheckRemoteServer(ctx context.Context, cfg Config) *RemoteServerStatus {
 
 		// Check systemd services
 		for _, svc := range cfg.RemoteServices {
-			res := t.ExecuteUnsafe(ctx, fmt.Sprintf("systemctl is-active %s 2>/dev/null", svc))
+			res := t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null", svc))
 			state := strings.TrimSpace(res.Stdout)
 			if state == "" {
 				state = "unknown"
@@ -189,7 +189,7 @@ func RemoteServiceStatus(ctx context.Context, cfg Config) string {
 			if strings.HasPrefix(line, "MemoryCurrent=") {
 				mem := strings.TrimPrefix(line, "MemoryCurrent=")
 				if mem != "" && mem != "[not set]" && mem != "18446744073709551615" {
-					if mb, ok := bytesToMBRemote(mem); ok {
+					if mb, ok := BytesToMB(mem); ok {
 						fmt.Fprintf(&b, "  Memory: %.1f MB\n", mb)
 					}
 				}
@@ -231,22 +231,6 @@ func RemoteLogs(ctx context.Context, cfg Config, service string, lines int) stri
 		return fmt.Sprintf("No logs found for %s", service)
 	}
 	return fmt.Sprintf("Logs for %s on %s (last %d lines):\n\n%s", service, cfg.RemoteHost, lines, output)
-}
-
-// bytesToMBRemote converts a byte count string to float64 MB.
-func bytesToMBRemote(s string) (float64, bool) {
-	var n int64
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int64(c-'0')
-		} else {
-			break
-		}
-	}
-	if n <= 0 {
-		return 0, false
-	}
-	return float64(n) / (1024 * 1024), true
 }
 
 // RemoteServiceNames returns the list of configured remote service names.

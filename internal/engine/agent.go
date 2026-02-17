@@ -513,7 +513,7 @@ func (a *ServerAgent) GetSystemdStatus(ctx context.Context, services []string) s
 			if strings.HasPrefix(line, "MemoryCurrent=") {
 				mem := strings.TrimPrefix(line, "MemoryCurrent=")
 				if mem != "" && mem != "[not set]" && mem != "18446744073709551615" {
-					if mb, ok := bytesToMB(mem); ok {
+					if mb, ok := BytesToMB(mem); ok {
 						fmt.Fprintf(&b, "  Memory: %.1f MB\n", mb)
 					}
 				}
@@ -560,14 +560,15 @@ func (a *ServerAgent) systemctlShow(ctx context.Context, svc, properties string)
 	return res.Stdout
 }
 
-// bytesToMB converts a byte count string to megabytes.
-func bytesToMB(s string) (float64, bool) {
+// BytesToMB converts a byte count string to megabytes.
+// Stops at the first non-digit character (lenient for trailing whitespace).
+func BytesToMB(s string) (float64, bool) {
 	var n int64
 	for _, c := range s {
 		if c >= '0' && c <= '9' {
 			n = n*10 + int64(c-'0')
 		} else {
-			return 0, false
+			break
 		}
 	}
 	if n <= 0 {

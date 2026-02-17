@@ -120,8 +120,8 @@ func userServicesStatus(ctx context.Context, cfg engine.Config, singleService st
 			if strings.HasPrefix(line, "MemoryCurrent=") {
 				mem := strings.TrimPrefix(line, "MemoryCurrent=")
 				if mem != "" && mem != "[not set]" && mem != "18446744073709551615" {
-					if mb, ok := bytesToMBStr(mem); ok {
-						fmt.Fprintf(&b, "  Memory: %s\n", mb)
+					if mb, ok := engine.BytesToMB(mem); ok {
+						fmt.Fprintf(&b, "  Memory: %.1f MB\n", mb)
 					}
 				}
 			}
@@ -173,19 +173,3 @@ func userServiceLogs(ctx context.Context, cfg engine.Config, service string, lin
 	return fmt.Sprintf("Logs for %s (last %d lines):\n\n%s", service, lines, output)
 }
 
-// bytesToMBStr converts bytes string to human-readable MB string.
-func bytesToMBStr(s string) (string, bool) {
-	var n int64
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int64(c-'0')
-		} else {
-			break
-		}
-	}
-	if n == 0 {
-		return "", false
-	}
-	mb := float64(n) / 1024.0 / 1024.0
-	return fmt.Sprintf("%.1f MB", mb), true
-}
