@@ -70,7 +70,10 @@ func (t *discoverTool) Execute(ctx context.Context, args map[string]any) (string
 	agentID, _ := args["agent_id"].(string)
 	if agentID == "" {
 		available := t.mgr.ListAgents()
-		return "", fmt.Errorf("agent_id is required; available agents: %s", strings.Join(available, ", "))
+		if len(available) == 0 {
+			return "No remote agents configured. agent_id is required.", nil
+		}
+		return fmt.Sprintf("agent_id is required. Available agents: %s. Please retry with one of these IDs.", strings.Join(available, ", ")), nil
 	}
 
 	card, err := t.mgr.Discover(ctx, agentID)
@@ -116,7 +119,10 @@ func (t *callTool) Execute(ctx context.Context, args map[string]any) (string, er
 	message, _ := args["message"].(string)
 	if agentID == "" {
 		available := t.mgr.ListAgents()
-		return "", fmt.Errorf("agent_id is required; available agents: %s", strings.Join(available, ", "))
+		if len(available) == 0 {
+			return "No remote agents configured. agent_id is required.", nil
+		}
+		return fmt.Sprintf("agent_id is required. Available agents: %s. Please retry a2a_call with agent_id set to one of these values.", strings.Join(available, ", ")), nil
 	}
 	if message == "" {
 		return "", fmt.Errorf("message is required")
