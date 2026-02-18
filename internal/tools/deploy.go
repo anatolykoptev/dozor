@@ -10,11 +10,23 @@ import (
 
 func registerDeploy(server *mcp.Server, agent *engine.ServerAgent) {
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "server_deploy",
-		Description: "Deploy or check deploy status. If deploy_id is provided, checks existing deploy status. Otherwise starts a new background deployment (pulls, builds, docker compose up).",
+		Name: "server_deploy",
+		Description: `Deploy or check deploy status. Actions:
+- deploy (default): start a new background deployment (pulls, builds, docker compose up)
+- status: check status of an existing deploy by deploy_id
+- health: wait 10s then verify all services are running (post-deploy check)`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.DeployInput) (*mcp.CallToolResult, engine.TextOutput, error) {
-		// Check status mode
-		if input.DeployID != "" {
+		// Explicit health check action
+		if input.Action == "health" {
+			result := agent.CheckDeployHealth(ctx, input.Services)
+			return nil, engine.TextOutput{Text: result}, nil
+		}
+
+		// Check status mode (legacy: deploy_id provided, or action=status)
+		if input.DeployID != "" || input.Action == "status" {
+			if input.DeployID == "" {
+				return nil, engine.TextOutput{}, fmt.Errorf("deploy_id is required for status action")
+			}
 			if ok, reason := engine.ValidateDeployID(input.DeployID); !ok {
 				return nil, engine.TextOutput{}, fmt.Errorf("invalid deploy ID: %s", reason)
 			}
@@ -46,7 +58,8 @@ func registerDeploy(server *mcp.Server, agent *engine.ServerAgent) {
 			return nil, engine.TextOutput{}, fmt.Errorf("deploy failed: %s", result.Error)
 		}
 
-		return nil, engine.TextOutput{Text: fmt.Sprintf("Deploy started.\nID: %s\nLog: %s\n\nCheck status with server_deploy({deploy_id: %q}).",
+		return nil, engine.TextOutput{Text: fmt.Sprintf(
+			"Deploy started.\nID: %s\nLog: %s\n\nCheck status: server_deploy({deploy_id: %q})\nVerify health: server_deploy({action: \"health\"})",
 			result.DeployID, result.LogFile, result.DeployID)}, nil
 	})
 }

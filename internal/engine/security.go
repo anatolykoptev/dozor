@@ -261,9 +261,176 @@ func (c *SecurityCollector) checkReconnaissance(ctx context.Context) []SecurityI
 	return issues
 }
 
-func (c *SecurityCollector) checkUpstreamVulns(_ context.Context) []SecurityIssue {
-	// Static known vulnerabilities list - checked against running services
-	// This is a lightweight version; the Python code had extensive MOLT-xxx entries
-	return nil
+func (c *SecurityCollector) checkUpstreamVulns(ctx context.Context) []SecurityIssue {
+	var issues []SecurityIssue
+
+	// Check for available security updates via apt
+	res := c.transport.ExecuteUnsafe(ctx, "apt list --upgradable 2>/dev/null | grep -i security")
+	if res.Success && strings.TrimSpace(res.Stdout) != "" {
+		lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
+		count := 0
+		for _, l := range lines {
+			if strings.TrimSpace(l) != "" {
+				count++
+			}
+		}
+		if count > 0 {
+			issues = append(issues, SecurityIssue{
+				Level:       AlertWarning,
+				Category:    "packages",
+				Title:       fmt.Sprintf("%d security package update(s) available", count),
+				Description: fmt.Sprintf("apt reports %d upgradable packages with security fixes", count),
+				Remediation: "Run: sudo apt update && sudo apt upgrade -y",
+			})
+		}
+	}
+
+	// Check SSH configuration
+	issues = append(issues, c.checkSSHConfig(ctx)...)
+
+	// Check .env file permissions
+	issues = append(issues, c.checkEnvFilePermissions(ctx)...)
+
+	// Check Docker socket permissions
+	issues = append(issues, c.checkDockerSocket(ctx)...)
+
+	// Check for zombie processes
+	issues = append(issues, c.checkZombieProcesses(ctx)...)
+
+	return issues
+}
+
+func (c *SecurityCollector) checkSSHConfig(ctx context.Context) []SecurityIssue {
+	var issues []SecurityIssue
+
+	res := c.transport.ExecuteUnsafe(ctx, "sshd -T 2>/dev/null")
+	if !res.Success {
+		return issues
+	}
+
+	config := strings.ToLower(res.Stdout)
+
+	if strings.Contains(config, "permitrootlogin yes") {
+		issues = append(issues, SecurityIssue{
+			Level:       AlertWarning,
+			Category:    "ssh",
+			Title:       "SSH PermitRootLogin is enabled",
+			Description: "Direct SSH login as root is allowed",
+			Remediation: "Set PermitRootLogin no in /etc/ssh/sshd_config and restart sshd",
+		})
+	}
+
+	if strings.Contains(config, "passwordauthentication yes") {
+		issues = append(issues, SecurityIssue{
+			Level:       AlertWarning,
+			Category:    "ssh",
+			Title:       "SSH password authentication is enabled",
+			Description: "SSH allows password-based authentication (brute-force risk)",
+			Remediation: "Set PasswordAuthentication no in /etc/ssh/sshd_config; use SSH keys only",
+		})
+	}
+
+	if strings.Contains(config, "permitemptypasswords yes") {
+		issues = append(issues, SecurityIssue{
+			Level:       AlertCritical,
+			Category:    "ssh",
+			Title:       "SSH allows empty passwords",
+			Description: "Accounts with empty passwords can log in via SSH",
+			Remediation: "Set PermitEmptyPasswords no in /etc/ssh/sshd_config",
+		})
+	}
+
+	return issues
+}
+
+func (c *SecurityCollector) checkEnvFilePermissions(ctx context.Context) []SecurityIssue {
+	var issues []SecurityIssue
+
+	// Find .env files in home and common project directories
+	res := c.transport.ExecuteUnsafe(ctx, `find ~ /opt /srv 2>/dev/null -maxdepth 4 -name ".env" -o -name ".env.*" 2>/dev/null | head -20`)
+	if !res.Success || strings.TrimSpace(res.Stdout) == "" {
+		return issues
+	}
+
+	for _, path := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		permRes := c.transport.ExecuteUnsafe(ctx, fmt.Sprintf("stat -c '%%a' %s 2>/dev/null", path))
+		if !permRes.Success {
+			continue
+		}
+		perm := strings.TrimSpace(permRes.Stdout)
+		// Warn if world-readable (perms end in non-zero last digit) or group-readable
+		if len(perm) >= 3 {
+			groupPerm := string(perm[len(perm)-2])
+			worldPerm := string(perm[len(perm)-1])
+			if worldPerm != "0" || groupPerm == "4" || groupPerm == "6" || groupPerm == "7" {
+				issues = append(issues, SecurityIssue{
+					Level:       AlertWarning,
+					Category:    "files",
+					Title:       fmt.Sprintf(".env file has permissive permissions (%s): %s", perm, path),
+					Description: "Secrets file is readable by group or world",
+					Remediation: fmt.Sprintf("Run: chmod 600 %s", path),
+					Evidence:    path,
+				})
+			}
+		}
+	}
+
+	return issues
+}
+
+func (c *SecurityCollector) checkDockerSocket(ctx context.Context) []SecurityIssue {
+	var issues []SecurityIssue
+
+	res := c.transport.ExecuteUnsafe(ctx, "ls -la /var/run/docker.sock 2>/dev/null")
+	if !res.Success || strings.TrimSpace(res.Stdout) == "" {
+		return issues
+	}
+
+	line := strings.TrimSpace(res.Stdout)
+	// Check if world-writable (srw-rw-rw- or srwxrwxrwx)
+	if strings.HasPrefix(line, "srw-rw-rw") || strings.HasPrefix(line, "srwxrwxrwx") {
+		issues = append(issues, SecurityIssue{
+			Level:       AlertCritical,
+			Category:    "container",
+			Title:       "Docker socket is world-writable",
+			Description: "Any user on the system can control Docker, enabling full host privilege escalation",
+			Remediation: "Run: sudo chmod 660 /var/run/docker.sock; ensure only docker group members need access",
+		})
+	}
+
+	return issues
+}
+
+func (c *SecurityCollector) checkZombieProcesses(ctx context.Context) []SecurityIssue {
+	var issues []SecurityIssue
+
+	res := c.transport.ExecuteUnsafe(ctx, "ps aux 2>/dev/null | awk '$8 == \"Z\" {print $0}' | grep -v 'STAT'")
+	if !res.Success {
+		return issues
+	}
+
+	lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
+	count := 0
+	for _, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			count++
+		}
+	}
+
+	if count > 0 {
+		issues = append(issues, SecurityIssue{
+			Level:       AlertInfo,
+			Category:    "process",
+			Title:       fmt.Sprintf("%d zombie process(es) detected", count),
+			Description: "Zombie processes are not reclaimed by their parent, indicating a bug in the parent process",
+			Remediation: "Identify the parent process (ppid) and restart it if zombie count grows",
+		})
+	}
+
+	return issues
 }
 

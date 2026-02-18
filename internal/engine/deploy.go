@@ -56,6 +56,35 @@ func (a *ServerAgent) StartDeploy(ctx context.Context, projectPath string, servi
 	}
 }
 
+// CheckDeployHealth verifies all services are running after a deploy.
+// Returns a summary string with OK/FAIL per service.
+func (a *ServerAgent) CheckDeployHealth(ctx context.Context, services []string) string {
+	time.Sleep(10 * time.Second)
+	services = a.resolveServices(ctx, services)
+	if len(services) == 0 {
+		return "Post-deploy check: no services found."
+	}
+
+	statuses := a.status.GetAllStatuses(ctx, services)
+	var b strings.Builder
+	b.WriteString("Post-deploy health:\n")
+	allOK := true
+	for _, s := range statuses {
+		icon := "OK"
+		if s.State != StateRunning {
+			icon = "FAIL"
+			allOK = false
+		}
+		fmt.Fprintf(&b, "  [%s] %s (%s)\n", icon, s.Name, s.State)
+	}
+	if allOK {
+		b.WriteString("All services running after deploy.")
+	} else {
+		b.WriteString("WARNING: some services did not start. Check logs.")
+	}
+	return b.String()
+}
+
 // GetDeployStatus checks a running deploy.
 func (a *ServerAgent) GetDeployStatus(ctx context.Context, deployID string) DeployStatus {
 	logFile := fmt.Sprintf("${TMPDIR:-/tmp}/%s.log", deployID)

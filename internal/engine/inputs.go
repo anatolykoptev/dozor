@@ -7,6 +7,7 @@ type InspectInput struct {
 	Service  string   `json:"service,omitempty" jsonschema:"Service name (required for status, logs modes; optional for analyze)"`
 	Services []string `json:"services,omitempty" jsonschema:"Services to diagnose (all if omitted, only for diagnose mode)"`
 	Lines    int      `json:"lines,omitempty" jsonschema:"Number of log lines (default 100, only for logs mode)"`
+	Filter   string   `json:"filter,omitempty" jsonschema:"Filter log lines by substring (case-insensitive), only for logs mode"`
 }
 
 type ExecInput struct {
@@ -25,6 +26,7 @@ type PruneInput struct {
 }
 
 type DeployInput struct {
+	Action      string   `json:"action,omitempty" jsonschema:"Action: deploy (default), status, health"`
 	DeployID    string   `json:"deploy_id,omitempty" jsonschema:"Deploy ID to check status (if provided, checks existing deploy instead of starting new one)"`
 	ProjectPath string   `json:"project_path,omitempty" jsonschema:"Path to docker-compose project"`
 	Services    []string `json:"services,omitempty" jsonschema:"Specific services to deploy"`
@@ -65,4 +67,30 @@ type RemoteInput struct {
 	Action  string `json:"action" jsonschema:"Action: status (show all remote services), restart (restart a service), logs (view service logs)"`
 	Service string `json:"service,omitempty" jsonschema:"Service name (required for restart and logs actions)"`
 	Lines   int    `json:"lines,omitempty" jsonschema:"Number of log lines (default 50, max 5000, for logs action)"`
+}
+
+// ProbeInput is the MCP tool input for server_probe.
+type ProbeInput struct {
+	URLs      []string `json:"urls" jsonschema:"List of URLs to probe (http:// or https://)"`
+	TimeoutS  int      `json:"timeout_s,omitempty" jsonschema:"Request timeout in seconds (default 10)"`
+}
+
+// CertInput is the MCP tool input for server_cert.
+type CertInput struct {
+	Action   string `json:"action" jsonschema:"Action: list (show all certs) or check (list with expiry warnings)"`
+	WarnDays int    `json:"warn_days,omitempty" jsonschema:"Warn if cert expires within this many days (default 30)"`
+}
+
+// PortsInput is the MCP tool input for server_ports.
+type PortsInput struct{}
+
+// EnvInput is the MCP tool input for server_env.
+type EnvInput struct {
+	Service  string   `json:"service" jsonschema:"Docker Compose service name to inspect"`
+	Required []string `json:"required,omitempty" jsonschema:"List of required environment variable names to check"`
+}
+
+// GitInput is the MCP tool input for server_git.
+type GitInput struct {
+	Path string `json:"path,omitempty" jsonschema:"Path to git repository (default: project path from config)"`
 }

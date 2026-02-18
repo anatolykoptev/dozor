@@ -18,4 +18,11 @@ func RegisterAll(server *mcp.Server, agent *engine.ServerAgent) {
 	registerServices(server, agent)
 	registerUpdates(server, agent)
 	registerRemote(server, agent)
+	// New tools
+	registerProbe(server, agent)
+	registerCert(server, agent)
+	registerPorts(server, agent)
+	registerEnv(server, agent)
+	registerGit(server, agent)
+	// Web tools moved to extension system (pkg/extensions/websearch/)
 }

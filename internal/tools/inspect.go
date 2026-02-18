@@ -64,18 +64,28 @@ func registerInspect(server *mcp.Server, agent *engine.ServerAgent) {
 				return nil, engine.TextOutput{}, fmt.Errorf("lines must be <= 10000")
 			}
 			entries := agent.GetLogs(ctx, input.Service, lines, false)
-			if len(entries) > 50 {
-				entries = entries[len(entries)-50:]
-			}
+			filter := strings.ToLower(input.Filter)
 			var b strings.Builder
-			fmt.Fprintf(&b, "Logs for %s (%d entries):\n\n", input.Service, len(entries))
+			matched := 0
 			for _, e := range entries {
+				if filter != "" {
+					haystack := strings.ToLower(e.Message + e.Raw)
+					if !strings.Contains(haystack, filter) {
+						continue
+					}
+				}
 				if e.Timestamp != nil {
 					fmt.Fprintf(&b, "[%s] ", e.Timestamp.Format("15:04:05"))
 				}
 				fmt.Fprintf(&b, "[%s] %s\n", e.Level, e.Message)
+				matched++
 			}
-			return nil, engine.TextOutput{Text: b.String()}, nil
+			header := fmt.Sprintf("Logs for %s (%d entries", input.Service, matched)
+			if filter != "" {
+				header += fmt.Sprintf(", filter=%q", input.Filter)
+			}
+			header += "):\n\n"
+			return nil, engine.TextOutput{Text: header + b.String()}, nil
 
 		case "analyze":
 			if input.Service == "" {

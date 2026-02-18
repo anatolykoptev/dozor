@@ -178,3 +178,36 @@ func (a *ServerAgent) RemoteExec(ctx context.Context, command string) CommandRes
 	t := newRemoteTransport(a.cfg)
 	return t.Execute(ctx, command)
 }
+
+// ProbeURLs checks HTTP endpoints and returns results.
+func (a *ServerAgent) ProbeURLs(ctx context.Context, urls []string, timeoutSec int) []ProbeResult {
+	return ProbeURLs(ctx, urls, timeoutSec)
+}
+
+// ScanCerts finds and parses TLS certificates on the server.
+func (a *ServerAgent) ScanCerts(ctx context.Context) []CertInfo {
+	return ScanCerts(ctx)
+}
+
+// ScanPorts returns all listening ports.
+func (a *ServerAgent) ScanPorts(ctx context.Context) []PortInfo {
+	return ScanPorts(ctx, a.transport)
+}
+
+// GetGitStatusAt returns git deployment status for a repository path.
+// Falls back to the directory containing the compose file, then ".".
+func (a *ServerAgent) GetGitStatusAt(ctx context.Context, path string) GitStatus {
+	if path == "" && a.cfg.ComposePath != "" {
+		// Use the directory containing docker-compose.yml
+		idx := strings.LastIndex(a.cfg.ComposePath, "/")
+		if idx > 0 {
+			path = a.cfg.ComposePath[:idx]
+		} else {
+			path = "."
+		}
+	}
+	if path == "" {
+		path = "."
+	}
+	return a.GetGitStatus(ctx, path)
+}
