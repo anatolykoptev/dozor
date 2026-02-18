@@ -69,7 +69,8 @@ func (t *discoverTool) Parameters() map[string]any {
 func (t *discoverTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	agentID, _ := args["agent_id"].(string)
 	if agentID == "" {
-		return "", fmt.Errorf("agent_id is required")
+		available := t.mgr.ListAgents()
+		return "", fmt.Errorf("agent_id is required; available agents: %s", strings.Join(available, ", "))
 	}
 
 	card, err := t.mgr.Discover(ctx, agentID)
@@ -114,7 +115,8 @@ func (t *callTool) Execute(ctx context.Context, args map[string]any) (string, er
 	agentID, _ := args["agent_id"].(string)
 	message, _ := args["message"].(string)
 	if agentID == "" {
-		return "", fmt.Errorf("agent_id is required")
+		available := t.mgr.ListAgents()
+		return "", fmt.Errorf("agent_id is required; available agents: %s", strings.Join(available, ", "))
 	}
 	if message == "" {
 		return "", fmt.Errorf("message is required")

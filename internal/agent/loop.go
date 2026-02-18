@@ -39,6 +39,11 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 		{Role: "user", Content: message},
 	}
 
+	// Track repeated identical tool failures to break infinite loops.
+	type failKey struct{ tool, err string }
+	failCounts := make(map[failKey]int)
+	const maxRepeatFails = 2
+
 	for iteration := 1; iteration <= l.maxIters; iteration++ {
 		select {
 		case <-ctx.Done():
@@ -91,8 +96,17 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 
 			result, execErr := l.registry.Execute(ctx, name, args)
 			if execErr != nil {
-				result = fmt.Sprintf("Error: %s", execErr.Error())
+				errMsg := execErr.Error()
+				result = fmt.Sprintf("Error: %s", errMsg)
 				slog.Warn("tool execution failed", slog.String("tool", name), slog.Any("error", execErr))
+
+				// Detect repeated identical failures — break loop early.
+				fk := failKey{tool: name, err: errMsg}
+				failCounts[fk]++
+				if failCounts[fk] > maxRepeatFails {
+					return "", fmt.Errorf("tool %q keeps failing with the same error (%q) after %d attempts — stopping to avoid infinite loop",
+						name, errMsg, failCounts[fk])
+				}
 			}
 
 			// Truncate very large results.
