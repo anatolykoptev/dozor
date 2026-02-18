@@ -89,7 +89,7 @@ func (o *OpenAI) Chat(messages []Message, tools []ToolDefinition) (*Response, er
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("LLM API error %d: %s", resp.StatusCode, truncate(string(data), 500))
+		return nil, parseProviderError(resp.StatusCode, data)
 	}
 
 	var result chatCompletionResponse

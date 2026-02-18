@@ -191,7 +191,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		slog.Int("skills", len(skillsLoader.ListSkills())))
 
 	// 2. LLM provider.
-	llm := provider.NewOpenAI()
+	llm := provider.NewFromEnv()
 
 	// 3. Agent loop.
 	loop := agent.NewLoop(llm, registry, llm.MaxIterations(), workspacePath, skillsLoader)
@@ -476,7 +476,7 @@ func runWatch(cfg engine.Config, eng *engine.ServerAgent) {
 		builtinSkillsDir := resolveBuiltinDir("skills")
 		skillsLoader := skills.NewLoader(workspacePath+"/skills", builtinSkillsDir)
 
-		llm := provider.NewOpenAI()
+		llm := provider.NewFromEnv()
 		loop := agent.NewLoop(llm, registry, llm.MaxIterations(), workspacePath, skillsLoader)
 
 		runSmartWatch(sigCtx, cfg, eng, loop)
