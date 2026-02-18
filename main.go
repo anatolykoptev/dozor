@@ -26,6 +26,7 @@ import (
 	"github.com/anatolykoptev/dozor/internal/tools"
 	"github.com/anatolykoptev/dozor/pkg/extensions"
 	"github.com/anatolykoptev/dozor/pkg/extensions/a2aclient"
+	"github.com/anatolykoptev/dozor/pkg/extensions/claudecode"
 	"github.com/anatolykoptev/dozor/pkg/extensions/mcpclient"
 	"github.com/anatolykoptev/dozor/pkg/extensions/websearch"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -92,6 +93,7 @@ func runServe(cfg engine.Config, eng *engine.ServerAgent) {
 	// Extension system
 	extRegistry := extensions.NewRegistry()
 	extRegistry.Register(websearch.New())
+	extRegistry.Register(claudecode.New())
 	extRegistry.LoadAll(context.Background(), eng, nil, server)
 	extRegistry.RegisterIntrospectTool(server)
 	for _, extErr := range extRegistry.Errors() {
@@ -212,6 +214,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	// Extension system
 	extRegistry := extensions.NewRegistry()
 	extRegistry.Register(websearch.New())
+	extRegistry.Register(claudecode.New())
 	extRegistry.Register(mcpclient.New())
 	extRegistry.Register(a2aclient.New())
 	extRegistry.LoadAll(context.Background(), eng, registry, mcpServer)
