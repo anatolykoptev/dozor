@@ -2,9 +2,13 @@ package provider
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"strconv"
@@ -52,8 +56,90 @@ func NewOpenAI() *OpenAI {
 // MaxIterations returns the configured max tool call iterations.
 func (o *OpenAI) MaxIterations() int { return o.maxIters }
 
+// maxRetries for transient errors (429, 5xx).
+const (
+	chatMaxRetries   = 3
+	chatInitialDelay = 2 * time.Second
+	chatMaxDelay     = 30 * time.Second
+)
+
 // Chat sends a chat completion request and returns the response.
+// Retries up to chatMaxRetries times on transient errors (429, 5xx).
 func (o *OpenAI) Chat(messages []Message, tools []ToolDefinition) (*Response, error) {
+	return o.chatWithRetry(context.Background(), messages, tools)
+}
+
+func (o *OpenAI) chatWithRetry(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
+	var lastErr error
+	for attempt := 0; attempt <= chatMaxRetries; attempt++ {
+		resp, err := o.doChat(messages, tools)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+
+		var pe *ProviderError
+		if !errors.As(err, &pe) {
+			// Network error — retry with backoff.
+			if attempt >= chatMaxRetries {
+				break
+			}
+			delay := chatBackoff(attempt)
+			slog.Warn("LLM network error, retrying", slog.Int("attempt", attempt+1), slog.Duration("delay", delay))
+			if sleepCtx(ctx, delay) != nil {
+				return nil, lastErr
+			}
+			continue
+		}
+		// Auth errors — fail immediately.
+		if pe.IsAuth() {
+			break
+		}
+		// Transient (429, 5xx) — retry with backoff.
+		if pe.IsTransient() && attempt < chatMaxRetries {
+			delay := chatBackoff(attempt)
+			if pe.IsRateLimit() && pe.RetryAfter > delay && pe.RetryAfter <= chatMaxDelay {
+				delay = pe.RetryAfter
+			}
+			slog.Warn("LLM transient error, retrying",
+				slog.Int("status", pe.StatusCode),
+				slog.Int("attempt", attempt+1),
+				slog.Duration("delay", delay))
+			if sleepCtx(ctx, delay) != nil {
+				return nil, lastErr
+			}
+			continue
+		}
+		break
+	}
+	return nil, lastErr
+}
+
+func chatBackoff(attempt int) time.Duration {
+	delay := chatInitialDelay
+	for i := 0; i < attempt; i++ {
+		delay *= 2
+	}
+	jitter := time.Duration(rand.Int64N(int64(delay / 4)))
+	delay += jitter
+	if delay > chatMaxDelay {
+		delay = chatMaxDelay
+	}
+	return delay
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+func (o *OpenAI) doChat(messages []Message, tools []ToolDefinition) (*Response, error) {
 	body := map[string]any{
 		"model":    o.model,
 		"messages": messages,

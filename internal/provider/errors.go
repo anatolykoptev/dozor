@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ProviderError is a structured error from an LLM provider.
 type ProviderError struct {
 	StatusCode int
 	Message    string
+	RetryAfter time.Duration
 	Raw        string
 }
 
@@ -44,14 +46,33 @@ func parseProviderError(statusCode int, body []byte) *ProviderError {
 		Raw:        string(body),
 	}
 
-	// OpenAI / Gemini OpenAI-compat format: {"error": {"message": "..."}}
-	var errResp struct {
+	// Google/Gemini format with details array (includes retry delay).
+	var googleErr struct {
+		Error struct {
+			Message string `json:"message"`
+			Details []struct {
+				Metadata map[string]string `json:"metadata"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &googleErr) == nil && googleErr.Error.Message != "" {
+		pe.Message = googleErr.Error.Message
+		for _, d := range googleErr.Error.Details {
+			if delay, ok := d.Metadata["retryDelay"]; ok {
+				pe.RetryAfter = parseRetryDelay(delay)
+			}
+		}
+		return pe
+	}
+
+	// OpenAI-compat format: {"error": {"message": "..."}}
+	var openaiErr struct {
 		Error struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(body, &errResp) == nil && errResp.Error.Message != "" {
-		pe.Message = errResp.Error.Message
+	if json.Unmarshal(body, &openaiErr) == nil && openaiErr.Error.Message != "" {
+		pe.Message = openaiErr.Error.Message
 		return pe
 	}
 
@@ -65,4 +86,12 @@ func parseProviderError(statusCode int, body []byte) *ProviderError {
 	}
 	pe.Message = s
 	return pe
+}
+
+// parseRetryDelay parses strings like "30s", "2m", "5m30s".
+func parseRetryDelay(s string) time.Duration {
+	if d, err := time.ParseDuration(s); err == nil {
+		return d
+	}
+	return 0
 }
