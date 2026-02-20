@@ -52,16 +52,17 @@ type LogEntry struct {
 
 // ServiceStatus for a docker container.
 type ServiceStatus struct {
-	Name          string         `json:"name"`
-	State         ContainerState `json:"state"`
-	Health        string         `json:"health,omitempty"`
-	Uptime        string         `json:"uptime,omitempty"`
-	RestartCount  int            `json:"restart_count"`
-	CPUPercent    *float64       `json:"cpu_percent,omitempty"`
-	MemoryMB      *float64       `json:"memory_mb,omitempty"`
-	MemoryLimitMB *float64       `json:"memory_limit_mb,omitempty"`
-	ErrorCount    int            `json:"error_count"`
-	RecentErrors  []LogEntry     `json:"recent_errors,omitempty"`
+	Name          string            `json:"name"`
+	State         ContainerState    `json:"state"`
+	Health        string            `json:"health,omitempty"`
+	Uptime        string            `json:"uptime,omitempty"`
+	RestartCount  int               `json:"restart_count"`
+	CPUPercent    *float64          `json:"cpu_percent,omitempty"`
+	MemoryMB      *float64          `json:"memory_mb,omitempty"`
+	MemoryLimitMB *float64          `json:"memory_limit_mb,omitempty"`
+	ErrorCount    int               `json:"error_count"`
+	RecentErrors  []LogEntry        `json:"recent_errors,omitempty"`
+	Labels        map[string]string `json:"-"`
 }
 
 // IsHealthy returns true if the service is running with no restarts or errors.

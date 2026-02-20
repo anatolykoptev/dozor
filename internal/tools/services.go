@@ -19,32 +19,35 @@ func registerServices(server *mcp.Server, agent *engine.ServerAgent) {
 - logs: show recent logs for a service`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ServicesInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		cfg := agent.GetConfig()
-		if !cfg.HasUserServices() {
-			return nil, engine.TextOutput{}, fmt.Errorf("no user services configured (set DOZOR_USER_SERVICES and DOZOR_USER_SERVICES_USER in .env)")
+		services := resolveUserServices(ctx, cfg, agent)
+		if len(services) == 0 {
+			return nil, engine.TextOutput{}, fmt.Errorf("no user services found (auto-discovery found none, or set DOZOR_USER_SERVICES in .env)")
 		}
 
 		switch input.Action {
 		case "status":
-			return nil, engine.TextOutput{Text: userServicesStatus(ctx, cfg, agent, input.Service)}, nil
+			return nil, engine.TextOutput{Text: userServicesStatus(ctx, cfg, agent, input.Service, services)}, nil
 
 		case "restart":
 			if input.Service == "" {
 				return nil, engine.TextOutput{}, fmt.Errorf("service name is required for restart action")
 			}
-			if cfg.FindUserService(input.Service) == nil {
-				return nil, engine.TextOutput{}, fmt.Errorf("unknown service %q, available: %s", input.Service, strings.Join(cfg.UserServiceNames(), ", "))
+			if findService(services, input.Service) == nil {
+				names := serviceNames(services)
+				return nil, engine.TextOutput{}, fmt.Errorf("unknown service %q, available: %s", input.Service, strings.Join(names, ", "))
 			}
 			return nil, engine.TextOutput{Text: userServiceRestart(ctx, cfg, agent, input.Service)}, nil
 
 		case "restart-all":
-			return nil, engine.TextOutput{Text: userServicesRestartAll(ctx, cfg, agent)}, nil
+			return nil, engine.TextOutput{Text: userServicesRestartAll(ctx, cfg, agent, services)}, nil
 
 		case "logs":
 			if input.Service == "" {
 				return nil, engine.TextOutput{}, fmt.Errorf("service name is required for logs action")
 			}
-			if cfg.FindUserService(input.Service) == nil {
-				return nil, engine.TextOutput{}, fmt.Errorf("unknown service %q, available: %s", input.Service, strings.Join(cfg.UserServiceNames(), ", "))
+			if findService(services, input.Service) == nil {
+				names := serviceNames(services)
+				return nil, engine.TextOutput{}, fmt.Errorf("unknown service %q, available: %s", input.Service, strings.Join(names, ", "))
 			}
 			lines := input.Lines
 			if lines <= 0 {
@@ -61,6 +64,33 @@ func registerServices(server *mcp.Server, agent *engine.ServerAgent) {
 	})
 }
 
+// resolveUserServices returns configured services, falling back to auto-discovery.
+func resolveUserServices(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent) []engine.UserService {
+	if cfg.HasUserServices() {
+		return cfg.UserServices
+	}
+	return agent.DiscoverUserServices(ctx)
+}
+
+// findService finds a service by name in a list.
+func findService(services []engine.UserService, name string) *engine.UserService {
+	for i := range services {
+		if services[i].Name == name {
+			return &services[i]
+		}
+	}
+	return nil
+}
+
+// serviceNames returns just the names from a service list.
+func serviceNames(services []engine.UserService) []string {
+	names := make([]string, len(services))
+	for i, s := range services {
+		names[i] = s.Name
+	}
+	return names
+}
+
 // userCmd builds a systemctl --user command.
 func userCmd(_ engine.Config, command string) string {
 	return fmt.Sprintf("systemctl --user %s", command)
@@ -71,18 +101,22 @@ func userJournalCmd(_ engine.Config, unit string, lines int) string {
 	return fmt.Sprintf("journalctl --user-unit %s --no-pager -n %d", unit, lines)
 }
 
-func userServicesStatus(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent, singleService string) string {
-	services := cfg.UserServices
+func userServicesStatus(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent, singleService string, allServices []engine.UserService) string {
+	services := allServices
 	if singleService != "" {
-		svc := cfg.FindUserService(singleService)
+		svc := findService(allServices, singleService)
 		if svc == nil {
-			return fmt.Sprintf("Unknown service %q, available: %s", singleService, strings.Join(cfg.UserServiceNames(), ", "))
+			return fmt.Sprintf("Unknown service %q, available: %s", singleService, strings.Join(serviceNames(allServices), ", "))
 		}
 		services = []engine.UserService{*svc}
 	}
 
+	user := cfg.UserServicesUser
+	if user == "" {
+		user = "auto-discovered"
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "User Services [%s] (%d)\n\n", cfg.UserServicesUser, len(services))
+	fmt.Fprintf(&b, "User Services [%s] (%d)\n\n", user, len(services))
 
 	for _, svc := range services {
 		cmd := userCmd(cfg, fmt.Sprintf("is-active %s", svc.Name))
@@ -149,11 +183,11 @@ func userServiceRestart(ctx context.Context, cfg engine.Config, agent *engine.Se
 	return fmt.Sprintf("Service %s restarted but state is: %s", service, state)
 }
 
-func userServicesRestartAll(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent) string {
+func userServicesRestartAll(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent, services []engine.UserService) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Restarting %d services...\n\n", len(cfg.UserServices))
+	fmt.Fprintf(&b, "Restarting %d services...\n\n", len(services))
 
-	for _, svc := range cfg.UserServices {
+	for _, svc := range services {
 		result := userServiceRestart(ctx, cfg, agent, svc.Name)
 		fmt.Fprintf(&b, "%s\n", result)
 	}

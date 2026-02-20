@@ -9,7 +9,7 @@
 .env.local
 
 # Local docs (not for git)
-docs/
+# docs/  -- removed: project docs (compare.md, roadmap.md) should be tracked
 
 # Claude instructions (local only)
 CLAUDE.md

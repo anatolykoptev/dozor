@@ -18,12 +18,15 @@ type ServerAgent struct {
 	alerts    *AlertGenerator
 	cleanup   *CleanupCollector
 	updates   *UpdatesCollector
+
+	discovery *DockerDiscovery
+	watcher   *ContainerWatcher
 }
 
 // NewAgent creates a new server agent with all collectors.
 func NewAgent(cfg Config) *ServerAgent {
 	t := NewTransport(cfg)
-	return &ServerAgent{
+	a := &ServerAgent{
 		cfg:       cfg,
 		transport: t,
 		status:    &StatusCollector{transport: t},
@@ -33,6 +36,29 @@ func NewAgent(cfg Config) *ServerAgent {
 		alerts:    &AlertGenerator{cfg: cfg},
 		cleanup:   &CleanupCollector{transport: t},
 		updates:   &UpdatesCollector{transport: t, cfg: cfg},
+	}
+
+	// Initialize Docker SDK discovery for local mode
+	if cfg.IsLocal() {
+		if d := NewDockerDiscovery(); d != nil {
+			a.discovery = d
+			a.status.discovery = d
+			w := NewContainerWatcher(d.Client(), d)
+			w.Start(context.Background())
+			a.watcher = w
+		}
+	}
+
+	return a
+}
+
+// Close releases resources held by the agent.
+func (a *ServerAgent) Close() {
+	if a.watcher != nil {
+		a.watcher.Stop()
+	}
+	if a.discovery != nil {
+		a.discovery.Close()
 	}
 }
 

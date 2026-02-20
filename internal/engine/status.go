@@ -9,6 +9,7 @@ import (
 // StatusCollector gathers container status info.
 type StatusCollector struct {
 	transport *Transport
+	discovery *DockerDiscovery // nil when SDK is unavailable (remote mode)
 }
 
 // dockerPSEntry is the JSON output from docker ps --format json.
@@ -34,6 +35,19 @@ type dockerInspectEntry struct {
 
 // GetContainerStatus returns status for a single service.
 func (c *StatusCollector) GetContainerStatus(ctx context.Context, service string) ServiceStatus {
+	// Prefer SDK-based inspection when available
+	if c.discovery != nil {
+		if status, ok := c.discovery.InspectContainer(ctx, service); ok {
+			return status
+		}
+	}
+
+	// Fallback to CLI (remote/SSH mode or SDK failure)
+	return c.getContainerStatusCLI(ctx, service)
+}
+
+// getContainerStatusCLI uses docker CLI for container status (fallback).
+func (c *StatusCollector) getContainerStatusCLI(ctx context.Context, service string) ServiceStatus {
 	status := ServiceStatus{Name: service, State: StateUnknown}
 
 	// Get from docker ps
@@ -55,7 +69,6 @@ func (c *StatusCollector) GetContainerStatus(ctx context.Context, service string
 		matched := false
 		for _, n := range names {
 			n = strings.TrimSpace(n)
-			// Container names often have project prefix: "project-service-1"
 			if n == service || strings.Contains(n, service) {
 				matched = true
 				break
@@ -85,9 +98,20 @@ func (c *StatusCollector) GetContainerStatus(ctx context.Context, service string
 	return status
 }
 
-// DiscoverServices auto-discovers docker compose services.
-// Returns service names from `docker compose ps --format json -a`.
+// DiscoverServices auto-discovers docker services.
+// Uses SDK when available (local mode), falls back to CLI (remote/SSH mode).
 func (c *StatusCollector) DiscoverServices(ctx context.Context) []string {
+	// Prefer SDK-based discovery (cached, event-driven invalidation)
+	if c.discovery != nil {
+		return c.discovery.DiscoverServices(ctx)
+	}
+
+	// Fallback: CLI-based discovery via docker compose ps
+	return c.discoverServicesCLI(ctx)
+}
+
+// discoverServicesCLI uses docker compose CLI for service discovery (fallback).
+func (c *StatusCollector) discoverServicesCLI(ctx context.Context) []string {
 	res := c.transport.DockerComposeCommand(ctx, "ps --format json -a")
 	if !res.Success || res.Stdout == "" {
 		return nil
@@ -105,7 +129,6 @@ func (c *StatusCollector) DiscoverServices(ctx context.Context) []string {
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		// Prefer Service field (compose service name), fall back to Name
 		svc := entry.Service
 		if svc == "" {
 			svc = entry.Name
