@@ -15,7 +15,7 @@ const containerExecMaxOutput = 50 * 1024 // 50KB
 
 // containerExecBlockedPatterns are commands that must never be run inside containers.
 var containerExecBlockedPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)rm\s+(-r|-f|-rf|--recursive|--force)\s+/`),
+	regexp.MustCompile(`(?i)rm\s+(-[rf]+|--recursive|--force)(\s+(-[rf]+|--recursive|--force))*\s+/`),
 	regexp.MustCompile(`(?i):\(\)\s*\{`),                                  // fork bomb
 	regexp.MustCompile(`(?i)(bash|sh|zsh)\s+-i`),                          // interactive shell
 	regexp.MustCompile(`(?i)curl.*\|\s*(bash|sh|zsh|python|perl)`),        // download-and-exec
