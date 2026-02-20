@@ -29,11 +29,38 @@ func (c *CleanupCollector) cleanDocker(ctx context.Context, minAge string) Clean
 	if minAge != "" {
 		age = minAge
 	}
-	res := c.transport.DockerCommand(ctx, "image prune -af --filter until="+age)
-	freed := extractDockerFreed(res.Output())
+	var freed float64
+	var details []string
+
+	// Remove stopped containers
+	res := c.transport.DockerCommand(ctx, "container prune -f --filter until="+age)
+	if f := extractDockerFreed(res.Output()); f > 0 {
+		freed += f
+		details = append(details, fmt.Sprintf("containers: %.1f MB", f))
+	}
+
+	// Remove dangling/old images
+	res = c.transport.DockerCommand(ctx, "image prune -af --filter until="+age)
+	if f := extractDockerFreed(res.Output()); f > 0 {
+		freed += f
+		details = append(details, fmt.Sprintf("images: %.1f MB", f))
+	}
+
+	// Clear build cache
 	res = c.transport.DockerCommand(ctx, "builder prune -af --filter until="+age)
-	freed += extractDockerFreed(res.Output())
-	t.Freed = fmt.Sprintf("%.1f MB", freed)
+	if f := extractDockerFreed(res.Output()); f > 0 {
+		freed += f
+		details = append(details, fmt.Sprintf("build cache: %.1f MB", f))
+	}
+
+	// Remove unused networks
+	c.transport.DockerCommand(ctx, "network prune -f")
+
+	if len(details) > 0 {
+		t.Freed = fmt.Sprintf("%.1f MB (%s)", freed, strings.Join(details, ", "))
+	} else {
+		t.Freed = "0.0 MB"
+	}
 	return t
 }
 
@@ -68,9 +95,7 @@ func (c *CleanupCollector) cleanGo(ctx context.Context) CleanupTarget {
 		return t
 	}
 	t.Available = true
-	before := t.SizeMB
-	scan := c.scanGo(ctx)
-	before = scan.SizeMB
+	before := c.scanGo(ctx).SizeMB
 
 	res := c.transport.ExecuteUnsafe(ctx, "go clean -cache 2>/dev/null")
 	if !res.Success {

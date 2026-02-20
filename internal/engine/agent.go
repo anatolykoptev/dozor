@@ -87,7 +87,12 @@ func (a *ServerAgent) Diagnose(ctx context.Context, services []string) Diagnosti
 		return DiagnosticReport{
 			Timestamp:     time.Now(),
 			Server:        a.cfg.Host,
-			OverallHealth: "healthy",
+			OverallHealth: "unknown",
+			Alerts: []Alert{{
+				Level:       AlertWarning,
+				Title:       "No services discovered",
+				Description: "No Docker containers or configured services found",
+			}},
 		}
 	}
 

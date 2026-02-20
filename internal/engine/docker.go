@@ -14,6 +14,14 @@ func (a *ServerAgent) RestartService(ctx context.Context, service string) Comman
 func (a *ServerAgent) PruneDocker(ctx context.Context, images, buildCache, volumes bool, age string) string {
 	var results []string
 
+	// Always prune stopped containers first
+	cmd := "container prune -f"
+	if age != "" {
+		cmd += " --filter until=" + age
+	}
+	res := a.transport.DockerCommand(ctx, cmd)
+	results = append(results, "Containers: "+res.Output())
+
 	if images {
 		cmd := "image prune -af"
 		if age != "" {
@@ -36,6 +44,10 @@ func (a *ServerAgent) PruneDocker(ctx context.Context, images, buildCache, volum
 		res := a.transport.DockerCommand(ctx, "volume prune -f")
 		results = append(results, "Volumes: "+res.Output())
 	}
+
+	// Prune unused networks
+	netRes := a.transport.DockerCommand(ctx, "network prune -f")
+	results = append(results, "Networks: "+netRes.Output())
 
 	// Show disk usage after
 	diskRes := a.transport.DockerCommand(ctx, "system df")
