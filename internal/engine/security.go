@@ -11,6 +11,7 @@ import (
 type SecurityCollector struct {
 	transport *Transport
 	cfg       Config
+	discovery *DockerDiscovery
 }
 
 // internalOnlyPorts that should not be exposed to 0.0.0.0.
@@ -40,6 +41,17 @@ var stackTracePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`at .+\(.+:\d+:\d+\)`),
 	regexp.MustCompile(`File ".+", line \d+`),
 	regexp.MustCompile(`Exception in thread`),
+}
+
+// resolveServices returns configured services or falls back to discovery.
+func (c *SecurityCollector) resolveServices(ctx context.Context) []string {
+	if len(c.cfg.Services) > 0 {
+		return c.cfg.Services
+	}
+	if c.discovery != nil {
+		return c.discovery.DiscoverServices(ctx)
+	}
+	return nil
 }
 
 // CheckAll runs all security checks and returns issues.
@@ -196,9 +208,9 @@ func (c *SecurityCollector) checkAuthentication(ctx context.Context) []SecurityI
 func (c *SecurityCollector) checkAPIHardening(ctx context.Context) []SecurityIssue {
 	var issues []SecurityIssue
 
-	services := c.cfg.Services
+	services := c.resolveServices(ctx)
 	if len(services) == 0 {
-		return issues // Skip if no services configured (auto-discover is handled at agent level)
+		return issues
 	}
 
 	// Check for stack traces in recent logs (last 50 lines per service)
@@ -235,7 +247,7 @@ func (c *SecurityCollector) checkReconnaissance(ctx context.Context) []SecurityI
 	}
 
 	// Check last 500 lines of gateway logs for recon patterns
-	for _, svc := range c.cfg.Services {
+	for _, svc := range c.resolveServices(ctx) {
 		if !strings.Contains(svc, "gateway") && !strings.Contains(svc, "proxy") &&
 			!strings.Contains(svc, "caddy") && !strings.Contains(svc, "traefik") &&
 			!strings.Contains(svc, "nginx") {

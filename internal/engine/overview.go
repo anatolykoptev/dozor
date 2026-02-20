@@ -124,10 +124,17 @@ func (a *ServerAgent) GetOverview(ctx context.Context) string {
 		fmt.Fprintf(&b, "\nDocker: %d running, %d stopped (of %d total)\n", running, stopped, len(statuses))
 	}
 
-	// Systemd services (if configured)
-	if len(a.cfg.SystemdServices) > 0 {
+	// Systemd services (configured or auto-discovered)
+	systemdSvcs := a.cfg.SystemdServices
+	if len(systemdSvcs) == 0 {
+		// Fall back to auto-discovered user services
+		for _, us := range a.ResolveUserServices(ctx) {
+			systemdSvcs = append(systemdSvcs, us.Name)
+		}
+	}
+	if len(systemdSvcs) > 0 {
 		b.WriteString("\nSystemd services:\n")
-		for _, svc := range a.cfg.SystemdServices {
+		for _, svc := range systemdSvcs {
 			state := a.systemctlIsActive(ctx, svc)
 			icon := "OK"
 			if state != "active" {

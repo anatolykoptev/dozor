@@ -43,6 +43,7 @@ func NewAgent(cfg Config) *ServerAgent {
 		if d := NewDockerDiscovery(); d != nil {
 			a.discovery = d
 			a.status.discovery = d
+			a.security.discovery = d
 			w := NewContainerWatcher(d.Client(), d)
 			w.Start(context.Background())
 			a.watcher = w
