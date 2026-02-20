@@ -51,7 +51,17 @@ func (c *SecurityCollector) CheckAll(ctx context.Context) []SecurityIssue {
 	issues = append(issues, c.checkAPIHardening(ctx)...)
 	issues = append(issues, c.checkReconnaissance(ctx)...)
 	issues = append(issues, c.checkUpstreamVulns(ctx)...)
+	issues = append(issues, c.checkFirewallRules(ctx)...)
+	issues = append(issues, c.checkCrontabs(ctx)...)
+	issues = append(issues, c.checkActiveConnections(ctx)...)
 	return issues
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "\n... (truncated)"
 }
 
 func (c *SecurityCollector) checkNetworkExposure(ctx context.Context) []SecurityIssue {
@@ -429,6 +439,165 @@ func (c *SecurityCollector) checkZombieProcesses(ctx context.Context) []Security
 			Description: "Zombie processes are not reclaimed by their parent, indicating a bug in the parent process",
 			Remediation: "Identify the parent process (ppid) and restart it if zombie count grows",
 		})
+	}
+
+	return issues
+}
+
+var suspiciousCronRe = regexp.MustCompile(`(?i)(curl|wget).*\|\s*(bash|sh|zsh|python|perl)|base64\s+-d|/dev/tcp/`)
+
+func (c *SecurityCollector) checkFirewallRules(ctx context.Context) []SecurityIssue {
+	var issues []SecurityIssue
+
+	// Check iptables rules
+	res := c.transport.ExecuteUnsafe(ctx, "iptables -L -n --line-numbers 2>/dev/null | head -60")
+	if res.Success && strings.TrimSpace(res.Stdout) != "" {
+		acceptCount := 0
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[1] == "ACCEPT" {
+				acceptCount++
+			}
+		}
+		if acceptCount > 3 {
+			issues = append(issues, SecurityIssue{
+				Level:       AlertWarning,
+				Category:    "firewall",
+				Title:       fmt.Sprintf("iptables has %d blanket ACCEPT rules", acceptCount),
+				Description: "Multiple blanket ACCEPT rules may indicate overly permissive firewall",
+				Remediation: "Review iptables rules; restrict ACCEPT to specific ports/IPs",
+				Evidence:    truncate(res.Stdout, 500),
+			})
+		}
+	}
+
+	// Check nftables ruleset
+	res = c.transport.ExecuteUnsafe(ctx, "nft list ruleset 2>/dev/null | head -40")
+	if res.Success {
+		output := strings.TrimSpace(res.Stdout)
+		if output == "" {
+			issues = append(issues, SecurityIssue{
+				Level:       AlertInfo,
+				Category:    "firewall",
+				Title:       "nftables ruleset is empty",
+				Description: "No nftables rules configured (may be using iptables instead)",
+				Remediation: "Verify firewall is managed via iptables or UFW if nftables is not in use",
+			})
+		}
+	}
+
+	return issues
+}
+
+func (c *SecurityCollector) checkCrontabs(ctx context.Context) []SecurityIssue {
+	var issues []SecurityIssue
+
+	var allCrons strings.Builder
+	cronCount := 0
+
+	// System crontab
+	res := c.transport.ExecuteUnsafe(ctx, "cat /etc/crontab 2>/dev/null")
+	if res.Success && strings.TrimSpace(res.Stdout) != "" {
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "#") {
+				cronCount++
+				allCrons.WriteString(line)
+				allCrons.WriteString("\n")
+			}
+		}
+	}
+
+	// Per-user crontabs
+	res = c.transport.ExecuteUnsafe(ctx, "cut -d: -f1 /etc/passwd 2>/dev/null")
+	if res.Success {
+		for _, user := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+			user = strings.TrimSpace(user)
+			if user == "" {
+				continue
+			}
+			uRes := c.transport.ExecuteUnsafe(ctx, fmt.Sprintf("crontab -l -u %s 2>/dev/null", user))
+			if uRes.Success && strings.TrimSpace(uRes.Stdout) != "" && !strings.Contains(uRes.Stdout, "no crontab for") {
+				for _, line := range strings.Split(uRes.Stdout, "\n") {
+					line = strings.TrimSpace(line)
+					if line != "" && !strings.HasPrefix(line, "#") {
+						cronCount++
+						allCrons.WriteString(fmt.Sprintf("[%s] %s\n", user, line))
+					}
+				}
+			}
+		}
+	}
+
+	if cronCount > 0 {
+		issues = append(issues, SecurityIssue{
+			Level:       AlertInfo,
+			Category:    "cron",
+			Title:       fmt.Sprintf("%d cron job(s) found", cronCount),
+			Description: "Active cron jobs on the system",
+			Remediation: "Review cron jobs for unneeded or suspicious entries",
+			Evidence:    truncate(allCrons.String(), 800),
+		})
+	}
+
+	// Flag suspicious patterns
+	cronText := allCrons.String()
+	if suspiciousCronRe.MatchString(cronText) {
+		issues = append(issues, SecurityIssue{
+			Level:       AlertCritical,
+			Category:    "cron",
+			Title:       "Suspicious cron job pattern detected",
+			Description: "Cron job contains curl/wget piped to shell, base64 decoding, or /dev/tcp usage",
+			Remediation: "Investigate immediately; these patterns are common in malware persistence",
+		})
+	}
+
+	return issues
+}
+
+func (c *SecurityCollector) checkActiveConnections(ctx context.Context) []SecurityIssue {
+	var issues []SecurityIssue
+
+	// Top remote IPs by connection count
+	res := c.transport.ExecuteUnsafe(ctx, "ss -tn state established 2>/dev/null | awk 'NR>1{split($4,a,\":\"); print a[1]}' | sort | uniq -c | sort -rn | head -10")
+	if res.Success && strings.TrimSpace(res.Stdout) != "" {
+		for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				count := 0
+				fmt.Sscanf(fields[0], "%d", &count)
+				if count > 100 {
+					issues = append(issues, SecurityIssue{
+						Level:       AlertWarning,
+						Category:    "network",
+						Title:       fmt.Sprintf("IP %s has %d active connections", fields[1], count),
+						Description: "Single IP with unusually high connection count may indicate abuse or misconfigured client",
+						Remediation: "Investigate the source IP; consider rate limiting or firewall rules",
+					})
+				}
+			}
+		}
+	}
+
+	// Connection state summary — check for CLOSE-WAIT leak
+	res = c.transport.ExecuteUnsafe(ctx, "ss -tn 2>/dev/null | awk 'NR>1{print $1}' | sort | uniq -c | sort -rn")
+	if res.Success && strings.TrimSpace(res.Stdout) != "" {
+		for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				count := 0
+				fmt.Sscanf(fields[0], "%d", &count)
+				if strings.EqualFold(fields[1], "CLOSE-WAIT") && count > 50 {
+					issues = append(issues, SecurityIssue{
+						Level:       AlertWarning,
+						Category:    "network",
+						Title:       fmt.Sprintf("%d connections in CLOSE-WAIT state", count),
+						Description: "High CLOSE-WAIT count indicates connection leak — application not closing sockets properly",
+						Remediation: "Identify the leaking service and fix socket cleanup in application code",
+					})
+				}
+			}
+		}
 	}
 
 	return issues

@@ -1,7 +1,11 @@
 package engine
 
 import (
+	"fmt"
 	"regexp"
+	"sort"
+	"strings"
+	"time"
 )
 
 var errorPatterns = []ErrorPattern{
@@ -193,5 +197,147 @@ func AnalyzeLogs(entries []LogEntry, service string) AnalyzeResult {
 	}
 
 	return result
+}
+
+// Regexps for normalizing error messages — compiled once at package level.
+var (
+	normalizeTimestampRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?Z?\s*`)
+	normalizeIPRe        = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?\b`)
+	normalizeUUIDRe      = regexp.MustCompile(`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`)
+	normalizeHexRe       = regexp.MustCompile(`\b0x[0-9a-fA-F]{4,}\b`)
+	normalizeNumRe       = regexp.MustCompile(`\b\d{2,}\b`)
+)
+
+// normalizeErrorMessage replaces variable parts with placeholders for grouping.
+func normalizeErrorMessage(msg string) string {
+	s := normalizeTimestampRe.ReplaceAllString(msg, "")
+	s = normalizeIPRe.ReplaceAllString(s, "<IP>")
+	s = normalizeUUIDRe.ReplaceAllString(s, "<UUID>")
+	s = normalizeHexRe.ReplaceAllString(s, "<HEX>")
+	s = normalizeNumRe.ReplaceAllString(s, "<N>")
+	s = strings.TrimSpace(s)
+	if len(s) > 120 {
+		s = s[:120]
+	}
+	return s
+}
+
+// AnalyzeErrorTimeline buckets errors per hour for the last 24h and returns an ASCII histogram.
+func AnalyzeErrorTimeline(entries []LogEntry) string {
+	now := time.Now()
+	buckets := make([]int, 24)
+
+	for _, e := range entries {
+		if e.Timestamp == nil {
+			continue
+		}
+		if e.Level != "ERROR" && e.Level != "FATAL" && e.Level != "CRITICAL" {
+			continue
+		}
+		age := now.Sub(*e.Timestamp)
+		if age < 0 || age > 24*time.Hour {
+			continue
+		}
+		hour := int(age.Hours())
+		if hour >= 24 {
+			hour = 23
+		}
+		buckets[23-hour]++
+	}
+
+	// Find max for scaling
+	maxVal := 0
+	total := 0
+	for _, v := range buckets {
+		if v > maxVal {
+			maxVal = v
+		}
+		total += v
+	}
+
+	if total == 0 {
+		return "No errors in last 24 hours.\n"
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Error Timeline (last 24h, %d total)\n", total)
+	barWidth := 30
+	for i, v := range buckets {
+		hour := now.Add(-time.Duration(23-i) * time.Hour)
+		label := hour.Format("15:00")
+		bar := ""
+		if maxVal > 0 && v > 0 {
+			width := (v * barWidth) / maxVal
+			if width == 0 {
+				width = 1
+			}
+			bar = strings.Repeat("█", width)
+		}
+		if v > 0 {
+			fmt.Fprintf(&b, "  %s |%-*s %d\n", label, barWidth, bar, v)
+		} else {
+			fmt.Fprintf(&b, "  %s |%*s\n", label, barWidth, "")
+		}
+	}
+	return b.String()
+}
+
+// ClusterErrors groups similar errors by normalized template.
+func ClusterErrors(entries []LogEntry) []ErrorCluster {
+	clusters := make(map[string]*ErrorCluster)
+
+	for _, e := range entries {
+		if e.Level != "ERROR" && e.Level != "FATAL" && e.Level != "CRITICAL" {
+			continue
+		}
+		template := normalizeErrorMessage(e.Message)
+		if template == "" {
+			template = normalizeErrorMessage(e.Raw)
+		}
+		if template == "" {
+			continue
+		}
+		if c, ok := clusters[template]; ok {
+			c.Count++
+		} else {
+			example := e.Message
+			if len(example) > 200 {
+				example = example[:200] + "..."
+			}
+			clusters[template] = &ErrorCluster{
+				Template: template,
+				Count:    1,
+				Example:  example,
+			}
+		}
+	}
+
+	result := make([]ErrorCluster, 0, len(clusters))
+	for _, c := range clusters {
+		result = append(result, *c)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Count > result[j].Count
+	})
+
+	// Return top 5
+	if len(result) > 5 {
+		result = result[:5]
+	}
+	return result
+}
+
+// FormatErrorClusters formats error clusters for display.
+func FormatErrorClusters(clusters []ErrorCluster) string {
+	if len(clusters) == 0 {
+		return "No error clusters found.\n"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Top Error Clusters (%d)\n", len(clusters))
+	for i, c := range clusters {
+		fmt.Fprintf(&b, "  %d. [%dx] %s\n", i+1, c.Count, c.Template)
+		fmt.Fprintf(&b, "     Example: %s\n", c.Example)
+	}
+	return b.String()
 }
 

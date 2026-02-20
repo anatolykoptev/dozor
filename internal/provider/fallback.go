@@ -37,7 +37,7 @@ func NewFromEnv() *withFallback {
 	if fallbackModel == "" {
 		fallbackModel = os.Getenv("DOZOR_LLM_MODEL")
 		if fallbackModel == "" {
-			fallbackModel = "gemini-2.0-flash"
+			fallbackModel = "gemini-2.5-flash"
 		}
 	}
 	if fallbackKey == "" {

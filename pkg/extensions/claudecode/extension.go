@@ -81,6 +81,7 @@ func (e *Extension) Register(_ context.Context, extCtx *extensions.Context) erro
 		timeout:      timeout,
 		mcpURL:       mcpURL,
 		allowedTools: allowedTools,
+		notify:       extCtx.Notify,
 	}
 	extCtx.Tools.Register(t)
 
@@ -98,6 +99,7 @@ type claudeCodeTool struct {
 	timeout      time.Duration
 	mcpURL       string
 	allowedTools string
+	notify       func(string) // sends async notification to admin; may be nil
 }
 
 func (t *claudeCodeTool) Name() string { return "claude_code" }
@@ -120,6 +122,14 @@ func (t *claudeCodeTool) Parameters() map[string]any {
 				"type":        "string",
 				"description": "Working directory for the Claude Code session (optional)",
 			},
+			"async": map[string]any{
+				"type":        "boolean",
+				"description": "Run asynchronously: immediately confirms task accepted and sends result via notification when done. Use for long tasks so the user gets an immediate reply.",
+			},
+			"title": map[string]any{
+				"type":        "string",
+				"description": "Short human-readable description shown in the async start notification instead of the full prompt (optional).",
+			},
 		},
 		"required": []string{"prompt"},
 	}
@@ -131,6 +141,32 @@ func (t *claudeCodeTool) Execute(ctx context.Context, args map[string]any) (stri
 		return "", fmt.Errorf("prompt is required")
 	}
 
+	async, _ := args["async"].(bool)
+	if async && t.notify != nil {
+		title, _ := args["title"].(string)
+		if strings.TrimSpace(title) == "" {
+			if len(prompt) > 120 {
+				title = prompt[:120] + "..."
+			} else {
+				title = prompt
+			}
+		}
+		go func() {
+			t.notify("⏳ Задача передана Claude Code:\n" + title)
+			result, err := t.runClaude(context.Background(), prompt, args)
+			if err != nil {
+				t.notify("❌ Claude Code завершил с ошибкой: " + err.Error())
+			} else {
+				t.notify("✅ Claude Code завершил:\n\n" + result)
+			}
+		}()
+		return "Задача принята и передана Claude Code в асинхронном режиме. Результат пришлю отдельным сообщением по завершению.", nil
+	}
+
+	return t.runClaude(ctx, prompt, args)
+}
+
+func (t *claudeCodeTool) runClaude(ctx context.Context, prompt string, args map[string]any) (string, error) {
 	cwd, _ := args["cwd"].(string)
 
 	cmdCtx, cancel := context.WithTimeout(ctx, t.timeout)
@@ -161,8 +197,6 @@ func (t *claudeCodeTool) Execute(ctx context.Context, args map[string]any) (stri
 		}
 	}
 
-	cmdArgs = append(cmdArgs, prompt)
-
 	cmd := exec.CommandContext(cmdCtx, t.binary, cmdArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
@@ -176,6 +210,7 @@ func (t *claudeCodeTool) Execute(ctx context.Context, args map[string]any) (stri
 	}
 
 	var stdout, stderr bytes.Buffer
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 

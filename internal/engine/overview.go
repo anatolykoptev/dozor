@@ -18,6 +18,15 @@ func (a *ServerAgent) GetOverview(ctx context.Context) string {
 	if res.Success && res.Stdout != "" {
 		b.WriteString("Memory:\n")
 		b.WriteString(res.Stdout)
+		// Extract swap from free output
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			if strings.HasPrefix(line, "Swap:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 3 && fields[2] != "0B" && fields[2] != "0" {
+					fmt.Fprintf(&b, "\nSwap in use: %s of %s total\n", fields[2], fields[1])
+				}
+			}
+		}
 		b.WriteString("\n")
 	}
 
@@ -27,6 +36,22 @@ func (a *ServerAgent) GetOverview(ctx context.Context) string {
 		b.WriteString("Disk:\n")
 		b.WriteString(disk)
 		b.WriteString("\n")
+	}
+
+	// Inode usage — only report if > 50%
+	res = a.transport.ExecuteUnsafe(ctx, "df -i / /home 2>/dev/null")
+	if res.Success && res.Stdout != "" {
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 5 || fields[0] == "Filesystem" {
+				continue
+			}
+			pctStr := strings.TrimSuffix(fields[4], "%")
+			pct, err := strconv.Atoi(pctStr)
+			if err == nil && pct > 50 {
+				fmt.Fprintf(&b, "Inodes [!!]: %s at %d%% on %s\n", fields[0], pct, fields[len(fields)-1])
+			}
+		}
 	}
 
 	// Load average
@@ -41,10 +66,40 @@ func (a *ServerAgent) GetOverview(ctx context.Context) string {
 		fmt.Fprintf(&b, "CPUs: %s\n", strings.TrimSpace(res.Stdout))
 	}
 
+	// I/O wait from /proc/stat
+	res = a.transport.ExecuteUnsafe(ctx, "awk '/^cpu /{total=0; for(i=2;i<=NF;i++) total+=$i; iowait=$6; printf \"%.1f\", (iowait/total)*100}' /proc/stat 2>/dev/null")
+	if res.Success && res.Stdout != "" {
+		iowait := strings.TrimSpace(res.Stdout)
+		icon := "OK"
+		var pct float64
+		fmt.Sscanf(iowait, "%f", &pct)
+		if pct > 5 {
+			icon = "!!"
+		}
+		fmt.Fprintf(&b, "I/O Wait [%s]: %s%%\n", icon, iowait)
+	}
+
 	// Uptime
 	res = a.transport.ExecuteUnsafe(ctx, "uptime -p 2>/dev/null || uptime")
 	if res.Success {
 		fmt.Fprintf(&b, "Uptime: %s\n", strings.TrimSpace(res.Stdout))
+	}
+
+	// Network I/O from /proc/net/dev
+	res = a.transport.ExecuteUnsafe(ctx, `awk 'NR>2{iface=$1; gsub(/:$/,"",iface); if(iface!="lo"){rx=$2; tx=$10; printf "%s RX=%d TX=%d\n", iface, rx, tx}}' /proc/net/dev 2>/dev/null`)
+	if res.Success && strings.TrimSpace(res.Stdout) != "" {
+		b.WriteString("\nNetwork I/O:\n")
+		for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+			parts := strings.Fields(line)
+			if len(parts) < 3 {
+				continue
+			}
+			iface := parts[0]
+			var rx, tx int64
+			fmt.Sscanf(parts[1], "RX=%d", &rx)
+			fmt.Sscanf(parts[2], "TX=%d", &tx)
+			fmt.Fprintf(&b, "  %s: RX %s / TX %s\n", iface, formatBytes(rx), formatBytes(tx))
+		}
 	}
 
 	// Top processes by CPU
@@ -83,6 +138,24 @@ func (a *ServerAgent) GetOverview(ctx context.Context) string {
 	}
 
 	return b.String()
+}
+
+func formatBytes(b int64) string {
+	const (
+		gb = 1024 * 1024 * 1024
+		mb = 1024 * 1024
+		kb = 1024
+	)
+	switch {
+	case b >= gb:
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(gb))
+	case b >= mb:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(mb))
+	case b >= kb:
+		return fmt.Sprintf("%.1f KB", float64(b)/float64(kb))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 // GetDiskPressure parses df -h output into structured data.

@@ -25,6 +25,7 @@ type Context struct {
 	Tools     *toolreg.Registry // Agent tool registry
 	MCPServer *mcp.Server       // MCP server for external tools
 	Runtime   *Runtime          // Per-extension runtime (logging, workspace, http)
+	Notify    func(string)      // Send async notification to admin (e.g. Telegram). May be nil.
 }
 
 // Runtime provides per-extension isolated runtime resources (OpenClaw pattern).

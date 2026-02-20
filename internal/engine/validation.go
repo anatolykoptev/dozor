@@ -12,38 +12,27 @@ var blockedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)mkfs`),
 	regexp.MustCompile(`(?i)dd\s+if=`),
 
-	// Permissions (only block recursive chmod on root and all chown)
+	// Permissions — only block recursive chmod on system root paths
 	regexp.MustCompile(`(?i)chmod\s+(-R\s+)?[0-7]{3,4}\s+/`),
-	regexp.MustCompile(`(?i)chown\s+(-R\s+)?`),
+	// chown allowed — agent needs it for file ownership management
 
 	// Fork bomb
 	regexp.MustCompile(`(?i):\(\)\s*\{`),
 
 	// Dangerous chained commands
-	regexp.MustCompile(`(?i);\s*(rm|dd|mkfs|chmod|chown|mv|cp\s+-r|tar|zip|curl|wget|python|perl|ruby|node|bash|sh)`),
-	regexp.MustCompile(`(?i)\|\s*(rm|dd|mkfs|chmod|chown|bash|sh|zsh|python|perl|ruby|node|xargs)`),
-	regexp.MustCompile(`(?i)&&\s*(rm|dd|mkfs|chmod|chown|mv|cp\s+-r)`),
+	regexp.MustCompile(`(?i);\s*(rm|dd|mkfs|chmod|mv|cp\s+-r|python|perl|ruby|node|bash|sh)\b`),
+	regexp.MustCompile(`(?i)\|\s*(rm|dd|mkfs|chmod|bash|sh|zsh|python|perl|ruby|node|xargs)`),
+	regexp.MustCompile(`(?i)&&\s*(rm|dd|mkfs|chmod|mv|cp\s+-r)\b`),
 
-	// Shell eval/exec/source
+	// Shell eval/source (exec removed — needed for docker exec)
 	regexp.MustCompile(`(?i)\beval\s`),
-	regexp.MustCompile(`(?i)\bexec\s`),
 	regexp.MustCompile(`(?i)\bsource\s`),
 	regexp.MustCompile(`(?i)\.\s+/`),
 
-	// Write redirects to home
-	regexp.MustCompile(`>\s*~/`),
-	regexp.MustCompile(`>>\s*~/`),
-	// Write redirects to system paths (> / and >> /) are checked separately
-	// to allow 2>/dev/null
-
-	// Remote code execution
+	// Remote code execution via pipe — downloading and piping to shell
 	regexp.MustCompile(`(?i)curl.*\|\s*(bash|sh|zsh|python|perl)`),
 	regexp.MustCompile(`(?i)wget.*\|\s*(bash|sh|zsh|python|perl)`),
-	regexp.MustCompile(`(?i)curl.*-o\s`),
-	regexp.MustCompile(`(?i)wget.*-O\s`),
-
-	// Path traversal
-	regexp.MustCompile(`\.\.`),
+	// curl -o and wget -O allowed — agent needs file downloads
 
 	// Sensitive files
 	regexp.MustCompile(`/etc/shadow`),
@@ -53,11 +42,10 @@ var blockedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\.aws/`),
 	regexp.MustCompile(`\.kube/config`),
 
-	// Dangerous exec patterns
-	regexp.MustCompile(`(?i)-exec\s`),
+	// Dangerous find -delete (find -exec allowed for legitimate operations)
 	regexp.MustCompile(`(?i)-delete`),
 
-	// Network tools (potential reverse shells)
+	// Network tools (reverse shells)
 	regexp.MustCompile(`(?i)\bnc\s`),
 	regexp.MustCompile(`(?i)\bncat\s`),
 	regexp.MustCompile(`(?i)\bsocat\s`),
@@ -65,8 +53,7 @@ var blockedPatterns = []*regexp.Regexp{
 	// Cron modification
 	regexp.MustCompile(`(?i)crontab\s+-[re]`),
 
-	// Process killing
-	regexp.MustCompile(`(?i)\bkill\b`),
+	// kill allowed — agent needs it for process management
 
 	// System reboot/shutdown
 	regexp.MustCompile(`(?i)\breboot\b|\bshutdown\b|\bhalt\b|\bpoweroff\b`),

@@ -218,6 +218,13 @@ type CleanupTarget struct {
 	Error     string  `json:"error,omitempty"`
 }
 
+// ErrorCluster groups similar error messages by normalized template.
+type ErrorCluster struct {
+	Template string `json:"template"`
+	Count    int    `json:"count"`
+	Example  string `json:"example"`
+}
+
 // DiskPressure represents disk usage for a filesystem.
 type DiskPressure struct {
 	Filesystem string  `json:"filesystem"`

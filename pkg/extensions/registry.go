@@ -40,11 +40,17 @@ func (r *Registry) Register(ext Extension) {
 }
 
 // LoadAll registers and starts all extensions, collecting non-fatal errors.
-func (r *Registry) LoadAll(ctx context.Context, agent *engine.ServerAgent, tools *toolreg.Registry, mcpServer *mcp.Server) error {
+// An optional notify func can be passed; it will be available to extensions via Context.Notify.
+func (r *Registry) LoadAll(ctx context.Context, agent *engine.ServerAgent, tools *toolreg.Registry, mcpServer *mcp.Server, notify ...func(string)) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	config := agent.GetConfig()
+
+	var notifyFn func(string)
+	if len(notify) > 0 {
+		notifyFn = notify[0]
+	}
 
 	// Register phase — each extension gets its own scoped runtime
 	registered := make([]string, 0, len(r.order))
@@ -57,6 +63,7 @@ func (r *Registry) LoadAll(ctx context.Context, agent *engine.ServerAgent, tools
 			Tools:     tools,
 			MCPServer: mcpServer,
 			Runtime:   runtime,
+			Notify:    notifyFn,
 		}
 
 		if err := r.registerOne(ctx, name, ext, extCtx); err != nil {

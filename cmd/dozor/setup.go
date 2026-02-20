@@ -73,18 +73,18 @@ func resolveWorkspacePath() string {
 }
 
 // buildMCPServer creates an MCP server and registers all core tools.
-func buildMCPServer(eng *engine.ServerAgent) *mcp.Server {
+func buildMCPServer(eng *engine.ServerAgent, execOpts tools.ExecOptions) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "dozor",
 		Version: version,
 	}, nil)
-	tools.RegisterAll(server, eng)
+	tools.RegisterAllWithOpts(server, eng, execOpts)
 	return server
 }
 
 // buildExtensionRegistry creates and loads the extension registry.
 // gatewayMode=true adds mcpclient and a2aclient extensions.
-func buildExtensionRegistry(eng *engine.ServerAgent, registry *toolreg.Registry, mcpServer *mcp.Server, gatewayMode bool) *extensions.Registry {
+func buildExtensionRegistry(eng *engine.ServerAgent, registry *toolreg.Registry, mcpServer *mcp.Server, gatewayMode bool, notify func(string)) *extensions.Registry {
 	extRegistry := extensions.NewRegistry()
 	extRegistry.Register(websearch.New())
 	extRegistry.Register(claudecode.New())
@@ -92,7 +92,7 @@ func buildExtensionRegistry(eng *engine.ServerAgent, registry *toolreg.Registry,
 		extRegistry.Register(mcpclient.New())
 		extRegistry.Register(a2aclient.New())
 	}
-	extRegistry.LoadAll(context.Background(), eng, registry, mcpServer)
+	extRegistry.LoadAll(context.Background(), eng, registry, mcpServer, notify)
 	extRegistry.RegisterIntrospectTool(mcpServer)
 
 	for _, extErr := range extRegistry.Errors() {

@@ -230,3 +230,14 @@ func FormatAnalysis(r AnalyzeResult) string {
 
 	return s
 }
+
+// FormatAnalysisEnriched adds error timeline and clustering to the standard analysis.
+func FormatAnalysisEnriched(r AnalyzeResult, entries []LogEntry) string {
+	s := FormatAnalysis(r)
+	s += "\n" + AnalyzeErrorTimeline(entries)
+	clusters := ClusterErrors(entries)
+	if len(clusters) > 0 {
+		s += "\n" + FormatErrorClusters(clusters)
+	}
+	return s
+}

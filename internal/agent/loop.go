@@ -17,8 +17,7 @@ type Loop struct {
 	provider     provider.Provider
 	registry     *toolreg.Registry
 	maxIters     int
-	toolDefs     []provider.ToolDefinition // cached
-	systemPrompt string                    // built from workspace + skills
+	systemPrompt string // built from workspace + skills
 }
 
 // NewLoop creates a new agent loop with dynamic system prompt.
@@ -27,7 +26,6 @@ func NewLoop(p provider.Provider, r *toolreg.Registry, maxIters int, workspacePa
 		provider:     p,
 		registry:     r,
 		maxIters:     maxIters,
-		toolDefs:     r.ToLLMTools(),
 		systemPrompt: BuildSystemPrompt(workspacePath, skillsLoader),
 	}
 }
@@ -51,7 +49,7 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 		default:
 		}
 
-		resp, err := l.provider.Chat(messages, l.toolDefs)
+		resp, err := l.provider.Chat(messages, l.registry.ToLLMTools())
 		if err != nil {
 			return "", fmt.Errorf("LLM call failed (iteration %d): %w", iteration, err)
 		}
@@ -75,6 +73,22 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 			Content:   resp.Content,
 			ToolCalls: resp.ToolCalls,
 		})
+
+		// Warn the agent when approaching the iteration limit so it can escalate proactively.
+		const iterWarnThreshold = 5
+		if iteration == l.maxIters-iterWarnThreshold {
+			slog.Warn("approaching iteration limit, injecting escalation prompt", slog.Int("iteration", iteration))
+			messages = append(messages, provider.Message{
+				Role: "user",
+				Content: fmt.Sprintf(
+					"⚠️ SYSTEM: %d/%d iterations used. You have %d iterations left. "+
+						"If the task is not progressing, IMMEDIATELY call claude_code(async=true) to escalate "+
+						"with: task description, what you tried, and the exact error. "+
+						"Read skill 'claude-escalation' for the prompt template.",
+					iteration, l.maxIters, iterWarnThreshold,
+				),
+			})
+		}
 
 		// Execute each tool call and append results.
 		for _, tc := range resp.ToolCalls {

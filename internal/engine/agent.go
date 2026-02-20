@@ -206,8 +206,13 @@ func (a *ServerAgent) RemoteExec(ctx context.Context, command string) CommandRes
 }
 
 // ProbeURLs checks HTTP endpoints and returns results.
-func (a *ServerAgent) ProbeURLs(ctx context.Context, urls []string, timeoutSec int) []ProbeResult {
-	return ProbeURLs(ctx, urls, timeoutSec)
+func (a *ServerAgent) ProbeURLs(ctx context.Context, urls []string, timeoutSec int, checkHeaders bool) []ProbeResult {
+	return ProbeURLs(ctx, urls, timeoutSec, checkHeaders)
+}
+
+// ProbeDNS resolves hostnames and returns DNS results.
+func (a *ServerAgent) ProbeDNS(ctx context.Context, hostnames []string) []DNSResult {
+	return ProbeDNS(ctx, hostnames)
 }
 
 // ScanCerts finds and parses TLS certificates on the server.

@@ -54,7 +54,7 @@ func resolveBuiltinDir(name string) string {
 }
 
 // loadDotenv loads a .env file into os environment if it exists.
-// Existing env vars are never overwritten.
+// Values in .env always take precedence over inherited OS environment.
 func loadDotenv(path string) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -74,9 +74,7 @@ func loadDotenv(path string) {
 		}
 		key = strings.TrimSpace(key)
 		val = strings.TrimSpace(val)
-		if os.Getenv(key) == "" {
-			os.Setenv(key, val)
-		}
+		os.Setenv(key, val)
 	}
 }
 
@@ -89,9 +87,9 @@ func hashString(s string) string {
 	return h
 }
 
-// sendWebhook POSTs a JSON payload {text: ...} to the given URL.
+// sendWebhook POSTs a JSON payload {message: ...} to the given URL.
 func sendWebhook(ctx context.Context, url, text string) {
-	body, _ := json.Marshal(map[string]string{"text": text})
+	body, _ := json.Marshal(map[string]string{"message": text})
 	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(body)))
 	if err != nil {
 		slog.Error("webhook request build failed", slog.Any("error", err))

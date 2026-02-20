@@ -23,7 +23,9 @@ func registerInspect(server *mcp.Server, agent *engine.ServerAgent) {
 - security: security audit (network, containers, auth, API hardening)
 - overview: system dashboard (disk, memory, load, top processes, docker summary)
 - remote: remote server monitoring (HTTP, SSL, systemd services via SSH)
-- systemd: local systemd service monitoring`,
+- systemd: local systemd service monitoring
+- connections: TCP/UDP connections by state, top remote IPs, per-service counts
+- cron: all cron jobs, systemd timers, and at jobs`,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.InspectInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		switch input.Mode {
@@ -95,8 +97,9 @@ func registerInspect(server *mcp.Server, agent *engine.ServerAgent) {
 			if ok, reason := engine.ValidateServiceName(input.Service); !ok {
 				return nil, engine.TextOutput{}, fmt.Errorf("invalid service: %s", reason)
 			}
-			result := agent.AnalyzeLogs(ctx, input.Service)
-			return nil, engine.TextOutput{Text: engine.FormatAnalysis(result)}, nil
+			entries := agent.GetLogs(ctx, input.Service, 1000, false)
+			result := engine.AnalyzeLogs(entries, input.Service)
+			return nil, engine.TextOutput{Text: engine.FormatAnalysisEnriched(result, entries)}, nil
 
 		case "errors":
 			return nil, engine.TextOutput{Text: agent.GetAllErrors(ctx)}, nil
@@ -114,8 +117,14 @@ func registerInspect(server *mcp.Server, agent *engine.ServerAgent) {
 		case "systemd":
 			return nil, engine.TextOutput{Text: agent.GetSystemdStatus(ctx, input.Services)}, nil
 
+		case "connections":
+			return nil, engine.TextOutput{Text: agent.GetConnections(ctx)}, nil
+
+		case "cron":
+			return nil, engine.TextOutput{Text: agent.GetScheduledTasks(ctx)}, nil
+
 		default:
-			return nil, engine.TextOutput{}, fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd", input.Mode)
+			return nil, engine.TextOutput{}, fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron", input.Mode)
 		}
 	})
 }

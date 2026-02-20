@@ -184,6 +184,13 @@ func (o *OpenAI) doChat(messages []Message, tools []ToolDefinition) (*Response, 
 	}
 
 	if len(result.Choices) == 0 {
+		if result.PromptFeedback != nil && result.PromptFeedback.BlockReason != "" {
+			slog.Warn("LLM response blocked by safety filter",
+				slog.String("block_reason", result.PromptFeedback.BlockReason),
+				slog.String("raw", truncate(string(data), 500)))
+			return nil, fmt.Errorf("LLM response blocked: %s", result.PromptFeedback.BlockReason)
+		}
+		slog.Warn("empty choices in LLM response", slog.String("raw", truncate(string(data), 500)))
 		return nil, fmt.Errorf("empty choices in LLM response")
 	}
 
@@ -216,7 +223,12 @@ func (o *OpenAI) doChat(messages []Message, tools []ToolDefinition) (*Response, 
 
 // OpenAI API response types.
 type chatCompletionResponse struct {
-	Choices []chatChoice `json:"choices"`
+	Choices        []chatChoice    `json:"choices"`
+	PromptFeedback *promptFeedback `json:"promptFeedback,omitempty"`
+}
+
+type promptFeedback struct {
+	BlockReason string `json:"blockReason,omitempty"`
 }
 
 type chatChoice struct {

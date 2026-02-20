@@ -3,7 +3,7 @@ package engine
 // --- MCP tool input structs ---
 
 type InspectInput struct {
-	Mode     string   `json:"mode" jsonschema:"Inspection mode: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd"`
+	Mode     string   `json:"mode" jsonschema:"Inspection mode: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron"`
 	Service  string   `json:"service,omitempty" jsonschema:"Service name (required for status, logs modes; optional for analyze)"`
 	Services []string `json:"services,omitempty" jsonschema:"Services to diagnose (all if omitted, only for diagnose mode)"`
 	Lines    int      `json:"lines,omitempty" jsonschema:"Number of log lines (default 100, only for logs mode)"`
@@ -11,7 +11,8 @@ type InspectInput struct {
 }
 
 type ExecInput struct {
-	Command string `json:"command" jsonschema:"Shell command to execute"`
+	Command  string `json:"command" jsonschema:"Shell command to execute"`
+	Security string `json:"security,omitempty" jsonschema:"Security mode: safe (default — blocks dangerous commands), ask (request user approval via Telegram before executing), full (unrestricted)"`
 }
 
 type RestartInput struct {
@@ -71,8 +72,10 @@ type RemoteInput struct {
 
 // ProbeInput is the MCP tool input for server_probe.
 type ProbeInput struct {
-	URLs      []string `json:"urls" jsonschema:"List of URLs to probe (http:// or https://)"`
-	TimeoutS  int      `json:"timeout_s,omitempty" jsonschema:"Request timeout in seconds (default 10)"`
+	URLs         []string `json:"urls" jsonschema:"List of URLs to probe (http:// or https://) or hostnames for DNS mode"`
+	TimeoutS     int      `json:"timeout_s,omitempty" jsonschema:"Request timeout in seconds (default 10)"`
+	Mode         string   `json:"mode,omitempty" jsonschema:"Probe mode: http (default) or dns"`
+	CheckHeaders bool     `json:"check_headers,omitempty" jsonschema:"Audit security headers on HTTP probe (HSTS, CSP, X-Frame-Options, etc.)"`
 }
 
 // CertInput is the MCP tool input for server_cert.
@@ -93,4 +96,11 @@ type EnvInput struct {
 // GitInput is the MCP tool input for server_git.
 type GitInput struct {
 	Path string `json:"path,omitempty" jsonschema:"Path to git repository (default: project path from config)"`
+}
+
+// ContainerExecInput is the MCP tool input for server_container_exec.
+type ContainerExecInput struct {
+	Container string `json:"container" jsonschema:"Container name, compose service name, or partial match"`
+	Command   string `json:"command" jsonschema:"Shell command to execute inside the container"`
+	User      string `json:"user,omitempty" jsonschema:"User to run command as (default: container's default user)"`
 }

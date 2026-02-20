@@ -354,12 +354,13 @@ func extractTitle(html string) string {
 
 // extractTextContent extracts readable text from HTML.
 func extractTextContent(html string) string {
-	// Remove script and style blocks
-	re := regexp.MustCompile(`(?is)<(script|style|noscript)[^>]*>.*?</\1>`)
-	html = re.ReplaceAllString(html, "")
+	// Remove script, style, and noscript blocks (Go regexp has no backreferences).
+	html = regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`).ReplaceAllString(html, "")
+	html = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`).ReplaceAllString(html, "")
+	html = regexp.MustCompile(`(?is)<noscript[^>]*>.*?</noscript>`).ReplaceAllString(html, "")
 
 	// Remove HTML comments
-	re = regexp.MustCompile(`(?s)<!--.*?-->`)
+	re := regexp.MustCompile(`(?s)<!--.*?-->`)
 	html = re.ReplaceAllString(html, "")
 
 	// Replace block elements with newlines

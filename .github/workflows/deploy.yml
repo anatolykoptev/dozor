@@ -50,9 +50,7 @@ jobs:
           scp $BINARY_NAME server:/tmp/$BINARY_NAME
           ssh server "
             sudo systemctl --user -M $SERVICE_USER@ stop $BINARY_NAME || true
-            sudo cp /tmp/$BINARY_NAME $INSTALL_DIR/$BINARY_NAME
-            sudo chown $SERVICE_USER:$SERVICE_USER $INSTALL_DIR/$BINARY_NAME
-            sudo chmod +x $INSTALL_DIR/$BINARY_NAME
+            sudo install -o $SERVICE_USER -g $SERVICE_USER -m 0755 /tmp/$BINARY_NAME $INSTALL_DIR/$BINARY_NAME
             sudo systemctl --user -M $SERVICE_USER@ start $BINARY_NAME
             rm /tmp/$BINARY_NAME
           "
