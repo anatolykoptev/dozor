@@ -7,38 +7,14 @@ import (
 	"time"
 )
 
-// HasDocker returns true if Docker commands should be available.
-func (c Config) HasDocker() bool {
-	return c.ComposePath != ""
-}
-
 // HasRemote returns true if remote monitoring is configured.
 func (c Config) HasRemote() bool {
 	return c.RemoteHost != "" || c.RemoteURL != ""
 }
 
-// HasUserServices returns true if user-level systemd services are configured.
+// HasUserServices returns true if user-level systemd services are configured via env.
 func (c Config) HasUserServices() bool {
-	return len(c.UserServices) > 0 && c.UserServicesUser != ""
-}
-
-// UserServiceNames returns just the names of configured user services.
-func (c Config) UserServiceNames() []string {
-	names := make([]string, len(c.UserServices))
-	for i, s := range c.UserServices {
-		names[i] = s.Name
-	}
-	return names
-}
-
-// FindUserService returns the UserService by name, or nil if not found.
-func (c Config) FindUserService(name string) *UserService {
-	for _, s := range c.UserServices {
-		if s.Name == name {
-			return &s
-		}
-	}
-	return nil
+	return len(c.UserServices) > 0
 }
 
 // Config holds all dozor configuration.

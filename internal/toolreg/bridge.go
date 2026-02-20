@@ -440,8 +440,7 @@ func (t *servicesTool) Parameters() map[string]any {
 	}
 }
 func (t *servicesTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-	cfg := t.agent.GetConfig()
-	services := resolveUserServices(ctx, cfg, t.agent)
+	services := t.agent.ResolveUserServices(ctx)
 	if len(services) == 0 {
 		return "", fmt.Errorf("no user services found (auto-discovery found none, or set DOZOR_USER_SERVICES in .env)")
 	}
@@ -452,75 +451,46 @@ func (t *servicesTool) Execute(ctx context.Context, args map[string]any) (string
 
 	switch action {
 	case "status":
-		return userServicesStatus(ctx, cfg, t.agent, service, services), nil
+		return userServicesStatus(ctx, t.agent, service, services), nil
 	case "restart":
 		if service == "" {
 			return "", fmt.Errorf("service name is required for restart action")
 		}
-		if findUserService(services, service) == nil {
-			return "", fmt.Errorf("unknown service %q, available: %s", service, strings.Join(userServiceNames(services), ", "))
+		if engine.FindUserServiceIn(services, service) == nil {
+			return "", fmt.Errorf("unknown service %q, available: %s", service, strings.Join(engine.UserServiceNamesFrom(services), ", "))
 		}
-		return userServiceRestart(ctx, cfg, t.agent, service), nil
+		return userServiceRestart(ctx, t.agent, service), nil
 	case "restart-all":
-		return userServicesRestartAll(ctx, cfg, t.agent, services), nil
+		return userServicesRestartAll(ctx, t.agent, services), nil
 	case "logs":
 		if service == "" {
 			return "", fmt.Errorf("service name is required for logs action")
 		}
-		if findUserService(services, service) == nil {
-			return "", fmt.Errorf("unknown service %q, available: %s", service, strings.Join(userServiceNames(services), ", "))
+		if engine.FindUserServiceIn(services, service) == nil {
+			return "", fmt.Errorf("unknown service %q, available: %s", service, strings.Join(engine.UserServiceNamesFrom(services), ", "))
 		}
 		if lines > 5000 {
 			lines = 5000
 		}
-		return userServiceLogs(ctx, cfg, t.agent, service, lines), nil
+		return userServiceLogs(ctx, t.agent, service, lines), nil
 	default:
 		return "", fmt.Errorf("unknown action %q, use: status, restart, restart-all, logs", action)
 	}
 }
 
-// User service helpers (same logic as tools/services.go).
+// User service helpers.
 
-func userCmd(command string) string {
-	return fmt.Sprintf("systemctl --user %s", command)
-}
-
-// resolveUserServices returns configured services, falling back to auto-discovery.
-func resolveUserServices(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent) []engine.UserService {
-	if cfg.HasUserServices() {
-		return cfg.UserServices
-	}
-	return agent.DiscoverUserServices(ctx)
-}
-
-func findUserService(services []engine.UserService, name string) *engine.UserService {
-	for i := range services {
-		if services[i].Name == name {
-			return &services[i]
-		}
-	}
-	return nil
-}
-
-func userServiceNames(services []engine.UserService) []string {
-	names := make([]string, len(services))
-	for i, s := range services {
-		names[i] = s.Name
-	}
-	return names
-}
-
-func userServicesStatus(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent, singleService string, allServices []engine.UserService) string {
+func userServicesStatus(ctx context.Context, agent *engine.ServerAgent, singleService string, allServices []engine.UserService) string {
 	services := allServices
 	if singleService != "" {
-		svc := findUserService(allServices, singleService)
+		svc := engine.FindUserServiceIn(allServices, singleService)
 		if svc == nil {
-			return fmt.Sprintf("Unknown service %q, available: %s", singleService, strings.Join(userServiceNames(allServices), ", "))
+			return fmt.Sprintf("Unknown service %q, available: %s", singleService, strings.Join(engine.UserServiceNamesFrom(allServices), ", "))
 		}
 		services = []engine.UserService{*svc}
 	}
 
-	user := cfg.UserServicesUser
+	user := agent.GetConfig().UserServicesUser
 	if user == "" {
 		user = "auto-discovered"
 	}
@@ -528,8 +498,7 @@ func userServicesStatus(ctx context.Context, cfg engine.Config, agent *engine.Se
 	fmt.Fprintf(&b, "User Services [%s] (%d)\n\n", user, len(services))
 
 	for _, svc := range services {
-		cmd := userCmd(fmt.Sprintf("is-active %s", svc.Name))
-		res := agent.ExecuteCommand(ctx, cmd)
+		res := agent.ExecuteCommand(ctx, fmt.Sprintf("systemctl --user is-active %s", svc.Name))
 		state := strings.TrimSpace(res.Stdout)
 		if state == "" {
 			state = strings.TrimSpace(res.Stderr)
@@ -547,8 +516,7 @@ func userServicesStatus(ctx context.Context, cfg engine.Config, agent *engine.Se
 		}
 		fmt.Fprintf(&b, "[%s] %s: %s%s\n", icon, svc.Name, state, portInfo)
 
-		cmd = userCmd(fmt.Sprintf("show %s --property=ActiveEnterTimestamp,MemoryCurrent", svc.Name))
-		res = agent.ExecuteCommand(ctx, cmd)
+		res = agent.ExecuteCommand(ctx, fmt.Sprintf("systemctl --user show %s --property=ActiveEnterTimestamp,MemoryCurrent", svc.Name))
 		for _, line := range strings.Split(res.Stdout, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "ActiveEnterTimestamp=") {
@@ -570,14 +538,12 @@ func userServicesStatus(ctx context.Context, cfg engine.Config, agent *engine.Se
 	return b.String()
 }
 
-func userServiceRestart(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent, service string) string {
-	cmd := userCmd(fmt.Sprintf("restart %s", service))
-	res := agent.ExecuteCommand(ctx, cmd)
+func userServiceRestart(ctx context.Context, agent *engine.ServerAgent, service string) string {
+	res := agent.ExecuteCommand(ctx, fmt.Sprintf("systemctl --user restart %s", service))
 	if !res.Success {
 		return fmt.Sprintf("Failed to restart %s: %s", service, res.Output())
 	}
-	cmd = userCmd(fmt.Sprintf("is-active %s", service))
-	res = agent.ExecuteCommand(ctx, cmd)
+	res = agent.ExecuteCommand(ctx, fmt.Sprintf("systemctl --user is-active %s", service))
 	state := strings.TrimSpace(res.Stdout)
 	if state == "active" {
 		return fmt.Sprintf("Service %s restarted successfully (active).", service)
@@ -585,19 +551,18 @@ func userServiceRestart(ctx context.Context, cfg engine.Config, agent *engine.Se
 	return fmt.Sprintf("Service %s restarted but state is: %s", service, state)
 }
 
-func userServicesRestartAll(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent, services []engine.UserService) string {
+func userServicesRestartAll(ctx context.Context, agent *engine.ServerAgent, services []engine.UserService) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Restarting %d services...\n\n", len(services))
 	for _, svc := range services {
-		result := userServiceRestart(ctx, cfg, agent, svc.Name)
+		result := userServiceRestart(ctx, agent, svc.Name)
 		fmt.Fprintf(&b, "%s\n", result)
 	}
 	return b.String()
 }
 
-func userServiceLogs(ctx context.Context, cfg engine.Config, agent *engine.ServerAgent, service string, lines int) string {
-	cmd := fmt.Sprintf("journalctl --user-unit %s --no-pager -n %d", service, lines)
-	res := agent.ExecuteCommand(ctx, cmd)
+func userServiceLogs(ctx context.Context, agent *engine.ServerAgent, service string, lines int) string {
+	res := agent.ExecuteCommand(ctx, fmt.Sprintf("journalctl --user-unit %s --no-pager -n %d", service, lines))
 	if !res.Success {
 		return fmt.Sprintf("Failed to get logs for %s: %s", service, res.Output())
 	}

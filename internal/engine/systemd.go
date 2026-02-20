@@ -8,12 +8,20 @@ import (
 )
 
 // GetSystemdStatus returns status of local systemd services.
+// Uses config list first, then auto-discovers active user services as fallback.
 func (a *ServerAgent) GetSystemdStatus(ctx context.Context, services []string) string {
 	if len(services) == 0 {
 		services = a.cfg.SystemdServices
 	}
 	if len(services) == 0 {
-		return "No systemd services configured. Set DOZOR_SYSTEMD_SERVICES in .env."
+		// Auto-discover user services as fallback
+		discovered := a.DiscoverUserServices(ctx)
+		for _, svc := range discovered {
+			services = append(services, svc.Name)
+		}
+	}
+	if len(services) == 0 {
+		return "No systemd services found (auto-discovery found none, or set DOZOR_SYSTEMD_SERVICES in .env)."
 	}
 
 	var b strings.Builder
@@ -74,6 +82,33 @@ func (a *ServerAgent) systemctlShow(ctx context.Context, svc, properties string)
 	}
 	res = a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("systemctl show %s --property=%s 2>/dev/null", svc, properties))
 	return res.Stdout
+}
+
+// ResolveUserServices returns configured user services, falling back to auto-discovery.
+func (a *ServerAgent) ResolveUserServices(ctx context.Context) []UserService {
+	if a.cfg.HasUserServices() {
+		return a.cfg.UserServices
+	}
+	return a.DiscoverUserServices(ctx)
+}
+
+// FindUserServiceIn finds a service by name in a list.
+func FindUserServiceIn(services []UserService, name string) *UserService {
+	for i := range services {
+		if services[i].Name == name {
+			return &services[i]
+		}
+	}
+	return nil
+}
+
+// UserServiceNamesFrom returns just the names from a service list.
+func UserServiceNamesFrom(services []UserService) []string {
+	names := make([]string, len(services))
+	for i, s := range services {
+		names[i] = s.Name
+	}
+	return names
 }
 
 // DiscoverUserServices scans active user systemd services.

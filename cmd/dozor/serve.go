@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
+	"github.com/anatolykoptev/dozor/internal/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // runServe starts the MCP server in HTTP or stdio mode.
 func runServe(cfg engine.Config, eng *engine.ServerAgent) {
+	defer eng.Close()
 	stdio := hasFlag("--stdio")
 
 	logWriter := os.Stdout
@@ -23,8 +25,8 @@ func runServe(cfg engine.Config, eng *engine.ServerAgent) {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
-	server := buildMCPServer(eng)
-	buildExtensionRegistry(eng, nil, server, false)
+	server := buildMCPServer(eng, tools.ExecOptions{Config: tools.NewExecConfig()})
+	buildExtensionRegistry(eng, nil, server, false, nil)
 
 	slog.Info("dozor MCP server",
 		slog.String("mode", map[bool]string{true: "stdio", false: "http"}[stdio]))

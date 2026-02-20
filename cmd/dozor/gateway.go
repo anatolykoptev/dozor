@@ -8,19 +8,23 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/a2a"
+	"github.com/anatolykoptev/dozor/internal/approvals"
 	"github.com/anatolykoptev/dozor/internal/bus"
+	"github.com/anatolykoptev/dozor/internal/tools"
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/telegram"
 )
 
 // runGateway starts the full agent: MCP + A2A + Telegram + LLM.
 func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
+	defer eng.Close()
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	port := cfg.MCPPort
@@ -31,13 +35,31 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	// 1. Agent stack: tool registry, skills, LLM provider, agent loop.
 	stack := buildAgentStack(eng)
 
-	// 2. MCP server + extensions.
-	mcpServer := buildMCPServer(eng)
-	buildExtensionRegistry(eng, stack.registry, mcpServer, true)
-
-	// 3. Message bus.
+	// 2. Message bus + notify (created before MCP server so exec tool can use them).
 	msgBus := bus.New()
 	defer msgBus.Close()
+
+	adminChatID := resolveAdminChatID()
+	approvalsMgr := approvals.New()
+	notifyFn := func(text string) {
+		if adminChatID == "" {
+			return
+		}
+		msgBus.PublishOutbound(bus.Message{
+			ID:        fmt.Sprintf("notify-%d", time.Now().UnixMilli()),
+			Channel:   "telegram",
+			SenderID:  "dozor",
+			ChatID:    adminChatID,
+			Text:      text,
+			Timestamp: time.Now(),
+		})
+	}
+
+	// 3. MCP server + extensions.
+	execConfig := tools.NewExecConfig()
+	execOpts := tools.ExecOptions{Config: execConfig, Approvals: approvalsMgr, Notify: notifyFn}
+	mcpServer := buildMCPServer(eng, execOpts)
+	buildExtensionRegistry(eng, stack.registry, mcpServer, true, notifyFn)
 
 	// 4. HTTP mux: MCP + health + webhook.
 	mx := http.NewServeMux()
@@ -65,8 +87,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	}
 
 	// 7. Message handler: inbound → agent → outbound.
-	adminChatID := resolveAdminChatID()
-	go runMessageLoop(sigCtx, msgBus, stack, adminChatID)
+	go runMessageLoop(sigCtx, msgBus, stack, adminChatID, approvalsMgr, notifyFn)
 
 	// 8. Periodic watch (if configured).
 	if interval := os.Getenv("DOZOR_WATCH_INTERVAL"); interval != "" {
@@ -141,7 +162,7 @@ func resolveAdminChatID() string {
 }
 
 // runMessageLoop processes inbound messages through the agent loop and routes responses.
-func runMessageLoop(ctx context.Context, msgBus *bus.Bus, stack *agentStack, adminChatID string) {
+func runMessageLoop(ctx context.Context, msgBus *bus.Bus, stack *agentStack, adminChatID string, approvalsMgr *approvals.Manager, notifyFn func(string)) {
 	for {
 		msg, ok := msgBus.ConsumeInbound(ctx)
 		if !ok {
@@ -151,10 +172,47 @@ func runMessageLoop(ctx context.Context, msgBus *bus.Bus, stack *agentStack, adm
 			slog.String("channel", msg.Channel),
 			slog.String("sender", msg.SenderID))
 
+		// Check if this is a command approval response ("yes exec-XXXXXXXX" / "no exec-XXXXXXXX").
+		if approvalsMgr != nil {
+			if id, approved, ok := approvals.ParseResponse(msg.Text); ok {
+				if approvalsMgr.Resolve(id, approved) {
+					verdict := "✅ Команда одобрена"
+					if !approved {
+						verdict = "❌ Команда отклонена"
+					}
+					msgBus.PublishOutbound(bus.Message{
+						ID:        msg.ID + "-approval-ack",
+						Channel:   "telegram",
+						SenderID:  "dozor",
+						ChatID:    msg.ChatID,
+						Text:      verdict,
+						Timestamp: time.Now(),
+					})
+					continue
+				}
+			}
+		}
+
+		if msg.Channel == "telegram" && msg.ChatID != "" {
+			msgBus.PublishOutbound(bus.Message{
+				ID:        msg.ID + "-ack",
+				Channel:   "telegram",
+				SenderID:  "dozor",
+				ChatID:    msg.ChatID,
+				Text:      "⏳ Принял, обрабатываю",
+				Timestamp: time.Now(),
+			})
+		}
+
 		response, err := stack.loop.Process(ctx, msg.Text)
 		if err != nil {
 			slog.Error("agent processing failed", slog.Any("error", err))
-			response = fmt.Sprintf("Error: %s", err.Error())
+			if strings.Contains(err.Error(), "max tool iterations reached") {
+				response = "⚠️ Превышен лимит итераций. Передаю задачу Claude Code для глубокого анализа..."
+				go autoEscalateToClaudeCode(ctx, stack, msg.Text, notifyFn)
+			} else {
+				response = fmt.Sprintf("Error: %s", err.Error())
+			}
 		}
 
 		msgBus.PublishOutbound(bus.Message{
@@ -177,6 +235,50 @@ func runMessageLoop(ctx context.Context, msgBus *bus.Bus, stack *agentStack, adm
 			})
 		}
 	}
+}
+
+// autoEscalateToClaudeCode collects recent logs and delegates the task to Claude Code.
+// Called in a goroutine when the agent loop hits max iterations.
+func autoEscalateToClaudeCode(ctx context.Context, stack *agentStack, originalTask string, notify func(string)) {
+	// Collect last 60 lines of dozor logs for context.
+	out, err := exec.CommandContext(ctx,
+		"journalctl", "--user", "-u", "dozor", "-n", "60", "--no-pager", "--output=short").Output()
+	logSnippet := string(out)
+	if err != nil || len(logSnippet) == 0 {
+		logSnippet = "(logs unavailable)"
+	}
+
+	prompt := fmt.Sprintf(
+		"## Задача\n%s\n\n"+
+		"## Что произошло\n"+
+		"Агент Dozor выполнял задачу и исчерпал лимит инструментальных итераций.\n"+
+		"Задача не была завершена. Требуется глубокий анализ и исправление.\n\n"+
+		"## Последние логи Dozor\n%s\n\n"+
+		"## Инструкции\n"+
+		"1. Проанализируй логи и пойми, на чём застрял агент\n"+
+		"2. Определи корневую причину проблемы\n"+
+		"3. Реши проблему или предложи конкретный план действий\n"+
+		"4. Если нужны права или команды — выполни их",
+		originalTask, logSnippet)
+
+	slog.Info("escalating to claude_code after max iterations")
+	shortTask := originalTask
+	if len(shortTask) > 100 {
+		shortTask = shortTask[:100] + "..."
+	}
+	result, execErr := stack.registry.Execute(ctx, "claude_code", map[string]any{
+		"prompt": prompt,
+		"async":  true,
+		"title":  "⚠️ Авто-эскалация: превышен лимит итераций\n" + shortTask,
+	})
+	if execErr != nil {
+		slog.Error("claude_code escalation failed", slog.Any("error", execErr))
+		if notify != nil {
+			notify(fmt.Sprintf("❌ Claude Code escalation failed: %s", execErr.Error()))
+		}
+		return
+	}
+	slog.Info("claude_code escalation result", slog.String("result", result))
 }
 
 // runGatewayWatch runs periodic triage and feeds results through the message bus.

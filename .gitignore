@@ -14,6 +14,6 @@
 # Claude instructions (local only)
 CLAUDE.md
 
-# Binary
-dozor
-dozor-*
+# Binary (root only, not cmd/dozor/ directory)
+/dozor
+/dozor-*
