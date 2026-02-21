@@ -1,4 +1,4 @@
-.PHONY: build install clean check serve
+.PHONY: build install clean check serve lint
 
 BINARY=dozor
 INSTALL_PATH=$(HOME)/.local/bin
@@ -11,6 +11,9 @@ build:
 install: build
 	mkdir -p $(INSTALL_PATH)
 	cp $(BINARY) $(INSTALL_PATH)/$(BINARY)
+
+lint:
+	golangci-lint run ./...
 
 clean:
 	rm -f $(BINARY)
