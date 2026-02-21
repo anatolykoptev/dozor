@@ -17,9 +17,11 @@ import (
 	"github.com/anatolykoptev/dozor/internal/a2a"
 	"github.com/anatolykoptev/dozor/internal/approvals"
 	"github.com/anatolykoptev/dozor/internal/bus"
-	"github.com/anatolykoptev/dozor/internal/tools"
 	"github.com/anatolykoptev/dozor/internal/engine"
+	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/telegram"
+	"github.com/anatolykoptev/dozor/internal/tools"
+	mcpclientExt "github.com/anatolykoptev/dozor/pkg/extensions/mcpclient"
 )
 
 // runGateway starts the full agent: MCP + A2A + Telegram + LLM.
@@ -59,7 +61,18 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	execConfig := tools.NewExecConfig()
 	execOpts := tools.ExecOptions{Config: execConfig, Approvals: approvalsMgr, Notify: notifyFn}
 	mcpServer := buildMCPServer(eng, execOpts)
-	buildExtensionRegistry(eng, stack.registry, mcpServer, true, notifyFn)
+	extRegistry := buildExtensionRegistry(eng, stack.registry, mcpServer, true, notifyFn)
+
+	// Extract KBSearcher for programmatic KB access (triage enrichment + auto-save).
+	var kbSearcher *mcpclient.KBSearcher
+	if ext := extRegistry.Get("mcpclient"); ext != nil {
+		if mcpExt, ok := ext.(*mcpclientExt.MCPClientExtension); ok {
+			kbSearcher = mcpExt.KBSearcher()
+		}
+	}
+	if kbSearcher != nil {
+		slog.Info("knowledge base integration active")
+	}
 
 	// 4. HTTP mux: MCP + health + webhook.
 	mx := http.NewServeMux()
@@ -87,7 +100,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	}
 
 	// 7. Message handler: inbound → agent → outbound.
-	go runMessageLoop(sigCtx, msgBus, stack, adminChatID, approvalsMgr, notifyFn)
+	go runMessageLoop(sigCtx, msgBus, stack, adminChatID, approvalsMgr, notifyFn, kbSearcher)
 
 	// 8. Periodic watch (if configured).
 	if interval := os.Getenv("DOZOR_WATCH_INTERVAL"); interval != "" {
@@ -95,7 +108,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		if err != nil {
 			slog.Error("invalid DOZOR_WATCH_INTERVAL", slog.String("value", interval))
 		} else {
-			go runGatewayWatch(sigCtx, eng, msgBus, dur, cfg)
+			go runGatewayWatch(sigCtx, eng, msgBus, dur, cfg, kbSearcher)
 		}
 	}
 
@@ -162,7 +175,7 @@ func resolveAdminChatID() string {
 }
 
 // runMessageLoop processes inbound messages through the agent loop and routes responses.
-func runMessageLoop(ctx context.Context, msgBus *bus.Bus, stack *agentStack, adminChatID string, approvalsMgr *approvals.Manager, notifyFn func(string)) {
+func runMessageLoop(ctx context.Context, msgBus *bus.Bus, stack *agentStack, adminChatID string, approvalsMgr *approvals.Manager, notifyFn func(string), kbSearcher *mcpclient.KBSearcher) {
 	for {
 		msg, ok := msgBus.ConsumeInbound(ctx)
 		if !ok {
@@ -213,6 +226,20 @@ func runMessageLoop(ctx context.Context, msgBus *bus.Bus, stack *agentStack, adm
 			} else {
 				response = fmt.Sprintf("Error: %s", err.Error())
 			}
+		}
+
+		// Auto-save resolved watch incidents to knowledge base.
+		if kbSearcher != nil && msg.SenderID == "watch" && err == nil && response != "" {
+			content := "Auto-resolved incident:\n\nTriage:\n" + msg.Text + "\n\nResolution:\n" + response
+			go func() {
+				saveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if saveErr := kbSearcher.Save(saveCtx, content); saveErr != nil {
+					slog.Warn("kb auto-save failed", slog.Any("error", saveErr))
+				} else {
+					slog.Info("kb auto-save: incident resolution saved")
+				}
+			}()
 		}
 
 		msgBus.PublishOutbound(bus.Message{
@@ -282,10 +309,10 @@ func autoEscalateToClaudeCode(ctx context.Context, stack *agentStack, originalTa
 }
 
 // runGatewayWatch runs periodic triage and feeds results through the message bus.
-func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, interval time.Duration, cfg engine.Config) {
+func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, interval time.Duration, cfg engine.Config, kbSearcher *mcpclient.KBSearcher) {
 	slog.Info("gateway watch started", slog.String("interval", interval.String()))
 	time.Sleep(30 * time.Second) // let everything boot
-	gatewayWatchTick(ctx, eng, msgBus, cfg)
+	gatewayWatchTick(ctx, eng, msgBus, cfg, kbSearcher)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -295,12 +322,12 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 			slog.Info("gateway watch stopped")
 			return
 		case <-ticker.C:
-			gatewayWatchTick(ctx, eng, msgBus, cfg)
+			gatewayWatchTick(ctx, eng, msgBus, cfg, kbSearcher)
 		}
 	}
 }
 
-func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, cfg engine.Config) {
+func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, cfg engine.Config, kbSearcher *mcpclient.KBSearcher) {
 	slog.Info("gateway watch: running triage", slog.Bool("dev_mode", eng.IsDevMode()))
 	result := eng.Triage(ctx, nil)
 	if result == "" {
@@ -315,6 +342,33 @@ func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.
 		prompt = "Periodic health check detected issues. First use kb_search to check for similar past incidents and proven solutions, then analyze and take corrective action if safe:\n\n"
 	} else {
 		prompt = "Periodic health check detected issues. Analyze and take corrective action if safe:\n\n"
+	}
+
+	// Enrich prompt with KB context: search for similar past incidents.
+	if kbSearcher != nil {
+		issues := engine.ExtractIssues(result)
+		if len(issues) > 0 {
+			// Build a focused search query from issue descriptions.
+			var queries []string
+			for _, issue := range issues {
+				queries = append(queries, issue.Description)
+			}
+			query := strings.Join(queries, "; ")
+			if len(query) > 500 {
+				query = query[:500]
+			}
+
+			searchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			kbResult, err := kbSearcher.Search(searchCtx, query, 3)
+			cancel()
+
+			if err != nil {
+				slog.Warn("kb search during triage failed", slog.Any("error", err))
+			} else if !strings.Contains(kbResult, "No relevant knowledge found") {
+				prompt += "Relevant past incidents from knowledge base:\n" + kbResult + "\n\n"
+				slog.Info("gateway watch: enriched triage with KB context", slog.Int("issues", len(issues)))
+			}
+		}
 	}
 
 	slog.Info("gateway watch: issues detected, routing to agent")

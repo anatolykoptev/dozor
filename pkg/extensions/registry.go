@@ -152,6 +152,16 @@ func (r *Registry) Stop(ctx context.Context) {
 	}
 }
 
+// Get returns the extension with the given name, or nil if not found/not started.
+func (r *Registry) Get(name string) Extension {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if !r.started[name] {
+		return nil
+	}
+	return r.extensions[name]
+}
+
 // List returns extension names in registration order.
 func (r *Registry) List() []string {
 	r.mu.RLock()

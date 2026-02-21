@@ -10,7 +10,8 @@ import (
 
 // MCPClientExtension provides remote MCP server connectivity.
 type MCPClientExtension struct {
-	manager *mcpclient.ClientManager
+	manager    *mcpclient.ClientManager
+	kbSearcher *mcpclient.KBSearcher
 }
 
 func New() *MCPClientExtension { return &MCPClientExtension{} }
@@ -72,17 +73,26 @@ func (e *MCPClientExtension) Register(ctx context.Context, extCtx *extensions.Co
 
 	e.manager = mcpclient.NewClientManager(servers)
 
+	kbCfg := mcpclient.KBConfig{
+		ServerID:   extCtx.Config.KBServer,
+		UserID:     extCtx.Config.KBUser,
+		CubeID:     extCtx.Config.KBCube,
+		SearchTool: extCtx.Config.KBSearchTool,
+		SaveTool:   extCtx.Config.KBSaveTool,
+	}
+
 	if extCtx.Tools != nil {
 		mcpclient.RegisterTools(extCtx.Tools, e.manager)
-		mcpclient.RegisterKBTools(extCtx.Tools, e.manager, mcpclient.KBConfig{
-			ServerID:   extCtx.Config.KBServer,
-			UserID:     extCtx.Config.KBUser,
-			CubeID:     extCtx.Config.KBCube,
-			SearchTool: extCtx.Config.KBSearchTool,
-			SaveTool:   extCtx.Config.KBSaveTool,
-		})
+		mcpclient.RegisterKBTools(extCtx.Tools, e.manager, kbCfg)
 	}
+
+	e.kbSearcher = mcpclient.NewKBSearcher(e.manager, kbCfg)
 
 	log.Info("mcp client registered", "servers", len(servers))
 	return nil
+}
+
+// KBSearcher returns the programmatic KB client, or nil if KB is not configured.
+func (e *MCPClientExtension) KBSearcher() *mcpclient.KBSearcher {
+	return e.kbSearcher
 }

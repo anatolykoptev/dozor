@@ -168,6 +168,38 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 	return b.String()
 }
 
+// TriageIssue represents a searchable issue summary extracted from a triage report.
+type TriageIssue struct {
+	Service     string
+	Description string // e.g. "redis: 3 restarts, connection refused"
+}
+
+// ExtractIssues parses a triage report string into searchable issue summaries.
+func ExtractIssues(report string) []TriageIssue {
+	var issues []TriageIssue
+	for _, line := range strings.Split(report, "\n") {
+		line = strings.TrimSpace(line)
+		// Match lines like "[CRITICAL] redis — exited, 3 restarts"
+		// or "[WARNING] api-service — running, 12 errors"
+		// or "[ERROR] postgres — running, 5 errors"
+		for _, prefix := range []string{"[CRITICAL] ", "[ERROR] ", "[WARNING] "} {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			rest := line[len(prefix):]
+			parts := strings.SplitN(rest, " — ", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			issues = append(issues, TriageIssue{
+				Service:     strings.TrimSpace(parts[0]),
+				Description: strings.TrimSpace(parts[0]) + ": " + strings.TrimSpace(parts[1]),
+			})
+		}
+	}
+	return issues
+}
+
 // writeFlatTriage renders the original flat problematic/healthy output.
 func (a *ServerAgent) writeFlatTriage(ctx context.Context, b *strings.Builder, problematic []ServiceStatus, healthy []string) {
 	if len(problematic) > 0 {

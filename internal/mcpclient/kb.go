@@ -142,6 +142,67 @@ func (t *kbSaveTool) Execute(ctx context.Context, args map[string]any) (string, 
 	return "Knowledge saved to knowledge base.\n" + result, nil
 }
 
+// KBSearcher provides programmatic (non-tool) access to the knowledge base.
+type KBSearcher struct {
+	mgr *ClientManager
+	cfg KBConfig
+}
+
+// NewKBSearcher creates a KBSearcher if the KB server is configured. Returns nil otherwise.
+func NewKBSearcher(mgr *ClientManager, cfg KBConfig) *KBSearcher {
+	if cfg.ServerID == "" {
+		cfg.ServerID = "memdb"
+	}
+	if cfg.UserID == "" {
+		cfg.UserID = "default"
+	}
+	if cfg.CubeID == "" {
+		cfg.CubeID = "default"
+	}
+	if cfg.SearchTool == "" {
+		cfg.SearchTool = "search_memories"
+	}
+	if cfg.SaveTool == "" {
+		cfg.SaveTool = "add_memory"
+	}
+	if _, ok := mgr.GetServer(cfg.ServerID); !ok {
+		return nil
+	}
+	return &KBSearcher{mgr: mgr, cfg: cfg}
+}
+
+// Search queries the knowledge base and returns formatted results.
+func (s *KBSearcher) Search(ctx context.Context, query string, topK int) (string, error) {
+	if topK <= 0 {
+		topK = 3
+	}
+	result, err := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SearchTool, map[string]any{
+		"query":      query,
+		"user_id":    s.cfg.UserID,
+		"cube_ids":   []string{s.cfg.CubeID},
+		"top_k":      topK,
+		"relativity": 0.82,
+		"dedup":      "mmr",
+	})
+	if err != nil {
+		return "", fmt.Errorf("kb search failed: %w", err)
+	}
+	return formatSearchResult(result), nil
+}
+
+// Save stores content in the knowledge base.
+func (s *KBSearcher) Save(ctx context.Context, content string) error {
+	_, err := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SaveTool, map[string]any{
+		"user_id":        s.cfg.UserID,
+		"mem_cube_id":    s.cfg.CubeID,
+		"memory_content": content,
+	})
+	if err != nil {
+		return fmt.Errorf("kb save failed: %w", err)
+	}
+	return nil
+}
+
 // formatSearchResult extracts readable memories from the raw MCP JSON response.
 func formatSearchResult(raw string) string {
 	// Parse the nested JSON response to extract memories.
