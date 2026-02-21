@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -110,6 +112,11 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		} else {
 			go runGatewayWatch(sigCtx, eng, msgBus, dur, cfg, kbSearcher)
 		}
+	}
+
+	// 8b. Fast remote server checks (independent of LLM pipeline).
+	if cfg.HasRemote() {
+		go runRemoteWatch(sigCtx, cfg, notifyFn)
 	}
 
 	// 9. HTTP server (blocks until shutdown).
@@ -330,6 +337,24 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, cfg engine.Config, kbSearcher *mcpclient.KBSearcher) {
 	slog.Info("gateway watch: running triage", slog.Bool("dev_mode", eng.IsDevMode()))
 	result := eng.Triage(ctx, nil)
+
+	// Append remote server status to triage results.
+	if cfg.HasRemote() {
+		remoteCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		remoteStatus := engine.CheckRemoteServer(remoteCtx, cfg)
+		cancel()
+		if remoteStatus != nil && len(remoteStatus.Alerts) > 0 {
+			remoteText := engine.FormatRemoteAlerts(remoteStatus)
+			if remoteText != "" {
+				if result == "" {
+					result = remoteText
+				} else {
+					result += "\n\n" + remoteText
+				}
+			}
+		}
+	}
+
 	if result == "" {
 		slog.Info("gateway watch: all healthy")
 		return
@@ -380,4 +405,73 @@ func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.
 		Text:      prompt + result,
 		Timestamp: time.Now(),
 	})
+}
+
+// runRemoteWatch runs fast, independent remote server checks on a short interval.
+// Sends CRITICAL/ERROR alerts directly to Telegram, bypassing the LLM pipeline.
+func runRemoteWatch(ctx context.Context, cfg engine.Config, notify func(string)) {
+	interval := cfg.RemoteCheckInterval
+	slog.Info("remote watch started",
+		slog.String("interval", interval.String()),
+		slog.String("url", cfg.RemoteURL),
+		slog.String("host", cfg.RemoteHost))
+
+	const repeatInterval = 30 * time.Minute
+
+	// Track last alert hash and when it was last sent.
+	var lastAlertHash string
+	var lastAlertTime time.Time
+
+	time.Sleep(15 * time.Second) // let services boot
+
+	remoteCheckTick(ctx, cfg, notify, &lastAlertHash, &lastAlertTime, repeatInterval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("remote watch stopped")
+			return
+		case <-ticker.C:
+			remoteCheckTick(ctx, cfg, notify, &lastAlertHash, &lastAlertTime, repeatInterval)
+		}
+	}
+}
+
+func remoteCheckTick(ctx context.Context, cfg engine.Config, notify func(string), lastHash *string, lastTime *time.Time, repeatAfter time.Duration) {
+	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	status := engine.CheckRemoteServer(checkCtx, cfg)
+	if status == nil {
+		return
+	}
+
+	msg := engine.FormatRemoteAlerts(status)
+	if msg == "" {
+		// Healthy — clear dedup state so next failure alerts immediately.
+		if *lastHash != "" {
+			slog.Info("remote watch: recovered, clearing alert state")
+			*lastHash = ""
+		}
+		slog.Info("remote watch: healthy")
+		return
+	}
+
+	h := sha256.Sum256([]byte(msg))
+	hash := hex.EncodeToString(h[:8])
+
+	now := time.Now()
+	if hash == *lastHash && now.Sub(*lastTime) < repeatAfter {
+		slog.Info("remote watch: same alert, suppressed (dedup)")
+		return
+	}
+
+	// New alert or repeat interval elapsed.
+	*lastHash = hash
+	*lastTime = now
+
+	slog.Warn("remote watch: alerting", slog.String("hash", hash))
+	notify(msg)
 }

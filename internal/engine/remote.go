@@ -180,6 +180,42 @@ func IsValidRemoteService(cfg Config, name string) bool {
 	return false
 }
 
+// FormatRemoteAlerts formats critical/error alerts from a remote check for direct Telegram notification.
+// Returns empty string if there are no actionable alerts.
+func FormatRemoteAlerts(status *RemoteServerStatus) string {
+	if status == nil || len(status.Alerts) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	var count int
+	for _, a := range status.Alerts {
+		if a.Level != AlertCritical && a.Level != AlertError {
+			continue
+		}
+		count++
+	}
+	if count == 0 {
+		return ""
+	}
+
+	fmt.Fprintf(&b, "🚨 Remote server alert — %s\n\n", status.Host)
+	for _, a := range status.Alerts {
+		if a.Level != AlertCritical && a.Level != AlertError {
+			continue
+		}
+		icon := "❌"
+		if a.Level == AlertCritical {
+			icon = "🔴"
+		}
+		fmt.Fprintf(&b, "%s %s: %s\n", icon, a.Title, a.Description)
+		if a.SuggestedAction != "" {
+			fmt.Fprintf(&b, "   → %s\n", a.SuggestedAction)
+		}
+	}
+	return b.String()
+}
+
 func checkHTTP(ctx context.Context, url string) (int, *time.Time) {
 	client := newHTTPClient(10 * time.Second)
 

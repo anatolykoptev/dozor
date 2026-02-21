@@ -35,10 +35,11 @@ type Config struct {
 	RestartThreshold int
 	LogLines         int
 
-	RemoteHost     string
-	RemoteURL      string
-	RemoteServices []string
-	RemoteSSHPort  int
+	RemoteHost          string
+	RemoteURL           string
+	RemoteServices      []string
+	RemoteSSHPort       int
+	RemoteCheckInterval time.Duration
 
 	SystemdServices  []string
 	RequiredAuthVars []string
@@ -101,10 +102,11 @@ func Init() Config {
 		ErrorThreshold:   envInt("DOZOR_ERROR_THRESHOLD", 5),
 		RestartThreshold: envInt("DOZOR_RESTART_THRESHOLD", 1),
 		LogLines:         envInt("DOZOR_LOG_LINES", 100),
-		RemoteHost:       env("DOZOR_REMOTE_HOST", ""),
-		RemoteURL:        env("DOZOR_REMOTE_URL", ""),
-		RemoteServices:   envList("DOZOR_REMOTE_SERVICES", ""),
-		RemoteSSHPort:    envInt("DOZOR_REMOTE_SSH_PORT", 22),
+		RemoteHost:          env("DOZOR_REMOTE_HOST", ""),
+		RemoteURL:           env("DOZOR_REMOTE_URL", ""),
+		RemoteServices:      envList("DOZOR_REMOTE_SERVICES", ""),
+		RemoteSSHPort:       envInt("DOZOR_REMOTE_SSH_PORT", 22),
+		RemoteCheckInterval: envDurationStr("DOZOR_REMOTE_CHECK_INTERVAL", 3*time.Minute),
 		SystemdServices:  envList("DOZOR_SYSTEMD_SERVICES", ""),
 		RequiredAuthVars: envList("DOZOR_REQUIRED_AUTH_VARS", ""),
 		DiskThreshold:    envFloat("DOZOR_DISK_THRESHOLD", 80),
