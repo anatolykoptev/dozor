@@ -16,12 +16,15 @@ func Watch(ctx context.Context, cfg Config) error {
 	agent := NewAgent(cfg)
 	var prevHash string
 
+	ft := NewFailureTracker(cfg.AlertConfirmCount)
+	fd := NewFlapDetector(cfg.FlapWindow, cfg.FlapHigh, cfg.FlapLow)
+
 	slog.Info("watch mode started",
 		slog.String("interval", cfg.WatchInterval.String()),
 		slog.String("webhook", cfg.WebhookURL))
 
 	// Run check immediately
-	prevHash = runCheck(ctx, agent, cfg, prevHash)
+	prevHash = runCheck(ctx, agent, cfg, prevHash, ft, fd)
 
 	ticker := time.NewTicker(cfg.WatchInterval)
 	defer ticker.Stop()
@@ -32,12 +35,12 @@ func Watch(ctx context.Context, cfg Config) error {
 			slog.Info("watch mode stopped")
 			return nil
 		case <-ticker.C:
-			prevHash = runCheck(ctx, agent, cfg, prevHash)
+			prevHash = runCheck(ctx, agent, cfg, prevHash, ft, fd)
 		}
 	}
 }
 
-func runCheck(ctx context.Context, agent *ServerAgent, cfg Config, prevHash string) string {
+func runCheck(ctx context.Context, agent *ServerAgent, cfg Config, prevHash string, ft *FailureTracker, fd *FlapDetector) string {
 	slog.Info("running health check")
 
 	report := agent.Diagnose(ctx, nil)
@@ -54,6 +57,9 @@ func runCheck(ctx context.Context, agent *ServerAgent, cfg Config, prevHash stri
 			report.Alerts = append(report.Alerts, remote.Alerts...)
 		}
 	}
+
+	// Filter alerts through confirmation + flap detection.
+	report.Alerts = filterAlerts(report.Alerts, ft, fd)
 
 	report.CalculateHealth()
 
@@ -81,6 +87,45 @@ func runCheck(ctx context.Context, agent *ServerAgent, cfg Config, prevHash stri
 
 	return alertHash
 }
+
+// filterAlerts runs alerts through FailureTracker and FlapDetector.
+// Alerts that are not yet confirmed or from flapping services are suppressed.
+// Services with no alerts get their success recorded to reset counters.
+func filterAlerts(alerts []Alert, ft *FailureTracker, fd *FlapDetector) []Alert {
+	// Track which services have alerts this cycle.
+	alertedKeys := make(map[string]bool)
+	var confirmed []Alert
+
+	for _, a := range alerts {
+		key := AlertKey(a)
+		alertedKeys[key] = true
+
+		// Record failure in flap detector.
+		flapStatus := fd.Record(key, false)
+		if flapStatus.Flapping {
+			slog.Info("alert suppressed: flapping detected",
+				slog.String("service", a.Service),
+				slog.Float64("change_rate", flapStatus.ChangeRate))
+			continue
+		}
+
+		// Check consecutive failure confirmation.
+		ok, count := ft.RecordFailure(key)
+		if !ok {
+			slog.Info("alert suppressed: awaiting confirmation",
+				slog.String("service", a.Service),
+				slog.String("alert", a.Title),
+				slog.Int("failures", count),
+				slog.Int("threshold", ft.threshold))
+			continue
+		}
+
+		confirmed = append(confirmed, a)
+	}
+
+	return confirmed
+}
+
 
 func hashAlerts(alerts []Alert) string {
 	if len(alerts) == 0 {

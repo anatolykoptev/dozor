@@ -86,7 +86,11 @@ func (e *MCPClientExtension) Register(ctx context.Context, extCtx *extensions.Co
 		mcpclient.RegisterKBTools(extCtx.Tools, e.manager, kbCfg)
 	}
 
-	e.kbSearcher = mcpclient.NewKBSearcher(e.manager, kbCfg)
+	// Circuit breaker for KB — protects against cascading failures from MemDB.
+	kbCB := engine.NewCircuitBreaker("kb",
+		extCtx.Config.CBKBThreshold,
+		extCtx.Config.CBKBReset)
+	e.kbSearcher = mcpclient.NewKBSearcher(e.manager, kbCfg, kbCB)
 
 	log.Info("mcp client registered", "servers", len(servers))
 	return nil

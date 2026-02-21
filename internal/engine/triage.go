@@ -108,6 +108,14 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 		}
 	}
 
+	// Inhibit child alerts when a parent dependency is down.
+	allAlerts := a.alerts.GenerateAlerts(statuses)
+	_, inhibitedAlerts := Inhibit(allAlerts, statuses)
+	inhibitedServices := make(map[string]bool)
+	for _, ia := range inhibitedAlerts {
+		inhibitedServices[ia.Service] = true
+	}
+
 	// Split into problematic vs healthy
 	var problematic []ServiceStatus
 	var healthy []string
@@ -157,6 +165,14 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 	}
 
 	a.appendDiskPressure(ctx, &b)
+
+	if len(inhibitedServices) > 0 {
+		var inhibNames []string
+		for name := range inhibitedServices {
+			inhibNames = append(inhibNames, name)
+		}
+		fmt.Fprintf(&b, "\nInhibited by dependency (%d): %s (parent service down)\n", len(inhibNames), strings.Join(inhibNames, ", "))
+	}
 
 	if len(overridden) > 0 {
 		fmt.Fprintf(&b, "\nP0 OVERRIDE — dev-excluded but DOWN: %s\n", strings.Join(overridden, ", "))

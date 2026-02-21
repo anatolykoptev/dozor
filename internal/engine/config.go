@@ -72,6 +72,20 @@ type Config struct {
 	KBCube       string // KB cube/namespace (default "default")
 	KBSearchTool string // MCP tool name for search (default "search_memories")
 	KBSaveTool   string // MCP tool name for save (default "add_memory")
+
+	// Alert confirmation — consecutive failures required before alerting
+	AlertConfirmCount int // default 2
+
+	// Flap detection — suppress oscillating services
+	FlapWindow int     // sliding window size (default 10)
+	FlapHigh   float64 // start suppressing at this change rate (default 0.7)
+	FlapLow    float64 // stop suppressing below this rate (default 0.3)
+
+	// Circuit breaker — external dependency protection
+	CBKBThreshold  int           // KB failures before opening (default 3)
+	CBKBReset      time.Duration // wait before half-open probe (default 5m)
+	CBLLMThreshold int           // LLM failures before opening (default 5)
+	CBLLMReset     time.Duration // wait before half-open probe (default 10m)
 }
 
 // MCPServerConfig holds config for a remote MCP server.
@@ -135,6 +149,20 @@ func Init() Config {
 		KBCube:       env("DOZOR_KB_CUBE", env("DOZOR_MEMDB_CUBE", "default")),
 		KBSearchTool: env("DOZOR_KB_SEARCH_TOOL", "search_memories"),
 		KBSaveTool:   env("DOZOR_KB_SAVE_TOOL", "add_memory"),
+
+		// Alert confirmation
+		AlertConfirmCount: envInt("DOZOR_ALERT_CONFIRM_COUNT", 2),
+
+		// Flap detection
+		FlapWindow: envInt("DOZOR_FLAP_WINDOW", 10),
+		FlapHigh:   envFloat("DOZOR_FLAP_HIGH", 0.7),
+		FlapLow:    envFloat("DOZOR_FLAP_LOW", 0.3),
+
+		// Circuit breaker
+		CBKBThreshold:  envInt("DOZOR_CB_KB_THRESHOLD", 3),
+		CBKBReset:      envDurationStr("DOZOR_CB_KB_RESET", 5*time.Minute),
+		CBLLMThreshold: envInt("DOZOR_CB_LLM_THRESHOLD", 5),
+		CBLLMReset:     envDurationStr("DOZOR_CB_LLM_RESET", 10*time.Minute),
 	}
 }
 

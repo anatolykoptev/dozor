@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/toolreg"
 )
 
@@ -146,10 +147,12 @@ func (t *kbSaveTool) Execute(ctx context.Context, args map[string]any) (string, 
 type KBSearcher struct {
 	mgr *ClientManager
 	cfg KBConfig
+	cb  *engine.CircuitBreaker
 }
 
 // NewKBSearcher creates a KBSearcher if the KB server is configured. Returns nil otherwise.
-func NewKBSearcher(mgr *ClientManager, cfg KBConfig) *KBSearcher {
+// If cb is non-nil, it is used to protect against cascading failures.
+func NewKBSearcher(mgr *ClientManager, cfg KBConfig, cb *engine.CircuitBreaker) *KBSearcher {
 	if cfg.ServerID == "" {
 		cfg.ServerID = "memdb"
 	}
@@ -168,13 +171,16 @@ func NewKBSearcher(mgr *ClientManager, cfg KBConfig) *KBSearcher {
 	if _, ok := mgr.GetServer(cfg.ServerID); !ok {
 		return nil
 	}
-	return &KBSearcher{mgr: mgr, cfg: cfg}
+	return &KBSearcher{mgr: mgr, cfg: cfg, cb: cb}
 }
 
 // Search queries the knowledge base and returns formatted results.
 func (s *KBSearcher) Search(ctx context.Context, query string, topK int) (string, error) {
 	if topK <= 0 {
 		topK = 3
+	}
+	if s.cb != nil && !s.cb.Allow() {
+		return "KB temporarily unavailable (circuit breaker open)", nil
 	}
 	result, err := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SearchTool, map[string]any{
 		"query":      query,
@@ -185,20 +191,35 @@ func (s *KBSearcher) Search(ctx context.Context, query string, topK int) (string
 		"dedup":      "mmr",
 	})
 	if err != nil {
+		if s.cb != nil {
+			s.cb.RecordFailure()
+		}
 		return "", fmt.Errorf("kb search failed: %w", err)
+	}
+	if s.cb != nil {
+		s.cb.RecordSuccess()
 	}
 	return formatSearchResult(result), nil
 }
 
 // Save stores content in the knowledge base.
 func (s *KBSearcher) Save(ctx context.Context, content string) error {
+	if s.cb != nil && !s.cb.Allow() {
+		return nil // silently skip when circuit is open
+	}
 	_, err := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SaveTool, map[string]any{
 		"user_id":        s.cfg.UserID,
 		"mem_cube_id":    s.cfg.CubeID,
 		"memory_content": content,
 	})
 	if err != nil {
+		if s.cb != nil {
+			s.cb.RecordFailure()
+		}
 		return fmt.Errorf("kb save failed: %w", err)
+	}
+	if s.cb != nil {
+		s.cb.RecordSuccess()
 	}
 	return nil
 }

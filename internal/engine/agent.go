@@ -143,6 +143,9 @@ func (a *ServerAgent) Diagnose(ctx context.Context, services []string) Diagnosti
 
 	alerts := a.alerts.GenerateAlerts(statuses)
 
+	// Inhibit child alerts when a parent dependency is down.
+	alerts, _ = Inhibit(alerts, statuses)
+
 	// Add group-level alerts if any service has a group label
 	groups := GroupServices(statuses)
 	alerts = append(alerts, GenerateGroupAlerts(groups)...)

@@ -383,7 +383,7 @@ func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.
 				query = query[:500]
 			}
 
-			searchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			searchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			kbResult, err := kbSearcher.Search(searchCtx, query, 3)
 			cancel()
 
@@ -422,9 +422,13 @@ func runRemoteWatch(ctx context.Context, cfg engine.Config, notify func(string))
 	var lastAlertHash string
 	var lastAlertTime time.Time
 
+	// Consecutive failure confirmation + flap detection.
+	ft := engine.NewFailureTracker(cfg.AlertConfirmCount)
+	fd := engine.NewFlapDetector(cfg.FlapWindow, cfg.FlapHigh, cfg.FlapLow)
+
 	time.Sleep(15 * time.Second) // let services boot
 
-	remoteCheckTick(ctx, cfg, notify, &lastAlertHash, &lastAlertTime, repeatInterval)
+	remoteCheckTick(ctx, cfg, notify, &lastAlertHash, &lastAlertTime, repeatInterval, ft, fd)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -434,12 +438,12 @@ func runRemoteWatch(ctx context.Context, cfg engine.Config, notify func(string))
 			slog.Info("remote watch stopped")
 			return
 		case <-ticker.C:
-			remoteCheckTick(ctx, cfg, notify, &lastAlertHash, &lastAlertTime, repeatInterval)
+			remoteCheckTick(ctx, cfg, notify, &lastAlertHash, &lastAlertTime, repeatInterval, ft, fd)
 		}
 	}
 }
 
-func remoteCheckTick(ctx context.Context, cfg engine.Config, notify func(string), lastHash *string, lastTime *time.Time, repeatAfter time.Duration) {
+func remoteCheckTick(ctx context.Context, cfg engine.Config, notify func(string), lastHash *string, lastTime *time.Time, repeatAfter time.Duration, ft *engine.FailureTracker, fd *engine.FlapDetector) {
 	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -448,14 +452,37 @@ func remoteCheckTick(ctx context.Context, cfg engine.Config, notify func(string)
 		return
 	}
 
-	msg := engine.FormatRemoteAlerts(status)
-	if msg == "" {
-		// Healthy — clear dedup state so next failure alerts immediately.
+	if len(status.Alerts) == 0 {
+		// Healthy — reset confirmation and flap state.
 		if *lastHash != "" {
 			slog.Info("remote watch: recovered, clearing alert state")
 			*lastHash = ""
 		}
+		// Record success for all previously tracked keys.
+		ft.RecordSuccess("remote")
+		fd.Record("remote", true)
 		slog.Info("remote watch: healthy")
+		return
+	}
+
+	// Run alerts through confirmation + flap detection.
+	flapStatus := fd.Record("remote", false)
+	if flapStatus.Flapping {
+		slog.Info("remote watch: alert suppressed (flapping)",
+			slog.Float64("change_rate", flapStatus.ChangeRate))
+		return
+	}
+
+	confirmed, count := ft.RecordFailure("remote")
+	if !confirmed {
+		slog.Info("remote watch: alert suppressed (awaiting confirmation)",
+			slog.Int("failures", count),
+			slog.Int("threshold", cfg.AlertConfirmCount))
+		return
+	}
+
+	msg := engine.FormatRemoteAlerts(status)
+	if msg == "" {
 		return
 	}
 
