@@ -78,18 +78,19 @@ Label-driven service grouping and dependency management.
 - BFS-based `Dependents()` with cycle safety and dangling-ref warnings
 - Backward compatible: no labels = current flat behavior unchanged
 
----
-
-## Planned
-
 ### Phase 4: Knowledge Base Integration
 
 Leverage the pluggable KB system (Phase 5.3) for persistent DevOps memory.
 
-- Before auto-fix: search KB for similar past incidents and proven solutions
-- After fix: save symptom-solution pair automatically
-- Triage report enriched with "similar incidents" section
-- Shared knowledge across agents (Dozor writes incidents, others write deploy outcomes and architecture decisions)
+- `KBSearcher` — programmatic (non-tool) KB client reusing `ClientManager` and `KBConfig`
+- Triage enrichment: `ExtractIssues()` parses triage report, searches KB for similar past incidents, prepends results to agent prompt
+- Auto-save: after resolving watch-originated incidents, saves triage+resolution pair to KB (fire-and-forget goroutine)
+- Registry `Get()` method for extension lookup; `MCPClientExtension.KBSearcher()` getter
+- Scoped to watch messages only — manual Telegram chats are not auto-saved
+
+---
+
+## Planned
 
 ### Phase 6: Runbooks (executable playbooks)
 
