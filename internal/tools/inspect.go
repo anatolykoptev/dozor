@@ -12,9 +12,9 @@ func registerInspect(server *mcp.Server, agent *engine.ServerAgent) {
 		Name: "server_inspect",
 		Description: `Inspect server state. Modes:
 - health: quick OK/!! status of all services
-- status: detailed status for one service (CPU, memory, uptime, errors)
+- status: detailed status for one service (CPU, memory, uptime, errors) [requires: service]
 - diagnose: full diagnostics with alerts and health assessment
-- logs: recent logs for a service (supports line count)
+- logs: recent logs for a service (supports line count) [requires: service]
 - analyze: error pattern analysis with remediation suggestions
 - errors: ERROR/FATAL log lines from all services in one call
 - security: security audit (network, containers, auth, API hardening)
