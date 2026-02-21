@@ -9,53 +9,61 @@ import (
 	"github.com/anatolykoptev/dozor/internal/toolreg"
 )
 
-// MemDBConfig holds configuration for dedicated MemDB tools.
-type MemDBConfig struct {
-	ServerID string // MCP server ID (default "memdb")
-	UserID   string // MemDB user (default "devops")
-	CubeID   string // MemDB cube (default "devops")
+// KBConfig holds configuration for the knowledge base tools.
+type KBConfig struct {
+	ServerID   string // MCP server ID (default "memdb")
+	UserID     string // KB user (default "default")
+	CubeID     string // KB cube (default "default")
+	SearchTool string // MCP tool name for search (default "search_memories")
+	SaveTool   string // MCP tool name for save (default "add_memory")
 }
 
-// RegisterMemDBTools adds memdb_search and memdb_save tools that wrap MCP calls
-// to the MemDB devops knowledge base. These are simpler than raw mcp_call.
-func RegisterMemDBTools(registry *toolreg.Registry, mgr *ClientManager, cfg MemDBConfig) {
+// RegisterKBTools adds kb_search and kb_save tools that wrap MCP calls
+// to an external knowledge base server. These are simpler than raw mcp_call.
+func RegisterKBTools(registry *toolreg.Registry, mgr *ClientManager, cfg KBConfig) {
 	if cfg.ServerID == "" {
 		cfg.ServerID = "memdb"
 	}
 	if cfg.UserID == "" {
-		cfg.UserID = "devops"
+		cfg.UserID = "default"
 	}
 	if cfg.CubeID == "" {
-		cfg.CubeID = "devops"
+		cfg.CubeID = "default"
+	}
+	if cfg.SearchTool == "" {
+		cfg.SearchTool = "search_memories"
+	}
+	if cfg.SaveTool == "" {
+		cfg.SaveTool = "add_memory"
 	}
 
-	// Only register if the memdb server is configured.
+	// Only register if the KB server is configured.
 	if _, ok := mgr.GetServer(cfg.ServerID); !ok {
 		return
 	}
 
-	registry.Register(&memdbSearchTool{mgr: mgr, cfg: cfg})
-	registry.Register(&memdbSaveTool{mgr: mgr, cfg: cfg})
+	registry.Register(&kbSearchTool{mgr: mgr, cfg: cfg})
+	registry.Register(&kbSaveTool{mgr: mgr, cfg: cfg})
 }
 
-// --- memdb_search ---
+// --- kb_search ---
 
-type memdbSearchTool struct {
+type kbSearchTool struct {
 	mgr *ClientManager
-	cfg MemDBConfig
+	cfg KBConfig
 }
 
-func (t *memdbSearchTool) Name() string { return "memdb_search" }
-func (t *memdbSearchTool) Description() string {
-	return "Search the DevOps knowledge base for past incidents, solutions, and operational patterns. Use BEFORE fixing issues to find proven solutions."
+func (t *kbSearchTool) Name() string { return "kb_search" }
+func (t *kbSearchTool) Description() string {
+	return "Search the knowledge base for past incidents, solutions, and operational patterns. Use BEFORE fixing issues to find proven solutions."
 }
-func (t *memdbSearchTool) Parameters() map[string]any {
+func (t *kbSearchTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"query": map[string]any{
 				"type":        "string",
-				"description": "Search query (e.g. 'memdb-api 401 unauthorized', 'postgres connection refused', 'disk usage cleanup')",
+				"description": "Search query (e.g. 'api-service 401 unauthorized', 'postgres connection refused', 'disk usage cleanup')",
 			},
 			"top_k": map[string]any{
 				"type":        "integer",
@@ -66,7 +74,7 @@ func (t *memdbSearchTool) Parameters() map[string]any {
 	}
 }
 
-func (t *memdbSearchTool) Execute(ctx context.Context, args map[string]any) (string, error) {
+func (t *kbSearchTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	query, _ := args["query"].(string)
 	if query == "" {
 		return "", fmt.Errorf("query is required")
@@ -77,7 +85,7 @@ func (t *memdbSearchTool) Execute(ctx context.Context, args map[string]any) (str
 		topK = int(v)
 	}
 
-	result, err := t.mgr.Call(ctx, t.cfg.ServerID, "search_memories", map[string]any{
+	result, err := t.mgr.Call(ctx, t.cfg.ServerID, t.cfg.SearchTool, map[string]any{
 		"query":      query,
 		"user_id":    t.cfg.UserID,
 		"cube_ids":   []string{t.cfg.CubeID},
@@ -86,24 +94,24 @@ func (t *memdbSearchTool) Execute(ctx context.Context, args map[string]any) (str
 		"dedup":      "mmr",
 	})
 	if err != nil {
-		return "", fmt.Errorf("memdb search failed: %w", err)
+		return "", fmt.Errorf("kb search failed: %w", err)
 	}
 
 	return formatSearchResult(result), nil
 }
 
-// --- memdb_save ---
+// --- kb_save ---
 
-type memdbSaveTool struct {
+type kbSaveTool struct {
 	mgr *ClientManager
-	cfg MemDBConfig
+	cfg KBConfig
 }
 
-func (t *memdbSaveTool) Name() string { return "memdb_save" }
-func (t *memdbSaveTool) Description() string {
-	return "Save an incident resolution, operational pattern, or DevOps knowledge to the shared knowledge base. Use AFTER resolving non-trivial issues."
+func (t *kbSaveTool) Name() string { return "kb_save" }
+func (t *kbSaveTool) Description() string {
+	return "Save an incident resolution, operational pattern, or knowledge to the shared knowledge base. Use AFTER resolving non-trivial issues."
 }
-func (t *memdbSaveTool) Parameters() map[string]any {
+func (t *kbSaveTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -116,22 +124,22 @@ func (t *memdbSaveTool) Parameters() map[string]any {
 	}
 }
 
-func (t *memdbSaveTool) Execute(ctx context.Context, args map[string]any) (string, error) {
+func (t *kbSaveTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	content, _ := args["content"].(string)
 	if content == "" {
 		return "", fmt.Errorf("content is required")
 	}
 
-	result, err := t.mgr.Call(ctx, t.cfg.ServerID, "add_memory", map[string]any{
-		"user_id":     t.cfg.UserID,
-		"mem_cube_id": t.cfg.CubeID,
+	result, err := t.mgr.Call(ctx, t.cfg.ServerID, t.cfg.SaveTool, map[string]any{
+		"user_id":        t.cfg.UserID,
+		"mem_cube_id":    t.cfg.CubeID,
 		"memory_content": content,
 	})
 	if err != nil {
-		return "", fmt.Errorf("memdb save failed: %w", err)
+		return "", fmt.Errorf("kb save failed: %w", err)
 	}
 
-	return "Knowledge saved to DevOps knowledge base.\n" + result, nil
+	return "Knowledge saved to knowledge base.\n" + result, nil
 }
 
 // formatSearchResult extracts readable memories from the raw MCP JSON response.
@@ -190,13 +198,13 @@ func formatSearchResult(raw string) string {
 	}
 
 	if len(parts) == 0 {
-		return "No relevant knowledge found in the DevOps knowledge base."
+		return "No relevant knowledge found."
 	}
 
 	return fmt.Sprintf("Found %d relevant memories:\n\n%s", len(parts), strings.Join(parts, "\n"))
 }
 
-// cleanMemory strips the "user: [timestamp]:" prefix that MemDB adds.
+// cleanMemory strips the "user: [timestamp]:" prefix that some KB backends add.
 func cleanMemory(s string) string {
 	// Format: "user: [2026-02-21T00:57:54]: actual content"
 	if idx := strings.Index(s, "]: "); idx > 0 && idx < 40 {

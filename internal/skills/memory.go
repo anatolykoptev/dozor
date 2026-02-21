@@ -63,7 +63,7 @@ func (t *updateMemoryTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"title": map[string]any{
 				"type":        "string",
-				"description": "Short title for the memory entry (e.g. 'memdb-api OOM fix')",
+				"description": "Short title for the memory entry (e.g. 'api-service OOM fix')",
 			},
 			"content": map[string]any{
 				"type":        "string",

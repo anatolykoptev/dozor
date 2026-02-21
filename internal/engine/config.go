@@ -65,9 +65,12 @@ type Config struct {
 	// Remote MCP Servers
 	MCPServers map[string]MCPServerConfig
 
-	// MemDB knowledge base
-	MemDBUser string
-	MemDBCube string
+	// Knowledge base (KB) — pluggable backend via MCP
+	KBServer     string // MCP server ID for KB (default "memdb")
+	KBUser       string // KB user ID (default "default")
+	KBCube       string // KB cube/namespace (default "default")
+	KBSearchTool string // MCP tool name for search (default "search_memories")
+	KBSaveTool   string // MCP tool name for save (default "add_memory")
 }
 
 // MCPServerConfig holds config for a remote MCP server.
@@ -124,9 +127,12 @@ func Init() Config {
 		// Remote MCP Servers
 		MCPServers: parseMCPServers(env("DOZOR_MCP_SERVERS", "")),
 
-		// MemDB knowledge base
-		MemDBUser: env("DOZOR_MEMDB_USER", "devops"),
-		MemDBCube: env("DOZOR_MEMDB_CUBE", "devops"),
+		// Knowledge base (KB)
+		KBServer:     env("DOZOR_KB_SERVER", "memdb"),
+		KBUser:       env("DOZOR_KB_USER", env("DOZOR_MEMDB_USER", "default")),
+		KBCube:       env("DOZOR_KB_CUBE", env("DOZOR_MEMDB_CUBE", "default")),
+		KBSearchTool: env("DOZOR_KB_SEARCH_TOOL", "search_memories"),
+		KBSaveTool:   env("DOZOR_KB_SAVE_TOOL", "add_memory"),
 	}
 }
 

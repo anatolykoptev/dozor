@@ -74,10 +74,12 @@ func (e *MCPClientExtension) Register(ctx context.Context, extCtx *extensions.Co
 
 	if extCtx.Tools != nil {
 		mcpclient.RegisterTools(extCtx.Tools, e.manager)
-		mcpclient.RegisterMemDBTools(extCtx.Tools, e.manager, mcpclient.MemDBConfig{
-			ServerID: "memdb",
-			UserID:   extCtx.Config.MemDBUser,
-			CubeID:   extCtx.Config.MemDBCube,
+		mcpclient.RegisterKBTools(extCtx.Tools, e.manager, mcpclient.KBConfig{
+			ServerID:   extCtx.Config.KBServer,
+			UserID:     extCtx.Config.KBUser,
+			CubeID:     extCtx.Config.KBCube,
+			SearchTool: extCtx.Config.KBSearchTool,
+			SaveTool:   extCtx.Config.KBSaveTool,
 		})
 	}
 

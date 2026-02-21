@@ -95,7 +95,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		if err != nil {
 			slog.Error("invalid DOZOR_WATCH_INTERVAL", slog.String("value", interval))
 		} else {
-			go runGatewayWatch(sigCtx, eng, msgBus, dur)
+			go runGatewayWatch(sigCtx, eng, msgBus, dur, cfg)
 		}
 	}
 
@@ -282,10 +282,10 @@ func autoEscalateToClaudeCode(ctx context.Context, stack *agentStack, originalTa
 }
 
 // runGatewayWatch runs periodic triage and feeds results through the message bus.
-func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, interval time.Duration) {
+func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, interval time.Duration, cfg engine.Config) {
 	slog.Info("gateway watch started", slog.String("interval", interval.String()))
 	time.Sleep(30 * time.Second) // let everything boot
-	gatewayWatchTick(ctx, eng, msgBus)
+	gatewayWatchTick(ctx, eng, msgBus, cfg)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -295,12 +295,12 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 			slog.Info("gateway watch stopped")
 			return
 		case <-ticker.C:
-			gatewayWatchTick(ctx, eng, msgBus)
+			gatewayWatchTick(ctx, eng, msgBus, cfg)
 		}
 	}
 }
 
-func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus) {
+func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, cfg engine.Config) {
 	slog.Info("gateway watch: running triage", slog.Bool("dev_mode", eng.IsDevMode()))
 	result := eng.Triage(ctx, nil)
 	if result == "" {
@@ -311,8 +311,10 @@ func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.
 	var prompt string
 	if eng.IsDevMode() {
 		prompt = "Periodic health check (DEV MODE — observe only, do NOT take any corrective action):\n\n"
+	} else if _, hasKB := cfg.MCPServers[cfg.KBServer]; hasKB && cfg.KBServer != "" {
+		prompt = "Periodic health check detected issues. First use kb_search to check for similar past incidents and proven solutions, then analyze and take corrective action if safe:\n\n"
 	} else {
-		prompt = "Periodic health check detected issues. First use memdb_search to check for similar past incidents and proven solutions, then analyze and take corrective action if safe:\n\n"
+		prompt = "Periodic health check detected issues. Analyze and take corrective action if safe:\n\n"
 	}
 
 	slog.Info("gateway watch: issues detected, routing to agent")
