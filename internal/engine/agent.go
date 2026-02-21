@@ -104,6 +104,31 @@ func (a *ServerAgent) Diagnose(ctx context.Context, services []string) Diagnosti
 	statuses := a.status.GetAllStatuses(ctx, services)
 	statuses = a.resources.GetResourceUsage(ctx, statuses)
 
+	// Extract dozor labels
+	for i, s := range statuses {
+		statuses[i].HealthcheckURL = s.DozorLabel("healthcheck.url")
+		statuses[i].AlertChannel = s.DozorLabel("alert.channel")
+	}
+
+	// Run healthcheck probes
+	for i, s := range statuses {
+		if s.State != StateRunning || s.HealthcheckURL == "" {
+			continue
+		}
+		results := ProbeURLs(ctx, []string{s.HealthcheckURL}, 5, false)
+		if len(results) > 0 {
+			ok := results[0].OK
+			statuses[i].HealthcheckOK = &ok
+			if !ok {
+				msg := fmt.Sprintf("status %d", results[0].Status)
+				if results[0].Error != "" {
+					msg = results[0].Error
+				}
+				statuses[i].HealthcheckMsg = msg
+			}
+		}
+	}
+
 	for i, s := range statuses {
 		if s.State == StateRunning {
 			errors := a.logs.GetErrorLogs(ctx, s.Name, a.cfg.LogLines)
@@ -147,7 +172,12 @@ func (a *ServerAgent) GetLogs(ctx context.Context, service string, lines int, er
 // AnalyzeLogs runs error pattern analysis on service logs.
 func (a *ServerAgent) AnalyzeLogs(ctx context.Context, service string) AnalyzeResult {
 	entries := a.logs.GetLogs(ctx, service, a.cfg.LogLines, false)
-	return AnalyzeLogs(entries, service)
+	var extra []ErrorPattern
+	s := a.status.GetContainerStatus(ctx, service)
+	if p := s.DozorLabel("logs.pattern"); p != "" {
+		extra = append(extra, LabelPattern(p))
+	}
+	return AnalyzeLogs(entries, service, extra...)
 }
 
 // CheckUpdates scans binaries for available updates.

@@ -149,3 +149,28 @@ Optional integration with Claude Code CLI for deep analysis.
 |----------|---------|-------------|
 | `DOZOR_TRACKED_BINARIES` | _(empty)_ | GitHub binaries to track. Format: `owner/repo:binary,owner/repo` |
 | `DOZOR_GITHUB_TOKEN` | _(empty)_ | GitHub token for higher API rate limits (60/hr → 5000/hr) |
+
+## Docker Labels
+
+Per-container configuration via Docker labels. Set them in `docker-compose.yml` under `labels:` or via `docker run --label`. Labels are only available in SDK mode (local). CLI/SSH fallback gracefully ignores them.
+
+| Label | Description |
+|-------|-------------|
+| `dozor.enable` | Set to `false` to exclude a container from monitoring (default: `true`) |
+| `dozor.name` | Custom display name for the container in reports |
+| `dozor.group` | Group name for organizing services |
+| `dozor.healthcheck.url` | HTTP endpoint to probe during triage. Returns OK/FAIL status in reports |
+| `dozor.logs.pattern` | Custom regex pattern for log analysis. Matched lines are reported as `warning`-level `custom` category issues |
+| `dozor.alert.channel` | Alert routing hint (e.g. Telegram group, webhook ID). Propagated to all alerts for this service |
+
+Example in `docker-compose.yml`:
+
+```yaml
+services:
+  my-api:
+    image: my-api:latest
+    labels:
+      dozor.healthcheck.url: "http://my-api:8080/health"
+      dozor.logs.pattern: "(?i)(payment failed|stripe error)"
+      dozor.alert.channel: "ops-critical"
+```

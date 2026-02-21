@@ -16,6 +16,8 @@ func (g *AlertGenerator) GenerateAlerts(statuses []ServiceStatus) []Alert {
 	now := time.Now()
 
 	for _, s := range statuses {
+		ch := s.AlertChannel
+
 		// Service not running
 		if s.State != StateRunning {
 			alerts = append(alerts, Alert{
@@ -25,6 +27,20 @@ func (g *AlertGenerator) GenerateAlerts(statuses []ServiceStatus) []Alert {
 				Description:     fmt.Sprintf("Container %s is in %s state", s.Name, s.State),
 				SuggestedAction: fmt.Sprintf("Check logs: docker compose logs --tail 50 %s", s.Name),
 				Timestamp:       now,
+				Channel:         ch,
+			})
+		}
+
+		// Healthcheck failure
+		if s.HealthcheckOK != nil && !*s.HealthcheckOK {
+			alerts = append(alerts, Alert{
+				Level:           AlertError,
+				Service:         s.Name,
+				Title:           s.Name + " healthcheck failed",
+				Description:     fmt.Sprintf("Custom healthcheck %s: %s", s.HealthcheckURL, s.HealthcheckMsg),
+				SuggestedAction: "Check if the service health endpoint is responding. Review service logs.",
+				Timestamp:       now,
+				Channel:         ch,
 			})
 		}
 
@@ -37,6 +53,7 @@ func (g *AlertGenerator) GenerateAlerts(statuses []ServiceStatus) []Alert {
 				Description:     fmt.Sprintf("Container %s has restarted %d times (threshold: %d)", s.Name, s.RestartCount, g.cfg.RestartThreshold),
 				SuggestedAction: "Check logs for crash reasons. Consider increasing memory/CPU limits.",
 				Timestamp:       now,
+				Channel:         ch,
 			})
 		}
 
@@ -49,6 +66,7 @@ func (g *AlertGenerator) GenerateAlerts(statuses []ServiceStatus) []Alert {
 				Description:     fmt.Sprintf("Container CPU usage %.1f%% exceeds threshold %.1f%%", *s.CPUPercent, g.cfg.CPUThreshold),
 				SuggestedAction: "Investigate high CPU usage. Consider scaling or optimizing.",
 				Timestamp:       now,
+				Channel:         ch,
 			})
 		}
 
@@ -63,6 +81,7 @@ func (g *AlertGenerator) GenerateAlerts(statuses []ServiceStatus) []Alert {
 					Description:     fmt.Sprintf("Container memory usage %.0fMB/%.0fMB (%.1f%%)", *s.MemoryMB, *s.MemoryLimitMB, pct),
 					SuggestedAction: "Check for memory leaks. Consider increasing memory limit.",
 					Timestamp:       now,
+					Channel:         ch,
 				})
 			}
 		}
@@ -76,6 +95,7 @@ func (g *AlertGenerator) GenerateAlerts(statuses []ServiceStatus) []Alert {
 				Description:     fmt.Sprintf("Container has %d errors in recent logs (threshold: %d)", s.ErrorCount, g.cfg.ErrorThreshold),
 				SuggestedAction: "Analyze logs: server_inspect({mode: 'analyze', service: '" + s.Name + "'})",
 				Timestamp:       now,
+				Channel:         ch,
 			})
 		}
 	}

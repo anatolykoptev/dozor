@@ -33,6 +33,9 @@ func FormatReport(r DiagnosticReport) string {
 		if s.ErrorCount > 0 {
 			fmt.Fprintf(&b, " | Errors: %d", s.ErrorCount)
 		}
+		if s.HealthcheckOK != nil && !*s.HealthcheckOK {
+			b.WriteString(" | HC: FAIL")
+		}
 		b.WriteString("\n")
 	}
 
@@ -42,6 +45,9 @@ func FormatReport(r DiagnosticReport) string {
 			fmt.Fprintf(&b, "  [%s] %s: %s\n", a.Level, a.Service, a.Title)
 			fmt.Fprintf(&b, "    %s\n", a.Description)
 			fmt.Fprintf(&b, "    Action: %s\n", a.SuggestedAction)
+			if a.Channel != "" {
+				fmt.Fprintf(&b, "    Channel: %s\n", a.Channel)
+			}
 		}
 	}
 
@@ -67,6 +73,17 @@ func FormatStatus(s ServiceStatus) string {
 		fmt.Fprintf(&b, "Memory: %.0f MB\n", *s.MemoryMB)
 	}
 	fmt.Fprintf(&b, "Errors: %d\n", s.ErrorCount)
+	if s.HealthcheckURL != "" {
+		status := "OK"
+		detail := s.HealthcheckURL
+		if s.HealthcheckOK != nil && !*s.HealthcheckOK {
+			status = "FAIL"
+			if s.HealthcheckMsg != "" {
+				detail += " (" + s.HealthcheckMsg + ")"
+			}
+		}
+		fmt.Fprintf(&b, "Healthcheck: %s %s\n", status, detail)
+	}
 	return b.String()
 }
 

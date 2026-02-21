@@ -52,17 +52,22 @@ Remove server-specific hardcoding to make Dozor a portable open-source tool.
 - `docs/INSTALL.md` — setup guide (binary, source, systemd, Docker)
 - `.env.example` updated with all sections
 
----
-
-## Planned
-
 ### Phase 2: Enhanced Labels
 
 Extend Docker label support for per-service monitoring configuration.
 
-- `dozor.healthcheck.url` — custom HTTP health endpoint per container
-- `dozor.logs.pattern` — custom error pattern for log analysis
-- `dozor.alert.channel` — per-service alert routing (Telegram group, webhook, etc.)
+- `dozor.healthcheck.url` — custom HTTP health endpoint per container, probed during triage/diagnose
+- `dozor.logs.pattern` — custom error regex for log analysis (appended to built-in patterns)
+- `dozor.alert.channel` — per-service alert routing hint, propagated to all alerts
+- Labels flow: Docker → `DiscoveredContainer.Labels` → `ServiceStatus.Labels` → triage/analysis
+- `ServiceStatus.DozorLabel()` helper mirrors `DiscoveredContainer.DozorLabel()`
+- `IsHealthy()` and `GetAlertLevel()` updated to account for healthcheck state
+- Healthcheck results shown in `FormatStatus`, `FormatReport`, and triage output
+- SDK-only: CLI/SSH fallback gracefully ignores labels
+
+---
+
+## Planned
 
 ### Phase 3: Service Groups & Dependencies
 

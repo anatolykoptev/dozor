@@ -95,19 +95,30 @@ var errorPatterns = []ErrorPattern{
 	},
 }
 
-var compiledPatterns []struct {
+// compiledErrorPattern is a pre-compiled error pattern for efficient matching.
+type compiledErrorPattern struct {
 	re      *regexp.Regexp
 	pattern ErrorPattern
 }
 
+var compiledPatterns []compiledErrorPattern
+
 func init() {
-	compiledPatterns = make([]struct {
-		re      *regexp.Regexp
-		pattern ErrorPattern
-	}, len(errorPatterns))
+	compiledPatterns = make([]compiledErrorPattern, len(errorPatterns))
 	for i, p := range errorPatterns {
 		compiledPatterns[i].re = regexp.MustCompile(p.Pattern)
 		compiledPatterns[i].pattern = p
+	}
+}
+
+// LabelPattern creates an ErrorPattern from a user-supplied regex string (dozor.logs.pattern label).
+func LabelPattern(pattern string) ErrorPattern {
+	return ErrorPattern{
+		Pattern:         pattern,
+		Level:           AlertWarning,
+		Category:        "custom",
+		Description:     "Custom pattern: " + pattern,
+		SuggestedAction: "Review matches for custom log pattern.",
 	}
 }
 
@@ -131,10 +142,25 @@ type Issue struct {
 }
 
 // AnalyzeLogs examines log entries for known error patterns.
-func AnalyzeLogs(entries []LogEntry, service string) AnalyzeResult {
+// Extra patterns (e.g. from dozor.logs.pattern labels) are appended to built-in patterns.
+func AnalyzeLogs(entries []LogEntry, service string, extraPatterns ...ErrorPattern) AnalyzeResult {
 	result := AnalyzeResult{
 		Service:    service,
 		TotalLines: len(entries),
+	}
+
+	// Build effective pattern list: built-in + extras
+	allPatterns := compiledPatterns
+	if len(extraPatterns) > 0 {
+		allPatterns = make([]compiledErrorPattern, len(compiledPatterns), len(compiledPatterns)+len(extraPatterns))
+		copy(allPatterns, compiledPatterns)
+		for _, ep := range extraPatterns {
+			re, err := regexp.Compile(ep.Pattern)
+			if err != nil {
+				continue // skip invalid regex
+			}
+			allPatterns = append(allPatterns, compiledErrorPattern{re: re, pattern: ep})
+		}
 	}
 
 	issueCounts := make(map[string]int)
@@ -148,7 +174,7 @@ func AnalyzeLogs(entries []LogEntry, service string) AnalyzeResult {
 			result.WarningCount++
 		}
 
-		for _, cp := range compiledPatterns {
+		for _, cp := range allPatterns {
 			// Check service filter
 			if cp.pattern.Services != nil {
 				matched := false
@@ -178,7 +204,7 @@ func AnalyzeLogs(entries []LogEntry, service string) AnalyzeResult {
 	}
 
 	// Build issue list
-	for _, cp := range compiledPatterns {
+	for _, cp := range allPatterns {
 		key := cp.pattern.Category + ":" + cp.pattern.Description
 		count, ok := issueCounts[key]
 		if !ok {

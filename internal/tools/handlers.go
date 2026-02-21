@@ -82,7 +82,12 @@ func HandleInspect(ctx context.Context, agent *engine.ServerAgent, input engine.
 			return "", fmt.Errorf("invalid service: %s", reason)
 		}
 		entries := agent.GetLogs(ctx, input.Service, 1000, false)
-		result := engine.AnalyzeLogs(entries, input.Service)
+		status := agent.GetServiceStatus(ctx, input.Service)
+		var extra []engine.ErrorPattern
+		if p := status.DozorLabel("logs.pattern"); p != "" {
+			extra = append(extra, engine.LabelPattern(p))
+		}
+		result := engine.AnalyzeLogs(entries, input.Service, extra...)
 		return engine.FormatAnalysisEnriched(result, entries), nil
 
 	case "errors":

@@ -70,6 +70,31 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 	statuses := a.status.GetAllStatuses(ctx, services)
 	statuses = a.resources.GetResourceUsage(ctx, statuses)
 
+	// Extract dozor labels
+	for i, s := range statuses {
+		statuses[i].HealthcheckURL = s.DozorLabel("healthcheck.url")
+		statuses[i].AlertChannel = s.DozorLabel("alert.channel")
+	}
+
+	// Run healthcheck probes for services with a configured URL
+	for i, s := range statuses {
+		if s.State != StateRunning || s.HealthcheckURL == "" {
+			continue
+		}
+		results := ProbeURLs(ctx, []string{s.HealthcheckURL}, 5, false)
+		if len(results) > 0 {
+			ok := results[0].OK
+			statuses[i].HealthcheckOK = &ok
+			if !ok {
+				msg := fmt.Sprintf("status %d", results[0].Status)
+				if results[0].Error != "" {
+					msg = results[0].Error
+				}
+				statuses[i].HealthcheckMsg = msg
+			}
+		}
+	}
+
 	// Enrich with error counts
 	for i, s := range statuses {
 		if s.State == StateRunning {
@@ -137,10 +162,21 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 			}
 			fmt.Fprintf(&b, " — %s\n", strings.Join(parts, ", "))
 
+			if s.HealthcheckOK != nil && !*s.HealthcheckOK {
+				fmt.Fprintf(&b, "  Healthcheck FAILED: %s -> %s\n", s.HealthcheckURL, s.HealthcheckMsg)
+			}
+			if s.AlertChannel != "" {
+				fmt.Fprintf(&b, "  Alert channel: %s\n", s.AlertChannel)
+			}
+
 			// Run log analysis for this service
 			if s.State == StateRunning && s.ErrorCount > 0 {
 				entries := a.logs.GetLogs(ctx, s.Name, a.cfg.LogLines, false)
-				analysis := AnalyzeLogs(entries, s.Name)
+				var extra []ErrorPattern
+				if p := s.DozorLabel("logs.pattern"); p != "" {
+					extra = append(extra, LabelPattern(p))
+				}
+				analysis := AnalyzeLogs(entries, s.Name, extra...)
 				for _, issue := range analysis.Issues {
 					fmt.Fprintf(&b, "  Issue: %s (%d occurrences)\n", issue.Description, issue.Count)
 					fmt.Fprintf(&b, "  Action: %s\n", issue.Action)

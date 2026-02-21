@@ -68,10 +68,23 @@ type ServiceStatus struct {
 	ErrorCount    int               `json:"error_count"`
 	RecentErrors  []LogEntry        `json:"recent_errors,omitempty"`
 	Labels        map[string]string `json:"-"`
+
+	HealthcheckURL string `json:"healthcheck_url,omitempty"`
+	HealthcheckOK  *bool  `json:"healthcheck_ok,omitempty"`
+	HealthcheckMsg string `json:"healthcheck_msg,omitempty"`
+	AlertChannel   string `json:"alert_channel,omitempty"`
+}
+
+// DozorLabel returns a dozor-specific label value.
+func (s ServiceStatus) DozorLabel(key string) string {
+	return s.Labels["dozor."+key]
 }
 
 // IsHealthy returns true if the service is running with no restarts or errors.
 func (s ServiceStatus) IsHealthy() bool {
+	if s.HealthcheckOK != nil && !*s.HealthcheckOK {
+		return false
+	}
 	return s.State == StateRunning && s.RestartCount == 0 && s.ErrorCount == 0
 }
 
@@ -79,6 +92,9 @@ func (s ServiceStatus) IsHealthy() bool {
 func (s ServiceStatus) GetAlertLevel() AlertLevel {
 	if s.State != StateRunning {
 		return AlertCritical
+	}
+	if s.HealthcheckOK != nil && !*s.HealthcheckOK {
+		return AlertError
 	}
 	if s.RestartCount > 0 || s.ErrorCount > 5 {
 		return AlertError
@@ -97,6 +113,7 @@ type Alert struct {
 	Description     string     `json:"description"`
 	SuggestedAction string     `json:"suggested_action"`
 	Timestamp       time.Time  `json:"timestamp"`
+	Channel         string     `json:"channel,omitempty"`
 }
 
 // SecurityIssue from security audit.
