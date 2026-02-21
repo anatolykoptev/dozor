@@ -176,9 +176,9 @@ func runMessageLoop(ctx context.Context, msgBus *bus.Bus, stack *agentStack, adm
 		if approvalsMgr != nil {
 			if id, approved, ok := approvals.ParseResponse(msg.Text); ok {
 				if approvalsMgr.Resolve(id, approved) {
-					verdict := "✅ Команда одобрена"
+					verdict := "✅ Command approved"
 					if !approved {
-						verdict = "❌ Команда отклонена"
+						verdict = "❌ Command rejected"
 					}
 					msgBus.PublishOutbound(bus.Message{
 						ID:        msg.ID + "-approval-ack",
@@ -199,7 +199,7 @@ func runMessageLoop(ctx context.Context, msgBus *bus.Bus, stack *agentStack, adm
 				Channel:   "telegram",
 				SenderID:  "dozor",
 				ChatID:    msg.ChatID,
-				Text:      "⏳ Принял, обрабатываю",
+				Text:      "⏳ Processing...",
 				Timestamp: time.Now(),
 			})
 		}
@@ -208,7 +208,7 @@ func runMessageLoop(ctx context.Context, msgBus *bus.Bus, stack *agentStack, adm
 		if err != nil {
 			slog.Error("agent processing failed", slog.Any("error", err))
 			if strings.Contains(err.Error(), "max tool iterations reached") {
-				response = "⚠️ Превышен лимит итераций. Передаю задачу Claude Code для глубокого анализа..."
+				response = "⚠️ Max iterations reached. Escalating to Claude Code for deep analysis..."
 				go autoEscalateToClaudeCode(ctx, stack, msg.Text, notifyFn)
 			} else {
 				response = fmt.Sprintf("Error: %s", err.Error())
@@ -249,16 +249,16 @@ func autoEscalateToClaudeCode(ctx context.Context, stack *agentStack, originalTa
 	}
 
 	prompt := fmt.Sprintf(
-		"## Задача\n%s\n\n"+
-		"## Что произошло\n"+
-		"Агент Dozor выполнял задачу и исчерпал лимит инструментальных итераций.\n"+
-		"Задача не была завершена. Требуется глубокий анализ и исправление.\n\n"+
-		"## Последние логи Dozor\n%s\n\n"+
-		"## Инструкции\n"+
-		"1. Проанализируй логи и пойми, на чём застрял агент\n"+
-		"2. Определи корневую причину проблемы\n"+
-		"3. Реши проблему или предложи конкретный план действий\n"+
-		"4. Если нужны права или команды — выполни их",
+		"## Task\n%s\n\n"+
+		"## What happened\n"+
+		"Dozor agent was executing a task and exhausted the tool iteration limit.\n"+
+		"The task was not completed. Deep analysis and resolution required.\n\n"+
+		"## Recent Dozor logs\n%s\n\n"+
+		"## Instructions\n"+
+		"1. Analyze the logs and identify where the agent got stuck\n"+
+		"2. Determine the root cause\n"+
+		"3. Fix the problem or propose a concrete action plan\n"+
+		"4. Execute any necessary commands",
 		originalTask, logSnippet)
 
 	slog.Info("escalating to claude_code after max iterations")
@@ -269,7 +269,7 @@ func autoEscalateToClaudeCode(ctx context.Context, stack *agentStack, originalTa
 	result, execErr := stack.registry.Execute(ctx, "claude_code", map[string]any{
 		"prompt": prompt,
 		"async":  true,
-		"title":  "⚠️ Авто-эскалация: превышен лимит итераций\n" + shortTask,
+		"title":  "⚠️ Auto-escalation: max iterations exceeded\n" + shortTask,
 	})
 	if execErr != nil {
 		slog.Error("claude_code escalation failed", slog.Any("error", execErr))

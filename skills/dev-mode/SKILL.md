@@ -22,10 +22,10 @@ Prevent auto-fixing services under active development.
 ### Manual activation via MCP tool
 
 ```
-server_dev_mode(enable: true)                          — global observe-only
-server_dev_mode(exclude: ["go-hully"], ttl: "2h")      — skip go-hully from triage
-server_dev_mode(exclude: ["memdb-api", "memdb-go"])    — skip MemDB stack (default 4h TTL)
-server_dev_mode(status: true)                          — check current state
+server_dev_mode(enable: true)                             — global observe-only
+server_dev_mode(exclude: ["my-service"], ttl: "2h")       — skip a service from triage
+server_dev_mode(exclude: ["api-service", "worker"])       — skip multiple (default 4h TTL)
+server_dev_mode(status: true)                             — check current state
 ```
 
 ## Dev Mode Behaviors
@@ -103,11 +103,10 @@ re-includes excluded services if they are in a critical state (exited, dead, res
   3. After fixing, re-exclude the service to avoid future false positives
 
 ### Critical infrastructure (never fully exclude)
-These services should trigger P0 override even with global dev mode:
-- postgres (data store)
-- mariadb (remote data store)
-- redis (cache, but used for sessions)
-- qdrant (vector store, data loss risk)
+These service types should trigger P0 override even with global dev mode:
+- Database (postgres, mysql, mariadb)
+- Cache (redis — if used for sessions)
+- Vector store (qdrant — data loss risk)
 
 ## Deactivation
 
@@ -126,4 +125,4 @@ Do NOT auto-deactivate global dev mode — only the user or TTL should do this.
 - Always check dev mode status before executing auto-fixes from watch
 - Log dev mode activations in memory for pattern recognition
 - If dev mode has been on for > 4h, remind user it's still active
-- P0 override trumps dev mode — a dead postgres is never "just development"
+- P0 override trumps dev mode — a dead database is never "just development"

@@ -152,15 +152,15 @@ func (t *claudeCodeTool) Execute(ctx context.Context, args map[string]any) (stri
 			}
 		}
 		go func() {
-			t.notify("⏳ Задача передана Claude Code:\n" + title)
+			t.notify("⏳ Task delegated to Claude Code:\n" + title)
 			result, err := t.runClaude(context.Background(), prompt, args)
 			if err != nil {
-				t.notify("❌ Claude Code завершил с ошибкой: " + err.Error())
+				t.notify("❌ Claude Code failed: " + err.Error())
 			} else {
-				t.notify("✅ Claude Code завершил:\n\n" + result)
+				t.notify("✅ Claude Code completed:\n\n" + result)
 			}
 		}()
-		return "Задача принята и передана Claude Code в асинхронном режиме. Результат пришлю отдельным сообщением по завершению.", nil
+		return "Task accepted and delegated to Claude Code in async mode. Result will be sent separately upon completion.", nil
 	}
 
 	return t.runClaude(ctx, prompt, args)

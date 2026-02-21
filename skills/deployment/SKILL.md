@@ -46,19 +46,19 @@ If any check fails, warn user before proceeding.
 
 ## Docker Compose Deploy
 
-Standard deployment for krolik-server stack:
+Standard deployment for a Docker Compose project:
 ```
-server_deploy(project_path: "/home/krolik/krolik-server")
+server_deploy(project_path: "/path/to/your/project")
 ```
 
 Deploy specific services only:
 ```
-server_deploy(project_path: "/home/krolik/krolik-server", services: ["memdb-api", "memdb-go"])
+server_deploy(project_path: "/path/to/your/project", services: ["api-service", "worker-service"])
 ```
 
 Skip pull (local changes only):
 ```
-server_deploy(project_path: "/home/krolik/krolik-server", pull: false)
+server_deploy(project_path: "/path/to/your/project", pull: false)
 ```
 
 ## Post-Deploy Issues

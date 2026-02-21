@@ -31,46 +31,46 @@ claude_code(
 ## Prompt Template
 
 ```
-## Задача
+## Task
 <original task from the user>
 
-## Что уже сделано
+## What was done
 <list tools called and their results>
 <what worked, what failed>
 
-## Текущая ошибка
+## Current error
 <exact error text from logs>
 
-## Логи (последние записи)
+## Logs (recent entries)
 <paste relevant log lines>
 
-## Что нужно сделать
+## What needs to be done
 <specific ask: fix the bug / investigate / change config>
 ```
 
 ## Example
 
 ```
-## Задача
-Задеплоить memdb-api, но деплой падает на билде.
+## Task
+Deploy api-service, but deploy fails at build stage.
 
-## Что уже сделано
-- server_deploy(action: deploy) → сбой
-- server_inspect(mode: logs, service: memdb-api) → ошибка компиляции
+## What was done
+- server_deploy(action: deploy) → failed
+- server_inspect(mode: logs, service: api-service) → compilation error
 
-## Текущая ошибка
-Error: cannot find module github.com/memdb/core
+## Current error
+Error: cannot find module github.com/example/core
 
-## Логи
+## Logs
 2026-02-18 18:20:05 ERROR build failed: missing import
-2026-02-18 18:20:05 ERROR go: github.com/memdb/core@v1.2: not found
+2026-02-18 18:20:05 ERROR go: github.com/example/core@v1.2: not found
 
-## Что нужно сделать
-Найди причину и исправь go.mod или добавь зависимость.
+## What needs to be done
+Find the root cause and fix go.mod or add the missing dependency.
 ```
 
 ## After Escalating
 
-1. Tell the user: "Задача передана Claude Code — результат придёт отдельным сообщением."
+1. Tell the user: "Task delegated to Claude Code — result will be sent separately."
 2. Do NOT retry the same failing operations
 3. When Claude Code responds via Telegram, relay the result to the user

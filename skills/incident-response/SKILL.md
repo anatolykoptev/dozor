@@ -20,8 +20,8 @@ Classify severity, respond accordingly, and track resolution.
 **P0 CRITICAL:**
 - Any container in `exited` or `restarting` state
 - Disk usage > 95%
-- HTTP endpoint unreachable (piteronline down)
-- Database (postgres/mariadb) down
+- User-facing HTTP endpoint unreachable
+- Database (postgres/mysql/mariadb) down
 - OOM kill detected in logs
 
 **P1 WARNING:**
@@ -35,7 +35,7 @@ Classify severity, respond accordingly, and track resolution.
 **P2 INFO:**
 - Disk usage 60-80%
 - Service uptime < 1 hour (recent restart)
-- Non-critical container unhealthy (searxng, openlist)
+- Non-critical container unhealthy
 - Pending system updates
 
 ## Response Flow
@@ -62,7 +62,7 @@ These actions are safe to take without human approval:
 |-------|----------|
 | Container down | `server_restart(service: NAME)` |
 | Systemd service down | `server_services(action: "restart", service: NAME)` |
-| Piteronline service down | `server_remote(action: "restart", service: NAME)` |
+| Remote service down | `server_remote(action: "restart", service: NAME)` |
 | Disk > 90% | `server_cleanup(targets: ["journal", "docker", "tmp"], report: false, min_age: "7d")` |
 | Docker build cache bloat | `server_prune(age: "48h")` |
 
@@ -94,5 +94,5 @@ Content:
 When multiple issues arrive simultaneously:
 1. P0 before P1 before P2
 2. Data stores (postgres, mariadb) before application services
-3. User-facing (piteronline, memdb-go) before internal tools
+3. User-facing services before internal tools
 4. If overwhelmed (3+ P0): escalate to orchestrator with full triage

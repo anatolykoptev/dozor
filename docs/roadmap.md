@@ -76,7 +76,47 @@ Connect Dozor to MemDB for persistent memory across incidents.
 - `DOZOR_MEMDB_USER=devops`
 - `DOZOR_MEMDB_CUBE=devops`
 
-## Phase 5: Runbooks (executable playbooks)
+## Phase 5: Open-Source Hardening
+
+Remove server-specific hardcoding to make Dozor a truly portable open-source tool.
+
+### 5.1 Russian → English (Go code)
+All user-facing strings in Go code are in Russian. Translate or add i18n.
+- `cmd/dozor/gateway.go` — approval messages ("Команда одобрена"), processing ack ("Принял, обрабатываю"), escalation prompt, max-iterations message
+- `internal/tools/exec.go` — command approval request, rejection message
+
+### 5.2 Generic skill examples
+Skills reference specific services (memdb-api, searxng, go-hully, vaelor, piteronline). Replace with generic placeholders.
+- `skills/service-dependencies/SKILL.md` — full Docker stack listing
+- `skills/capacity-planning/SKILL.md` — memory baselines for specific services
+- `skills/incident-response/SKILL.md` — "piteronline" as user-facing service
+- `skills/deployment/SKILL.md` — `/home/krolik/krolik-server` path
+- `skills/escalation/SKILL.md` — memdb-api, postgres examples
+- `skills/dev-mode/SKILL.md` — memdb-api, go-hully exclusion examples
+- `skills/claude-escalation/SKILL.md` — Russian template, memdb-api reference
+- `skills/remote-server/SKILL.md` — "Piteronline" → generic "Remote Server"
+
+### 5.3 MemDB → generic knowledge base
+MemDB integration works but assumes a specific product. Make it pluggable.
+- Rename `memdb_search`/`memdb_save` → `kb_search`/`kb_save` (knowledge base)
+- Abstract the MCP call layer so any MCP server with search/add tools can be a knowledge backend
+- Config: `DOZOR_KB_SERVER`, `DOZOR_KB_SEARCH_TOOL`, `DOZOR_KB_SAVE_TOOL` (defaults to MemDB tool names)
+- Watch prompt: reference `kb_search` only if KB server is configured
+- Change defaults from `"devops"` to `"default"` or empty
+
+### 5.4 Workspace cleanup
+- `workspace/MEMORY.md` — ship as empty template, not pre-populated
+- `workspace/AGENTS.md` — remove hardcoded URLs/ports, use env-based examples
+- Remove `.env.bak` from repo (keep `.env.example` only)
+- `CLAUDE.md` — add to `.gitignore` (project-specific, not for distribution)
+
+### 5.5 Config documentation
+- Add comprehensive `CONFIGURATION.md` listing all `DOZOR_*` env vars with descriptions
+- Ensure every hardcoded default in `config.go` is documented
+- Add `INSTALL.md` with generic setup instructions (Docker, systemd, binary)
+
+## Phase 6: Runbooks (executable playbooks)
+
 
 Structured multi-step procedures for known scenarios.
 
@@ -101,7 +141,7 @@ steps:
 - Runbook outcomes saved to MemDB for learning
 - Skills system loads runbooks as structured prompts
 
-## Phase 6: Investigation Chains & Confidence
+## Phase 7: Investigation Chains & Confidence
 
 Deep diagnosis before acting.
 
@@ -116,20 +156,20 @@ Deep diagnosis before acting.
 - Medium (unknown errors): investigate deeper, then decide
 - Low (unclear pattern): report only, ask human via Telegram
 
-## Phase 7: Smart Watch
+## Phase 8: Smart Watch
 
 - Adaptive watch intervals — increase frequency after detecting issues, back off when stable
 - Watch history — store last N triage results, detect flapping services
 - Cooldown per service — don't report the same issue within a configurable window
 - Dev mode auto-activate — detect active `docker compose build` / `go build` and suppress
 
-## Phase 8: Incident Timeline
+## Phase 9: Incident Timeline
 
 - Correlate events across services (restart → error spike → OOM)
 - Timeline view: what happened in the last N minutes across all services
 - Root cause suggestions based on event ordering
 
-## Phase 9: Multi-Server
+## Phase 10: Multi-Server
 
 - Unified triage across local + remote servers
 - Cross-server dependency tracking (e.g. DB on remote, app on local)

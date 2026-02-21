@@ -17,7 +17,7 @@ Systematic security review using Dozor inspection tools.
    server_inspect(mode: "health")
 
 3. SSL — certificate expiry and configuration
-   server_inspect(mode: "remote")  <- checks piteronline SSL
+   server_inspect(mode: "remote")  <- checks remote server SSL
 
 4. ACCESS — authentication, API keys, exposed endpoints
    server_inspect(mode: "security")

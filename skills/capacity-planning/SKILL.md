@@ -28,7 +28,7 @@ Use the overview data to estimate daily growth:
 | Docker images/cache | 500MB-2GB/week | server_prune dry-run |
 | Container logs | 50-500MB/day | server_inspect(mode: "overview") |
 | Journal logs | 10-100MB/day | server_cleanup(targets: ["journal"], report: true) |
-| Application data (postgres, qdrant) | Varies | server_container_exec |
+| Application data (databases, indexes) | Varies | server_container_exec |
 | Build artifacts (go, npm) | 200MB-1GB/build | server_cleanup(targets: ["go", "npm"], report: true) |
 
 ### Time-to-Exhaustion
@@ -60,15 +60,15 @@ Reclaimable now: D GB (cleanup dry-run)
 
 ### Per-Service Baselines
 
-Track memory usage from server_inspect(mode: "health"):
+Track memory usage from server_inspect(mode: "health"). Define baselines for your services:
 
-| Service | Normal range | Concern threshold |
-|---------|-------------|-------------------|
-| postgres | 200-500MB | > 1GB |
-| qdrant | 300-800MB | > 1.5GB |
-| memdb-api | 100-300MB | > 500MB |
-| memdb-go | 50-150MB | > 300MB |
-| searxng | 100-200MB | > 400MB |
+| Service type | Normal range | Concern threshold |
+|-------------|-------------|-------------------|
+| Database (postgres, mysql) | 200-500MB | > 1GB |
+| Vector store (qdrant, milvus) | 300-800MB | > 1.5GB |
+| API service | 100-300MB | > 500MB |
+| Worker/consumer | 50-150MB | > 300MB |
+| Search engine | 100-200MB | > 400MB |
 
 If a service consistently exceeds its baseline by 2x+:
 - Likely memory leak

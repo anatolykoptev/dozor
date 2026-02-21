@@ -29,7 +29,7 @@ When you encounter a situation you cannot fully resolve, escalate to the right a
 
 **Service crash loop → devops:**
 ```
-memdb-api crashes in a restart loop. Logs show OOM at 512MB.
+api-service crashes in a restart loop. Logs show OOM at 512MB.
 Already restarted 2x, same result.
 Need: memory limit increase or code-level fix.
 ```
@@ -43,15 +43,15 @@ Need: decision on which approach.
 
 **Cascading failure → orchestrator:**
 ```
-postgres, memdb-api, memdb-go all unhealthy.
-Root cause: postgres connection limit reached.
+Database, api-service, worker-service all unhealthy.
+Root cause: database connection limit reached.
 Need: coordinated restart plan, may affect other agents.
 ```
 
 **Build error → devops:**
 ```
-Deploy of krolik-server failed at build stage.
-Error: go build — missing module github.com/foo/bar.
+Deploy failed at build stage.
+Error: go build — missing module github.com/example/lib.
 Need: code fix or go.mod update.
 ```
 

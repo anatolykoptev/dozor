@@ -54,7 +54,7 @@ func registerExec(server *mcp.Server, agent *engine.ServerAgent, opts ExecOption
 			}
 			req := opts.Approvals.Create(input.Command)
 			opts.Notify(fmt.Sprintf(
-				"⚠️ *Запрос на выполнение команды*\n```\n%s\n```\nОтветь:\n✅ `yes %s`\n❌ `no %s`",
+				"⚠️ *Command execution request*\n```\n%s\n```\nReply:\n✅ `yes %s`\n❌ `no %s`",
 				input.Command, req.ID, req.ID,
 			))
 			switch opts.Approvals.Wait(req, approvals.DefaultTimeout) {
@@ -62,7 +62,7 @@ func registerExec(server *mcp.Server, agent *engine.ServerAgent, opts ExecOption
 				// approved — fall through to execution
 			case approvals.StatusDenied:
 				return nil, engine.TextOutput{
-					Text: fmt.Sprintf("Команда отклонена пользователем: %s", input.Command),
+					Text: fmt.Sprintf("Command rejected by user: %s", input.Command),
 				}, nil
 			default: // StatusExpired
 				return nil, engine.TextOutput{}, fmt.Errorf(
