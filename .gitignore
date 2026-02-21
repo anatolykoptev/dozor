@@ -7,6 +7,7 @@
 # Environment
 .env
 .env.local
+.env.bak
 
 # Local docs (not for git)
 # docs/  -- removed: project docs (compare.md, roadmap.md) should be tracked
