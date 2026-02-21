@@ -13,7 +13,7 @@ type CleanupCollector struct {
 }
 
 // allTargets is the list of all supported cleanup target names.
-var allTargets = []string{"docker", "go", "npm", "uv", "pip", "journal", "tmp", "caches"}
+var allTargets = []string{"docker", "go", "npm", "uv", "pip", "journal", "tmp", "caches", "memory"}
 
 // resolveTargets expands "all" and validates target names.
 func resolveTargets(targets []string) []string {
@@ -86,6 +86,8 @@ func (c *CleanupCollector) scanTarget(ctx context.Context, name string) CleanupT
 		return c.scanTmp(ctx)
 	case "caches":
 		return c.scanCaches(ctx)
+	case "memory":
+		return c.scanMemory(ctx)
 	default:
 		return CleanupTarget{Name: name, Error: "unknown target"}
 	}
@@ -109,6 +111,8 @@ func (c *CleanupCollector) cleanTarget(ctx context.Context, name, minAge string)
 		return c.cleanTmp(ctx, minAge)
 	case "caches":
 		return c.cleanCaches(ctx)
+	case "memory":
+		return c.cleanMemory(ctx)
 	default:
 		return CleanupTarget{Name: name, Error: "unknown target"}
 	}
