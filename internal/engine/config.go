@@ -64,6 +64,10 @@ type Config struct {
 
 	// Remote MCP Servers
 	MCPServers map[string]MCPServerConfig
+
+	// MemDB knowledge base
+	MemDBUser string
+	MemDBCube string
 }
 
 // MCPServerConfig holds config for a remote MCP server.
@@ -119,6 +123,10 @@ func Init() Config {
 
 		// Remote MCP Servers
 		MCPServers: parseMCPServers(env("DOZOR_MCP_SERVERS", "")),
+
+		// MemDB knowledge base
+		MemDBUser: env("DOZOR_MEMDB_USER", "devops"),
+		MemDBCube: env("DOZOR_MEMDB_CUBE", "devops"),
 	}
 }
 

@@ -141,7 +141,7 @@ func AnalyzeLogs(entries []LogEntry, service string) AnalyzeResult {
 	issueExamples := make(map[string]string)
 
 	for _, entry := range entries {
-		if entry.Level == "ERROR" || entry.Level == "FATAL" || entry.Level == "CRITICAL" {
+		if entry.IsErrorLevel() {
 			result.ErrorCount++
 		}
 		if entry.Level == "WARNING" || entry.Level == "WARN" {

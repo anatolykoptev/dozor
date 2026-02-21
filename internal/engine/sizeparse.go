@@ -92,17 +92,9 @@ func BytesToMB(s string) (float64, bool) {
 
 // FormatBytesMB converts bytes string to human-readable MB string.
 func FormatBytesMB(s string) (string, bool) {
-	var n int64
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int64(c-'0')
-		} else {
-			break
-		}
-	}
-	if n == 0 {
+	mb, ok := BytesToMB(s)
+	if !ok {
 		return "", false
 	}
-	mb := float64(n) / 1024.0 / 1024.0
 	return fmt.Sprintf("%.1f MB", mb), true
 }

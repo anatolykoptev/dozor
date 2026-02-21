@@ -301,19 +301,27 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 }
 
 func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus) {
-	slog.Info("gateway watch: running triage")
+	slog.Info("gateway watch: running triage", slog.Bool("dev_mode", eng.IsDevMode()))
 	result := eng.Triage(ctx, nil)
 	if result == "" {
 		slog.Info("gateway watch: all healthy")
 		return
 	}
+
+	var prompt string
+	if eng.IsDevMode() {
+		prompt = "Periodic health check (DEV MODE — observe only, do NOT take any corrective action):\n\n"
+	} else {
+		prompt = "Periodic health check detected issues. First use memdb_search to check for similar past incidents and proven solutions, then analyze and take corrective action if safe:\n\n"
+	}
+
 	slog.Info("gateway watch: issues detected, routing to agent")
 	msgBus.PublishInbound(bus.Message{
 		ID:        fmt.Sprintf("watch-%d", time.Now().UnixMilli()),
 		Channel:   "internal",
 		SenderID:  "watch",
 		ChatID:    "watch",
-		Text:      "Periodic health check detected issues. Analyze and take corrective action if safe:\n\n" + result,
+		Text:      prompt + result,
 		Timestamp: time.Now(),
 	})
 }

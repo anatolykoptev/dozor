@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,6 +23,9 @@ type ServerAgent struct {
 
 	discovery *DockerDiscovery
 	watcher   *ContainerWatcher
+
+	devMode       atomic.Bool
+	devExclusions sync.Map // name → time.Time (expiry)
 }
 
 // NewAgent creates a new server agent with all collectors.
@@ -248,3 +253,41 @@ func (a *ServerAgent) GetGitStatusAt(ctx context.Context, path string) GitStatus
 	}
 	return a.GetGitStatus(ctx, path)
 }
+
+// SetDevMode enables or disables dev mode (observe-only watch).
+func (a *ServerAgent) SetDevMode(on bool) {
+	a.devMode.Store(on)
+}
+
+// IsDevMode returns whether dev mode is active.
+func (a *ServerAgent) IsDevMode() bool {
+	return a.devMode.Load()
+}
+
+// ExcludeService adds a service to the dev exclusion list with a TTL.
+func (a *ServerAgent) ExcludeService(name string, ttl time.Duration) {
+	a.devExclusions.Store(name, time.Now().Add(ttl))
+}
+
+// IncludeService removes a service from the dev exclusion list.
+func (a *ServerAgent) IncludeService(name string) {
+	a.devExclusions.Delete(name)
+}
+
+// ListExclusions returns all active (non-expired) exclusions.
+func (a *ServerAgent) ListExclusions() map[string]time.Time {
+	result := make(map[string]time.Time)
+	now := time.Now()
+	a.devExclusions.Range(func(key, value any) bool {
+		name := key.(string)
+		expiry := value.(time.Time)
+		if now.After(expiry) {
+			a.devExclusions.Delete(name)
+		} else {
+			result[name] = expiry
+		}
+		return true
+	})
+	return result
+}
+

@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net/http"
 	"strings"
@@ -127,23 +126,7 @@ func RemoteServiceStatus(ctx context.Context, cfg Config) string {
 
 		// Get uptime and memory
 		res = t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo systemctl show %s --property=ActiveEnterTimestamp,MemoryCurrent 2>/dev/null", svc))
-		for _, line := range strings.Split(res.Stdout, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "ActiveEnterTimestamp=") {
-				ts := strings.TrimPrefix(line, "ActiveEnterTimestamp=")
-				if ts != "" {
-					fmt.Fprintf(&b, "  Started: %s\n", ts)
-				}
-			}
-			if strings.HasPrefix(line, "MemoryCurrent=") {
-				mem := strings.TrimPrefix(line, "MemoryCurrent=")
-				if mem != "" && mem != "[not set]" && mem != "18446744073709551615" {
-					if mb, ok := BytesToMB(mem); ok {
-						fmt.Fprintf(&b, "  Memory: %.1f MB\n", mb)
-					}
-				}
-			}
-		}
+		FormatSystemctlProperties(res.Stdout, &b)
 	}
 
 	return b.String()
@@ -198,18 +181,7 @@ func IsValidRemoteService(cfg Config, name string) bool {
 }
 
 func checkHTTP(ctx context.Context, url string) (int, *time.Time) {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
-		},
-	}
+	client := newHTTPClient(10 * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

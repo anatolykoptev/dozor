@@ -12,12 +12,56 @@ import (
 func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 	services = a.resolveServices(ctx, services)
 
+	// Filter out dev-excluded services, but override for critical (exited/dead/restarting)
+	var excluded []string
+	var overridden []string
+	if exclusions := a.ListExclusions(); len(exclusions) > 0 {
+		// Pre-fetch statuses for excluded services to check for P0 override
+		var excludedNames []string
+		for _, svc := range services {
+			if _, ok := exclusions[svc]; ok {
+				excludedNames = append(excludedNames, svc)
+			}
+		}
+		criticalExcluded := make(map[string]bool)
+		if len(excludedNames) > 0 {
+			for _, s := range a.status.GetAllStatuses(ctx, excludedNames) {
+				if s.State == StateExited || s.State == StateDead || s.State == StateRestarting {
+					criticalExcluded[s.Name] = true
+				}
+			}
+		}
+
+		filtered := services[:0:0]
+		for _, svc := range services {
+			if _, ok := exclusions[svc]; !ok {
+				filtered = append(filtered, svc)
+			} else if criticalExcluded[svc] {
+				// P0 override: service is excluded but down — re-include it
+				filtered = append(filtered, svc)
+				overridden = append(overridden, svc)
+			} else {
+				excluded = append(excluded, svc)
+			}
+		}
+		services = filtered
+	}
+
 	var b strings.Builder
 	now := time.Now()
 
+	// Dev mode banner
+	if a.IsDevMode() {
+		b.WriteString("=== DEV MODE ACTIVE — observation only ===\n\n")
+	}
+
 	if len(services) == 0 {
 		fmt.Fprintf(&b, "Server Triage Report\nHealth: unknown | Time: %s\n\n", now.Format("2006-01-02 15:04"))
-		b.WriteString("No Docker services found.\n")
+		if len(excluded) > 0 {
+			fmt.Fprintf(&b, "All services dev-excluded (%d): %s\n", len(excluded), strings.Join(excluded, ", "))
+		} else {
+			b.WriteString("No Docker services found.\n")
+		}
 		a.appendDiskPressure(ctx, &b)
 		return b.String()
 	}
@@ -126,6 +170,13 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 	}
 
 	a.appendDiskPressure(ctx, &b)
+
+	if len(overridden) > 0 {
+		fmt.Fprintf(&b, "\nP0 OVERRIDE — dev-excluded but DOWN: %s\n", strings.Join(overridden, ", "))
+	}
+	if len(excluded) > 0 {
+		fmt.Fprintf(&b, "\nDev-excluded (%d): %s\n", len(excluded), strings.Join(excluded, ", "))
+	}
 
 	return b.String()
 }

@@ -30,6 +30,7 @@ AI-native server monitoring agent. Unlike traditional monitoring tools (Promethe
 - **Background Deploy** — Non-blocking deploys with status tracking
 - **Binary Updates** — Check and install updates for ~60 popular CLI tools from GitHub releases
 - **Command Execution** — Blocklist-validated shell commands
+- **Dev Mode** — Runtime-toggleable observe-only watch with per-service triage exclusions
 - **Zero Config** — Auto-detects compose path and services, works out of the box
 
 ## Quick Start
@@ -94,6 +95,7 @@ cp .env.example .env  # optional — works without it
 | `server_updates` | Check and install updates for CLI binaries from GitHub releases |
 | `server_remote` | Manage remote server services (status, restart, logs via SSH+sudo) |
 | `server_remote_exec` | Execute validated commands on remote server via SSH |
+| `server_dev_mode` | Toggle dev mode: observe-only watch, per-service triage exclusions |
 
 ### Inspection Modes
 
@@ -184,7 +186,8 @@ dozor/
 │   │   ├── services.go         # server_services
 │   │   ├── updates.go          # server_updates
 │   │   ├── remote.go           # server_remote
-│   │   └── remote_exec.go      # server_remote_exec
+│   │   ├── remote_exec.go      # server_remote_exec
+│   │   └── dev_mode.go         # server_dev_mode
 │   └── engine/
     ├── agent.go                # Orchestrator
     ├── config.go               # Environment config

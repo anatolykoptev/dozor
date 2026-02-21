@@ -68,7 +68,7 @@ func (c *LogCollector) GetLogs(ctx context.Context, service string, lines int, e
 	if errorsOnly {
 		filtered := make([]LogEntry, 0)
 		for _, e := range entries {
-			if e.Level == "ERROR" || e.Level == "FATAL" || e.Level == "CRITICAL" {
+			if e.IsErrorLevel() {
 				filtered = append(filtered, e)
 			}
 		}

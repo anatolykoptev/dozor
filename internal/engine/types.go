@@ -50,6 +50,11 @@ type LogEntry struct {
 	Raw       string     `json:"raw"`
 }
 
+// IsErrorLevel returns true if the log entry is ERROR, FATAL, or CRITICAL.
+func (e LogEntry) IsErrorLevel() bool {
+	return e.Level == "ERROR" || e.Level == "FATAL" || e.Level == "CRITICAL"
+}
+
 // ServiceStatus for a docker container.
 type ServiceStatus struct {
 	Name          string            `json:"name"`

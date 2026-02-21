@@ -135,15 +135,9 @@ func (m *ClientManager) Call(ctx context.Context, serverID, toolName string, par
 		return "", err
 	}
 
-	// Convert params to JSON
-	var args []byte
-	if params != nil {
-		args, _ = json.Marshal(params)
-	}
-
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      toolName,
-		Arguments: args,
+		Arguments: params,
 	})
 	if err != nil {
 		return "", fmt.Errorf("call %s.%s: %w", serverID, toolName, err)

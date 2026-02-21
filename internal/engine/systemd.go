@@ -7,6 +7,28 @@ import (
 	"strings"
 )
 
+// FormatSystemctlProperties parses ActiveEnterTimestamp and MemoryCurrent
+// from "systemctl show" output and appends formatted lines to b.
+func FormatSystemctlProperties(output string, b *strings.Builder) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ActiveEnterTimestamp=") {
+			ts := strings.TrimPrefix(line, "ActiveEnterTimestamp=")
+			if ts != "" {
+				fmt.Fprintf(b, "  Started: %s\n", ts)
+			}
+		}
+		if strings.HasPrefix(line, "MemoryCurrent=") {
+			mem := strings.TrimPrefix(line, "MemoryCurrent=")
+			if mem != "" && mem != "[not set]" && mem != "18446744073709551615" {
+				if mb, ok := BytesToMB(mem); ok {
+					fmt.Fprintf(b, "  Memory: %.1f MB\n", mb)
+				}
+			}
+		}
+	}
+}
+
 // GetSystemdStatus returns status of local systemd services.
 // Uses config list first, then auto-discovers active user services as fallback.
 func (a *ServerAgent) GetSystemdStatus(ctx context.Context, services []string) string {
@@ -37,23 +59,7 @@ func (a *ServerAgent) GetSystemdStatus(ctx context.Context, services []string) s
 
 		// Get memory and uptime from systemctl show
 		output := a.systemctlShow(ctx, svc, "ActiveEnterTimestamp,MemoryCurrent")
-		for _, line := range strings.Split(output, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "ActiveEnterTimestamp=") {
-				ts := strings.TrimPrefix(line, "ActiveEnterTimestamp=")
-				if ts != "" {
-					fmt.Fprintf(&b, "  Started: %s\n", ts)
-				}
-			}
-			if strings.HasPrefix(line, "MemoryCurrent=") {
-				mem := strings.TrimPrefix(line, "MemoryCurrent=")
-				if mem != "" && mem != "[not set]" && mem != "18446744073709551615" {
-					if mb, ok := BytesToMB(mem); ok {
-						fmt.Fprintf(&b, "  Memory: %.1f MB\n", mb)
-					}
-				}
-			}
-		}
+		FormatSystemctlProperties(output, &b)
 	}
 
 	return b.String()

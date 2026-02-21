@@ -66,11 +66,10 @@ func (t *Transport) Execute(ctx context.Context, command string) CommandResult {
 }
 
 // ExecuteUnsafe runs a command without validation (for internal docker commands).
+// Note: currently identical to Execute; kept as separate method for future
+// validation logic in Execute.
 func (t *Transport) ExecuteUnsafe(ctx context.Context, command string) CommandResult {
-	if !t.cfg.IsLocal() {
-		return t.executeSSH(ctx, command)
-	}
-	return t.executeLocal(ctx, command)
+	return t.Execute(ctx, command)
 }
 
 // DockerCommand runs a docker command.
@@ -109,41 +108,7 @@ func (t *Transport) executeLocal(ctx context.Context, command string) CommandRes
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, "bash", "-c", command)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	cmd.WaitDelay = 3 * time.Second
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	rc := 0
-	if err != nil {
-		if cmdCtx.Err() == context.DeadlineExceeded {
-			return CommandResult{
-				Stderr:     fmt.Sprintf("command timed out after %v", t.cfg.Timeout),
-				ReturnCode: -1,
-				Command:    command,
-				Success:    false,
-			}
-		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			rc = exitErr.ExitCode()
-		} else {
-			rc = 1
-		}
-	}
-
-	return CommandResult{
-		Stdout:     stdout.String(),
-		Stderr:     stderr.String(),
-		ReturnCode: rc,
-		Command:    command,
-		Success:    rc == 0,
-	}
+	return t.runCommand(cmdCtx, cmd, "command timed out after %v", command)
 }
 
 func (t *Transport) executeSSH(ctx context.Context, command string) CommandResult {
@@ -161,6 +126,12 @@ func (t *Transport) executeSSH(ctx context.Context, command string) CommandResul
 	args = append(args, t.cfg.Host, command)
 
 	cmd := exec.CommandContext(cmdCtx, "ssh", args...)
+	return t.runCommand(cmdCtx, cmd, "SSH command timed out after %v", command)
+}
+
+// runCommand executes a prepared command with process group management
+// and timeout handling, returning a CommandResult.
+func (t *Transport) runCommand(cmdCtx context.Context, cmd *exec.Cmd, timeoutFmt, command string) CommandResult {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -176,7 +147,7 @@ func (t *Transport) executeSSH(ctx context.Context, command string) CommandResul
 	if err != nil {
 		if cmdCtx.Err() == context.DeadlineExceeded {
 			return CommandResult{
-				Stderr:     fmt.Sprintf("SSH command timed out after %v", t.cfg.Timeout),
+				Stderr:     fmt.Sprintf(timeoutFmt, t.cfg.Timeout),
 				ReturnCode: -1,
 				Command:    command,
 				Success:    false,

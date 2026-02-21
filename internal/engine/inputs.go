@@ -98,6 +98,15 @@ type GitInput struct {
 	Path string `json:"path,omitempty" jsonschema:"Path to git repository (default: project path from config)"`
 }
 
+// DevModeInput is the MCP tool input for server_dev_mode.
+type DevModeInput struct {
+	Enable  *bool    `json:"enable,omitempty" jsonschema:"Enable (true) or disable (false) dev mode — observe-only watch"`
+	Exclude []string `json:"exclude,omitempty" jsonschema:"Service names to exclude from triage"`
+	Include []string `json:"include,omitempty" jsonschema:"Service names to re-include in triage (remove exclusion)"`
+	TTL     string   `json:"ttl,omitempty" jsonschema:"Exclusion TTL (e.g. 2h, 30m). Default: 4h"`
+	Status  bool     `json:"status,omitempty" jsonschema:"Return current dev mode status"`
+}
+
 // ContainerExecInput is the MCP tool input for server_container_exec.
 type ContainerExecInput struct {
 	Container string `json:"container" jsonschema:"Container name, compose service name, or partial match"`

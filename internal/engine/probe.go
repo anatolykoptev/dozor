@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -67,18 +66,7 @@ func ProbeURLs(ctx context.Context, urls []string, timeoutSec int, checkHeaders 
 func probeOne(ctx context.Context, rawURL string, timeoutSec int, checkHeaders bool) ProbeResult {
 	r := ProbeResult{URL: rawURL}
 
-	client := &http.Client{
-		Timeout: time.Duration(timeoutSec) * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
-		},
-	}
+	client := newHTTPClient(time.Duration(timeoutSec) * time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {

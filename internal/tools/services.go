@@ -18,46 +18,8 @@ func registerServices(server *mcp.Server, agent *engine.ServerAgent) {
 - restart-all: restart all configured services
 - logs: show recent logs for a service`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ServicesInput) (*mcp.CallToolResult, engine.TextOutput, error) {
-		services := agent.ResolveUserServices(ctx)
-		if len(services) == 0 {
-			return nil, engine.TextOutput{}, fmt.Errorf("no user services found (auto-discovery found none, or set DOZOR_USER_SERVICES in .env)")
-		}
-
-		switch input.Action {
-		case "status":
-			return nil, engine.TextOutput{Text: userServicesStatus(ctx, agent, input.Service, services)}, nil
-
-		case "restart":
-			if input.Service == "" {
-				return nil, engine.TextOutput{}, fmt.Errorf("service name is required for restart action")
-			}
-			if engine.FindUserServiceIn(services, input.Service) == nil {
-				return nil, engine.TextOutput{}, fmt.Errorf("unknown service %q, available: %s", input.Service, strings.Join(engine.UserServiceNamesFrom(services), ", "))
-			}
-			return nil, engine.TextOutput{Text: userServiceRestart(ctx, agent, input.Service)}, nil
-
-		case "restart-all":
-			return nil, engine.TextOutput{Text: userServicesRestartAll(ctx, agent, services)}, nil
-
-		case "logs":
-			if input.Service == "" {
-				return nil, engine.TextOutput{}, fmt.Errorf("service name is required for logs action")
-			}
-			if engine.FindUserServiceIn(services, input.Service) == nil {
-				return nil, engine.TextOutput{}, fmt.Errorf("unknown service %q, available: %s", input.Service, strings.Join(engine.UserServiceNamesFrom(services), ", "))
-			}
-			lines := input.Lines
-			if lines <= 0 {
-				lines = 50
-			}
-			if lines > 5000 {
-				lines = 5000
-			}
-			return nil, engine.TextOutput{Text: userServiceLogs(ctx, agent, input.Service, lines)}, nil
-
-		default:
-			return nil, engine.TextOutput{}, fmt.Errorf("unknown action %q, use: status, restart, restart-all, logs", input.Action)
-		}
+		text, err := HandleServices(ctx, agent, input)
+		return nil, engine.TextOutput{Text: text}, err
 	})
 }
 
@@ -100,23 +62,7 @@ func userServicesStatus(ctx context.Context, agent *engine.ServerAgent, singleSe
 		fmt.Fprintf(&b, "[%s] %s: %s%s\n", icon, svc.Name, state, portInfo)
 
 		res = agent.ExecuteCommand(ctx, fmt.Sprintf("systemctl --user show %s --property=ActiveEnterTimestamp,MemoryCurrent", svc.Name))
-		for _, line := range strings.Split(res.Stdout, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "ActiveEnterTimestamp=") {
-				ts := strings.TrimPrefix(line, "ActiveEnterTimestamp=")
-				if ts != "" {
-					fmt.Fprintf(&b, "  Started: %s\n", ts)
-				}
-			}
-			if strings.HasPrefix(line, "MemoryCurrent=") {
-				mem := strings.TrimPrefix(line, "MemoryCurrent=")
-				if mem != "" && mem != "[not set]" && mem != "18446744073709551615" {
-					if mb, ok := engine.FormatBytesMB(mem); ok {
-						fmt.Fprintf(&b, "  Memory: %s\n", mb)
-					}
-				}
-			}
-		}
+		engine.FormatSystemctlProperties(res.Stdout, &b)
 	}
 
 	return b.String()
