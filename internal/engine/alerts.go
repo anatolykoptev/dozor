@@ -103,6 +103,32 @@ func (g *AlertGenerator) GenerateAlerts(statuses []ServiceStatus) []Alert {
 	return alerts
 }
 
+// GenerateGroupAlerts creates alerts for service groups with degraded or critical health.
+func GenerateGroupAlerts(groups []ServiceGroup) []Alert {
+	var alerts []Alert
+	now := time.Now()
+	for _, g := range groups {
+		if g.Name == "" || (g.Health != "critical" && g.Health != "degraded") {
+			continue
+		}
+		level := AlertWarning
+		if g.Health == "critical" {
+			level = AlertCritical
+		} else if g.Health == "degraded" {
+			level = AlertError
+		}
+		alerts = append(alerts, Alert{
+			Level:           level,
+			Service:         "group:" + g.Name,
+			Title:           fmt.Sprintf("Group %q is %s", g.Name, g.Health),
+			Description:     fmt.Sprintf("Service group %s has %d services, overall health: %s", g.Name, len(g.Services), g.Health),
+			SuggestedAction: fmt.Sprintf("Check services in group %q: server_inspect({mode: \"groups\"})", g.Name),
+			Timestamp:       now,
+		})
+	}
+	return alerts
+}
+
 // GenerateDiskAlerts creates alerts for disk pressure conditions.
 func GenerateDiskAlerts(pressures []DiskPressure, cfg Config) []Alert {
 	var alerts []Alert

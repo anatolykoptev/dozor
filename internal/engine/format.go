@@ -7,6 +7,7 @@ import (
 )
 
 // FormatReport creates a human-readable diagnostic report.
+// If any service has a group label, renders by group instead of flat list.
 func FormatReport(r DiagnosticReport) string {
 	var b strings.Builder
 
@@ -14,29 +15,33 @@ func FormatReport(r DiagnosticReport) string {
 	fmt.Fprintf(&b, "Server: %s | Time: %s | Health: %s\n\n",
 		r.Server, r.Timestamp.Format("2006-01-02 15:04:05"), r.OverallHealth)
 
-	fmt.Fprintf(&b, "Services (%d):\n", len(r.Services))
+	// Check if any service has a group label
+	hasGroups := false
 	for _, s := range r.Services {
-		icon := "OK"
-		if !s.IsHealthy() {
-			icon = "!!"
+		if s.DozorLabel("group") != "" {
+			hasGroups = true
+			break
 		}
-		fmt.Fprintf(&b, "  [%s] %s: %s", icon, s.Name, s.State)
-		if s.CPUPercent != nil {
-			fmt.Fprintf(&b, " | CPU: %.1f%%", *s.CPUPercent)
+	}
+
+	if hasGroups {
+		groups := GroupServices(r.Services)
+		for _, g := range groups {
+			name := g.Name
+			if name == "" {
+				name = "ungrouped"
+			}
+			fmt.Fprintf(&b, "%s (%d services, %s):\n", name, len(g.Services), g.Health)
+			for _, s := range g.Services {
+				writeServiceLine(&b, s)
+			}
+			b.WriteString("\n")
 		}
-		if s.MemoryMB != nil {
-			fmt.Fprintf(&b, " | Mem: %.0fMB", *s.MemoryMB)
+	} else {
+		fmt.Fprintf(&b, "Services (%d):\n", len(r.Services))
+		for _, s := range r.Services {
+			writeServiceLine(&b, s)
 		}
-		if s.RestartCount > 0 {
-			fmt.Fprintf(&b, " | Restarts: %d", s.RestartCount)
-		}
-		if s.ErrorCount > 0 {
-			fmt.Fprintf(&b, " | Errors: %d", s.ErrorCount)
-		}
-		if s.HealthcheckOK != nil && !*s.HealthcheckOK {
-			b.WriteString(" | HC: FAIL")
-		}
-		b.WriteString("\n")
 	}
 
 	if len(r.Alerts) > 0 {
@@ -48,6 +53,56 @@ func FormatReport(r DiagnosticReport) string {
 			if a.Channel != "" {
 				fmt.Fprintf(&b, "    Channel: %s\n", a.Channel)
 			}
+		}
+	}
+
+	return b.String()
+}
+
+// writeServiceLine writes a single service status line for reports.
+func writeServiceLine(b *strings.Builder, s ServiceStatus) {
+	icon := "OK"
+	if !s.IsHealthy() {
+		icon = "!!"
+	}
+	fmt.Fprintf(b, "  [%s] %s: %s", icon, s.Name, s.State)
+	if s.CPUPercent != nil {
+		fmt.Fprintf(b, " | CPU: %.1f%%", *s.CPUPercent)
+	}
+	if s.MemoryMB != nil {
+		fmt.Fprintf(b, " | Mem: %.0fMB", *s.MemoryMB)
+	}
+	if s.RestartCount > 0 {
+		fmt.Fprintf(b, " | Restarts: %d", s.RestartCount)
+	}
+	if s.ErrorCount > 0 {
+		fmt.Fprintf(b, " | Errors: %d", s.ErrorCount)
+	}
+	if s.HealthcheckOK != nil && !*s.HealthcheckOK {
+		b.WriteString(" | HC: FAIL")
+	}
+	b.WriteString("\n")
+}
+
+// FormatGroups creates a dashboard view of service groups.
+func FormatGroups(groups []ServiceGroup) string {
+	var b strings.Builder
+	b.WriteString("Service Groups\n")
+	b.WriteString(strings.Repeat("=", 40) + "\n")
+
+	for _, g := range groups {
+		name := g.Name
+		if name == "" {
+			name = "ungrouped"
+		}
+		healthTag := strings.ToUpper(g.Health)
+		fmt.Fprintf(&b, "\n[%s] %s (%d services)\n", healthTag, name, len(g.Services))
+		for _, s := range g.Services {
+			icon := "OK"
+			if !s.IsHealthy() {
+				icon = "!!"
+			}
+			fmt.Fprintf(&b, "  [%s] %s: %s\n", icon, s.Name, s.State)
 		}
 	}
 

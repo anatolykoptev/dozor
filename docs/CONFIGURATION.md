@@ -158,7 +158,8 @@ Per-container configuration via Docker labels. Set them in `docker-compose.yml` 
 |-------|-------------|
 | `dozor.enable` | Set to `false` to exclude a container from monitoring (default: `true`) |
 | `dozor.name` | Custom display name for the container in reports |
-| `dozor.group` | Group name for organizing services |
+| `dozor.group` | Group name for organizing services. Enables grouped triage output and `server_inspect({mode: "groups"})` dashboard |
+| `dozor.depends_on` | Comma-separated service names this service depends on. Used for cascade restart ordering |
 | `dozor.healthcheck.url` | HTTP endpoint to probe during triage. Returns OK/FAIL status in reports |
 | `dozor.logs.pattern` | Custom regex pattern for log analysis. Matched lines are reported as `warning`-level `custom` category issues |
 | `dozor.alert.channel` | Alert routing hint (e.g. Telegram group, webhook ID). Propagated to all alerts for this service |
@@ -174,3 +175,37 @@ services:
       dozor.logs.pattern: "(?i)(payment failed|stripe error)"
       dozor.alert.channel: "ops-critical"
 ```
+
+### Groups & Dependencies
+
+Group services for organized triage output and define dependencies for cascade restarts:
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    labels:
+      dozor.group: "data"
+
+  redis:
+    image: redis:7
+    labels:
+      dozor.group: "data"
+
+  my-api:
+    image: my-api:latest
+    labels:
+      dozor.group: "backend"
+      dozor.depends_on: "postgres,redis"
+
+  my-worker:
+    image: my-worker:latest
+    labels:
+      dozor.group: "backend"
+      dozor.depends_on: "postgres,my-api"
+```
+
+With this config:
+- `server_triage` shows services grouped by `data` and `backend` with per-group health
+- `server_inspect({mode: "groups"})` shows a dashboard of all groups
+- `server_restart({service: "postgres"})` cascades to restart `my-api` then `my-worker` (topological order)

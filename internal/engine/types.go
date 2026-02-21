@@ -260,3 +260,47 @@ type UserService struct {
 	Name string `json:"name"`
 	Port int    `json:"port,omitempty"` // 0 if not specified
 }
+
+// ServiceGroup holds services organized by dozor.group label.
+type ServiceGroup struct {
+	Name     string          `json:"name"`
+	Services []ServiceStatus `json:"services"`
+	Health   string          `json:"health"` // worst of members: critical > degraded > warning > healthy
+}
+
+// DependencyGraph maps service names to their dependencies (dozor.depends_on).
+type DependencyGraph map[string][]string
+
+// Dependents returns all services that transitively depend on the given service.
+// Uses BFS with visited set for cycle safety. Returns in dependency-first order
+// (if A depends on X and B depends on A, returns [A, B]).
+func (g DependencyGraph) Dependents(service string) []string {
+	// Build reverse map: dependency -> services that depend on it
+	reverse := make(map[string][]string)
+	for svc, deps := range g {
+		for _, dep := range deps {
+			reverse[dep] = append(reverse[dep], svc)
+		}
+	}
+
+	// BFS from the target service
+	var result []string
+	visited := map[string]bool{service: true}
+	queue := []string{service}
+
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		for _, dependent := range reverse[current] {
+			if visited[dependent] {
+				continue
+			}
+			visited[dependent] = true
+			result = append(result, dependent)
+			queue = append(queue, dependent)
+		}
+	}
+
+	return result
+}

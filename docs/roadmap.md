@@ -65,15 +65,22 @@ Extend Docker label support for per-service monitoring configuration.
 - Healthcheck results shown in `FormatStatus`, `FormatReport`, and triage output
 - SDK-only: CLI/SSH fallback gracefully ignores labels
 
+### Phase 3: Service Groups & Dependencies
+
+Label-driven service grouping and dependency management.
+
+- `dozor.group` label — group services, aggregate health per group, grouped triage output
+- `dozor.depends_on` label — dependency graph for automatic cascade restart ordering
+- `server_inspect({mode: "groups"})` — dashboard view of all groups with health
+- `GroupServices()` / `BuildDependencyGraph()` pure functions in `groups.go`
+- `FormatGroups()` for dashboard rendering; `FormatReport()` renders by group when labels present
+- `GenerateGroupAlerts()` — group-level alerts for degraded/critical groups
+- BFS-based `Dependents()` with cycle safety and dangling-ref warnings
+- Backward compatible: no labels = current flat behavior unchanged
+
 ---
 
 ## Planned
-
-### Phase 3: Service Groups & Dependencies
-
-- `dozor.depends_on` — dependency graph for restart ordering
-- `dozor.group` — aggregate health by group
-- Dashboard view per group
 
 ### Phase 4: Knowledge Base Integration
 

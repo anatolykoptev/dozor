@@ -141,68 +141,19 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 
 	fmt.Fprintf(&b, "Server Triage Report\nHealth: %s | Time: %s\n", overallHealth, now.Format("2006-01-02 15:04"))
 
-	if len(problematic) > 0 {
-		fmt.Fprintf(&b, "\nServices needing attention (%d):\n", len(problematic))
-		for _, s := range problematic {
-			tag := "WARNING"
-			level := s.GetAlertLevel()
-			if level == AlertCritical {
-				tag = "CRITICAL"
-			} else if level == AlertError {
-				tag = "ERROR"
-			}
-
-			fmt.Fprintf(&b, "\n[%s] %s", tag, s.Name)
-			parts := []string{string(s.State)}
-			if s.RestartCount > 0 {
-				parts = append(parts, fmt.Sprintf("%d restarts", s.RestartCount))
-			}
-			if s.ErrorCount > 0 {
-				parts = append(parts, fmt.Sprintf("%d errors", s.ErrorCount))
-			}
-			fmt.Fprintf(&b, " — %s\n", strings.Join(parts, ", "))
-
-			if s.HealthcheckOK != nil && !*s.HealthcheckOK {
-				fmt.Fprintf(&b, "  Healthcheck FAILED: %s -> %s\n", s.HealthcheckURL, s.HealthcheckMsg)
-			}
-			if s.AlertChannel != "" {
-				fmt.Fprintf(&b, "  Alert channel: %s\n", s.AlertChannel)
-			}
-
-			// Run log analysis for this service
-			if s.State == StateRunning && s.ErrorCount > 0 {
-				entries := a.logs.GetLogs(ctx, s.Name, a.cfg.LogLines, false)
-				var extra []ErrorPattern
-				if p := s.DozorLabel("logs.pattern"); p != "" {
-					extra = append(extra, LabelPattern(p))
-				}
-				analysis := AnalyzeLogs(entries, s.Name, extra...)
-				for _, issue := range analysis.Issues {
-					fmt.Fprintf(&b, "  Issue: %s (%d occurrences)\n", issue.Description, issue.Count)
-					fmt.Fprintf(&b, "  Action: %s\n", issue.Action)
-				}
-			}
-
-			// Recent error lines (max 5)
-			if len(s.RecentErrors) > 0 {
-				b.WriteString("  Recent errors:\n")
-				for _, e := range s.RecentErrors {
-					ts := ""
-					if e.Timestamp != nil {
-						ts = e.Timestamp.Format("15:04:05")
-					}
-					msg := e.Message
-					if len(msg) > 150 {
-						msg = msg[:150] + "..."
-					}
-					fmt.Fprintf(&b, "    [%s] %s\n", ts, msg)
-				}
-			}
+	// Check if any service has a group label
+	hasGroups := false
+	for _, s := range statuses {
+		if s.DozorLabel("group") != "" {
+			hasGroups = true
+			break
 		}
 	}
 
-	if len(healthy) > 0 {
-		fmt.Fprintf(&b, "\nHealthy services (%d): %s\n", len(healthy), strings.Join(healthy, ", "))
+	if hasGroups {
+		a.writeGroupedTriage(ctx, &b, statuses)
+	} else {
+		a.writeFlatTriage(ctx, &b, problematic, healthy)
 	}
 
 	a.appendDiskPressure(ctx, &b)
@@ -215,4 +166,98 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 	}
 
 	return b.String()
+}
+
+// writeFlatTriage renders the original flat problematic/healthy output.
+func (a *ServerAgent) writeFlatTriage(ctx context.Context, b *strings.Builder, problematic []ServiceStatus, healthy []string) {
+	if len(problematic) > 0 {
+		fmt.Fprintf(b, "\nServices needing attention (%d):\n", len(problematic))
+		for _, s := range problematic {
+			b.WriteString("\n")
+			a.writeServiceDetail(ctx, b, s)
+		}
+	}
+
+	if len(healthy) > 0 {
+		fmt.Fprintf(b, "\nHealthy services (%d): %s\n", len(healthy), strings.Join(healthy, ", "))
+	}
+}
+
+// writeGroupedTriage renders triage output organized by service groups.
+func (a *ServerAgent) writeGroupedTriage(ctx context.Context, b *strings.Builder, statuses []ServiceStatus) {
+	groups := GroupServices(statuses)
+
+	for _, g := range groups {
+		name := g.Name
+		if name == "" {
+			name = "ungrouped"
+		}
+		fmt.Fprintf(b, "\n--- %s (%s) ---\n", name, g.Health)
+
+		for _, s := range g.Services {
+			if s.IsHealthy() {
+				fmt.Fprintf(b, "[OK] %s\n", s.Name)
+			} else {
+				a.writeServiceDetail(ctx, b, s)
+			}
+		}
+	}
+}
+
+// writeServiceDetail renders a single problematic service with tag, details, and analysis.
+func (a *ServerAgent) writeServiceDetail(ctx context.Context, b *strings.Builder, s ServiceStatus) {
+	tag := "WARNING"
+	level := s.GetAlertLevel()
+	if level == AlertCritical {
+		tag = "CRITICAL"
+	} else if level == AlertError {
+		tag = "ERROR"
+	}
+
+	fmt.Fprintf(b, "[%s] %s", tag, s.Name)
+	parts := []string{string(s.State)}
+	if s.RestartCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d restarts", s.RestartCount))
+	}
+	if s.ErrorCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d errors", s.ErrorCount))
+	}
+	fmt.Fprintf(b, " — %s\n", strings.Join(parts, ", "))
+
+	if s.HealthcheckOK != nil && !*s.HealthcheckOK {
+		fmt.Fprintf(b, "  Healthcheck FAILED: %s -> %s\n", s.HealthcheckURL, s.HealthcheckMsg)
+	}
+	if s.AlertChannel != "" {
+		fmt.Fprintf(b, "  Alert channel: %s\n", s.AlertChannel)
+	}
+
+	// Run log analysis for this service
+	if s.State == StateRunning && s.ErrorCount > 0 {
+		entries := a.logs.GetLogs(ctx, s.Name, a.cfg.LogLines, false)
+		var extra []ErrorPattern
+		if p := s.DozorLabel("logs.pattern"); p != "" {
+			extra = append(extra, LabelPattern(p))
+		}
+		analysis := AnalyzeLogs(entries, s.Name, extra...)
+		for _, issue := range analysis.Issues {
+			fmt.Fprintf(b, "  Issue: %s (%d occurrences)\n", issue.Description, issue.Count)
+			fmt.Fprintf(b, "  Action: %s\n", issue.Action)
+		}
+	}
+
+	// Recent error lines (max 5)
+	if len(s.RecentErrors) > 0 {
+		b.WriteString("  Recent errors:\n")
+		for _, e := range s.RecentErrors {
+			ts := ""
+			if e.Timestamp != nil {
+				ts = e.Timestamp.Format("15:04:05")
+			}
+			msg := e.Message
+			if len(msg) > 150 {
+				msg = msg[:150] + "..."
+			}
+			fmt.Fprintf(b, "    [%s] %s\n", ts, msg)
+		}
+	}
 }

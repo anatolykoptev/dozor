@@ -143,6 +143,10 @@ func (a *ServerAgent) Diagnose(ctx context.Context, services []string) Diagnosti
 
 	alerts := a.alerts.GenerateAlerts(statuses)
 
+	// Add group-level alerts if any service has a group label
+	groups := GroupServices(statuses)
+	alerts = append(alerts, GenerateGroupAlerts(groups)...)
+
 	report := DiagnosticReport{
 		Timestamp: time.Now(),
 		Server:    a.cfg.Host,
@@ -198,6 +202,13 @@ func (a *ServerAgent) ExecuteCommand(ctx context.Context, command string) Comman
 // CheckSecurity runs all security checks.
 func (a *ServerAgent) CheckSecurity(ctx context.Context) []SecurityIssue {
 	return a.security.CheckAll(ctx)
+}
+
+// GetServiceGroups returns services organized by dozor.group label.
+func (a *ServerAgent) GetServiceGroups(ctx context.Context) []ServiceGroup {
+	services := a.resolveServices(ctx, nil)
+	statuses := a.status.GetAllStatuses(ctx, services)
+	return GroupServices(statuses)
 }
 
 // GetHealth returns a quick health summary.

@@ -2,12 +2,42 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
-// RestartService restarts a docker compose service.
+// RestartService restarts a docker compose service and its transitive dependents.
+// If the primary restart fails, returns immediately. If no dozor.depends_on labels
+// exist, behaves identically to before (single service restart).
 func (a *ServerAgent) RestartService(ctx context.Context, service string) CommandResult {
-	return a.transport.DockerComposeCommand(ctx, "restart "+service)
+	result := a.transport.DockerComposeCommand(ctx, "restart "+service)
+	if !result.Success {
+		return result
+	}
+
+	// Build dependency graph from all discovered services
+	allServices := a.resolveServices(ctx, nil)
+	statuses := a.status.GetAllStatuses(ctx, allServices)
+	graph := BuildDependencyGraph(statuses)
+	dependents := graph.Dependents(service)
+
+	if len(dependents) == 0 {
+		return result
+	}
+
+	// Restart dependents in order (dependencies-first from BFS)
+	var restarted []string
+	for _, dep := range dependents {
+		r := a.transport.DockerComposeCommand(ctx, "restart "+dep)
+		if r.Success {
+			restarted = append(restarted, dep)
+		}
+	}
+
+	if len(restarted) > 0 {
+		result.Stdout = fmt.Sprintf("Restarted %s (+ dependents: %s)", service, strings.Join(restarted, ", "))
+	}
+	return result
 }
 
 // PruneDocker cleans up docker resources.

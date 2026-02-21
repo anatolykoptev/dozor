@@ -111,8 +111,15 @@ func HandleInspect(ctx context.Context, agent *engine.ServerAgent, input engine.
 	case "cron":
 		return agent.GetScheduledTasks(ctx), nil
 
+	case "groups":
+		groups := agent.GetServiceGroups(ctx)
+		if len(groups) == 0 || (len(groups) == 1 && groups[0].Name == "") {
+			return "No service groups configured. Set dozor.group labels on containers.", nil
+		}
+		return engine.FormatGroups(groups), nil
+
 	default:
-		return "", fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron", input.Mode)
+		return "", fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron, groups", input.Mode)
 	}
 }
 
@@ -165,6 +172,9 @@ func HandleRestart(ctx context.Context, agent *engine.ServerAgent, service strin
 	result := agent.RestartService(ctx, service)
 	if !result.Success {
 		return fmt.Sprintf("Restart failed: %s", result.Output()), nil
+	}
+	if result.Stdout != "" {
+		return result.Stdout, nil
 	}
 	return fmt.Sprintf("Service %s restarted successfully.", service), nil
 }
