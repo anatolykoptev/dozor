@@ -161,6 +161,9 @@ func (c *Channel) sendReply(msg bus.Message) {
 
 	text = sanitizeUTF8(text)
 
+	// Compact verbose LLM output before conversion.
+	text = CompactForTelegram(text, 4000)
+
 	// Try HTML mode first, fall back to plain text.
 	htmlText := markdownToTelegramHTML(text)
 	if err := c.sendChunked(chatID, htmlText, tgbotapi.ModeHTML); err != nil {
@@ -183,11 +186,44 @@ func (c *Channel) sendChunked(chatID int64, text string, parseMode string) error
 		if parseMode != "" {
 			tgMsg.ParseMode = parseMode
 		}
-		if _, err := c.bot.Send(tgMsg); err != nil {
+		if err := c.sendWithRetry(tgMsg); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sendWithRetry sends a Telegram message with retry for transient errors.
+func (c *Channel) sendWithRetry(msg tgbotapi.Chattable) error {
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		_, err := c.bot.Send(msg)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isTransientTelegramError(err) {
+			return err
+		}
+		slog.Warn("telegram: transient error, retrying",
+			slog.Int("attempt", attempt+1),
+			slog.Any("error", err))
+		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+	}
+	return fmt.Errorf("telegram send failed after %d retries: %w", maxRetries, lastErr)
+}
+
+// isTransientTelegramError returns true for errors worth retrying.
+func isTransientTelegramError(err error) bool {
+	msg := err.Error()
+	transient := []string{"429", "502", "503", "504", "timeout", "connection reset", "connection refused"}
+	for _, t := range transient {
+		if strings.Contains(msg, t) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Channel) typingLoop(chatID int64, stop <-chan struct{}) {

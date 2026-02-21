@@ -6,6 +6,45 @@ import (
 	"strings"
 )
 
+// --- Compact LLM output for Telegram ---
+
+// Precompiled regexes for CompactForTelegram.
+var (
+	reVerboseSection = regexp.MustCompile(`(?mi)^#+\s+(recent errors|error log|raw logs?|detailed analysis|full output|stack trace|verbose).*$`)
+	reLargeCodeBlock = regexp.MustCompile("(?s)```[\\w]*\n.{500,}?```")
+)
+
+// CompactForTelegram truncates verbose LLM responses for Telegram delivery.
+// Runs on raw markdown BEFORE HTML conversion. Pass-through if text ≤ maxChars.
+func CompactForTelegram(text string, maxChars int) string {
+	if len(text) <= maxChars {
+		return text
+	}
+
+	// Strip large code blocks (>500 chars) — replace with one-liner.
+	text = reLargeCodeBlock.ReplaceAllString(text, "```\n(code block trimmed)\n```")
+
+	// If still fits, done.
+	if len(text) <= maxChars {
+		return text
+	}
+
+	// Find first verbose section heading and truncate there.
+	if loc := reVerboseSection.FindStringIndex(text); loc != nil && loc[0] > 200 {
+		text = strings.TrimRight(text[:loc[0]], "\n ") + "\n\n… _(truncated)_"
+		if len(text) <= maxChars {
+			return text
+		}
+	}
+
+	// Hard truncate at maxChars on a newline boundary.
+	cut := text[:maxChars-30]
+	if nl := strings.LastIndex(cut, "\n"); nl > len(cut)/2 {
+		cut = cut[:nl]
+	}
+	return strings.TrimRight(cut, "\n ") + "\n\n… _(truncated)_"
+}
+
 // --- Markdown → Telegram HTML conversion ---
 // Adapted from Vaelor's pkg/channels/telegram.go
 
@@ -285,15 +324,18 @@ func extractInlineCodes(text string) inlineCodeMatch {
 	return inlineCodeMatch{text: text, codes: codes}
 }
 
+// splitMessage splits text into chunks that fit Telegram's message limit,
+// preserving valid HTML across chunk boundaries by closing and reopening tags.
 func splitMessage(text string, maxLen int) []string {
 	if len(text) <= maxLen {
 		return []string{text}
 	}
 
-	var chunks []string
+	// First pass: split on newline boundaries (raw, ignoring tags).
+	var rawChunks []string
 	for len(text) > 0 {
 		if len(text) <= maxLen {
-			chunks = append(chunks, text)
+			rawChunks = append(rawChunks, text)
 			break
 		}
 		chunk := text[:maxLen]
@@ -301,8 +343,90 @@ func splitMessage(text string, maxLen int) []string {
 		if splitAt <= 0 {
 			splitAt = maxLen
 		}
-		chunks = append(chunks, strings.TrimRight(text[:splitAt], "\n"))
+		rawChunks = append(rawChunks, strings.TrimRight(text[:splitAt], "\n"))
 		text = strings.TrimLeft(text[splitAt:], "\n")
 	}
-	return chunks
+
+	// Second pass: fix HTML tags across chunk boundaries.
+	var openTags []string // tags open at end of previous chunk
+	result := make([]string, 0, len(rawChunks))
+
+	for _, chunk := range rawChunks {
+		// Prepend reopening tags from previous chunk.
+		if len(openTags) > 0 {
+			chunk = strings.Join(openTags, "") + chunk
+		}
+
+		// Track which tags are open at end of this chunk.
+		openTags = unclosedTags(chunk)
+
+		// Append closing tags in reverse order.
+		if len(openTags) > 0 {
+			var closers strings.Builder
+			for i := len(openTags) - 1; i >= 0; i-- {
+				tagName := openTags[i][1 : len(openTags[i])-1]
+				// Strip attributes (e.g. <a href="..."> → a)
+				if sp := strings.IndexByte(tagName, ' '); sp > 0 {
+					tagName = tagName[:sp]
+				}
+				closers.WriteString("</" + tagName + ">")
+			}
+			chunk += closers.String()
+		}
+
+		result = append(result, chunk)
+	}
+	return result
+}
+
+// unclosedTags returns opening tags (e.g. "<b>", "<code>") that remain
+// unclosed at the end of the HTML fragment.
+func unclosedTags(html string) []string {
+	var stack []string
+	i := 0
+	for i < len(html) {
+		lt := strings.IndexByte(html[i:], '<')
+		if lt < 0 {
+			break
+		}
+		lt += i
+		gt := strings.IndexByte(html[lt:], '>')
+		if gt < 0 {
+			break
+		}
+		gt += lt
+		tag := html[lt : gt+1]
+		i = gt + 1
+
+		if len(tag) < 3 {
+			continue
+		}
+
+		if tag[1] == '/' {
+			// Closing tag — pop matching opener.
+			closeTag := tag[2 : len(tag)-1]
+			for k := len(stack) - 1; k >= 0; k-- {
+				openName := stack[k][1 : len(stack[k])-1]
+				if sp := strings.IndexByte(openName, ' '); sp > 0 {
+					openName = openName[:sp]
+				}
+				if openName == closeTag {
+					stack = append(stack[:k], stack[k+1:]...)
+					break
+				}
+			}
+		} else {
+			// Opening tag — only track Telegram-supported formatting tags.
+			tagContent := tag[1 : len(tag)-1]
+			tagContent = strings.TrimSuffix(tagContent, "/")
+			parts := strings.Fields(tagContent)
+			if len(parts) > 0 {
+				switch parts[0] {
+				case "b", "i", "s", "u", "a", "code", "pre", "blockquote":
+					stack = append(stack, tag)
+				}
+			}
+		}
+	}
+	return stack
 }
