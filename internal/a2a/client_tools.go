@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -125,7 +126,7 @@ func (t *callTool) Execute(ctx context.Context, args map[string]any) (string, er
 		return fmt.Sprintf("agent_id is required. Available agents: %s. Please retry a2a_call with agent_id set to one of these values.", strings.Join(available, ", ")), nil
 	}
 	if message == "" {
-		return "", fmt.Errorf("message is required")
+		return "", errors.New("message is required")
 	}
 	return t.mgr.Call(ctx, agentID, message)
 }

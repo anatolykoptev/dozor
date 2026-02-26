@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
@@ -19,14 +20,14 @@ Modes:
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ProbeInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		if len(input.URLs) == 0 {
-			return nil, engine.TextOutput{}, fmt.Errorf("at least one URL is required")
+			return nil, engine.TextOutput{}, errors.New("at least one URL is required")
 		}
-		if len(input.URLs) > 20 {
-			return nil, engine.TextOutput{}, fmt.Errorf("maximum 20 URLs per probe request")
+		if len(input.URLs) > maxProbeURLs {
+			return nil, engine.TextOutput{}, fmt.Errorf("maximum %d URLs per probe request", maxProbeURLs)
 		}
 		for _, u := range input.URLs {
 			if u == "" {
-				return nil, engine.TextOutput{}, fmt.Errorf("empty URL in list")
+				return nil, engine.TextOutput{}, errors.New("empty URL in list")
 			}
 		}
 

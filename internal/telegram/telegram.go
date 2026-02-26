@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +13,11 @@ import (
 
 	"github.com/anatolykoptev/dozor/internal/bus"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+)
+
+const (
+	// telegramCompactMaxChars is the character limit before compacting LLM output for Telegram.
+	telegramCompactMaxChars = 4000
 )
 
 // Channel is a Telegram bot that bridges messages to/from the bus.
@@ -31,7 +37,7 @@ type Channel struct {
 func New(msgBus *bus.Bus) (*Channel, error) {
 	token := os.Getenv("DOZOR_TELEGRAM_TOKEN")
 	if token == "" {
-		return nil, fmt.Errorf("DOZOR_TELEGRAM_TOKEN not set")
+		return nil, errors.New("DOZOR_TELEGRAM_TOKEN not set")
 	}
 
 	bot, err := tgbotapi.NewBotAPI(token)
@@ -121,15 +127,15 @@ func (c *Channel) handleMessage(msg *tgbotapi.Message) {
 		return // ignore non-text messages
 	}
 
-	chatID := fmt.Sprintf("%d", msg.Chat.ID)
+	chatID := strconv.FormatInt(msg.Chat.ID, 10)
 
 	// Start typing indicator.
-	c.bot.Send(tgbotapi.NewChatAction(msg.Chat.ID, tgbotapi.ChatTyping))
+	_, _ = c.bot.Send(tgbotapi.NewChatAction(msg.Chat.ID, tgbotapi.ChatTyping))
 	stopChan := make(chan struct{})
 	c.stopTyping.Store(chatID, stopChan)
 	go c.typingLoop(msg.Chat.ID, stopChan)
 
-	senderID := fmt.Sprintf("%d", userID)
+	senderID := strconv.FormatInt(userID, 10)
 	c.bus.PublishInbound(bus.Message{
 		ID:        fmt.Sprintf("tg-%d", msg.MessageID),
 		Channel:   "telegram",
@@ -162,7 +168,7 @@ func (c *Channel) sendReply(msg bus.Message) {
 	text = sanitizeUTF8(text)
 
 	// Compact verbose LLM output before conversion.
-	text = CompactForTelegram(text, 4000)
+	text = CompactForTelegram(text, telegramCompactMaxChars)
 
 	// Try HTML mode first, fall back to plain text.
 	htmlText := markdownToTelegramHTML(text)
@@ -236,7 +242,7 @@ func (c *Channel) typingLoop(chatID int64, stop <-chan struct{}) {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			c.bot.Send(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
+			_, _ = c.bot.Send(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping))
 		}
 	}
 }

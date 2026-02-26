@@ -92,7 +92,9 @@ func buildExtensionRegistry(eng *engine.ServerAgent, registry *toolreg.Registry,
 		extRegistry.Register(mcpclient.New())
 		extRegistry.Register(a2aclient.New())
 	}
-	extRegistry.LoadAll(context.Background(), eng, registry, mcpServer, notify)
+	if err := extRegistry.LoadAll(context.Background(), eng, registry, mcpServer, notify); err != nil {
+		slog.Warn("extension registry load error", slog.Any("error", err))
+	}
 	extRegistry.RegisterIntrospectTool(mcpServer)
 
 	for _, extErr := range extRegistry.Errors() {

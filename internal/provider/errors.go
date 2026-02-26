@@ -3,8 +3,20 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
+)
+
+const (
+	// httpStatusRateLimit is the HTTP status code for rate limiting.
+	httpStatusRateLimit = http.StatusTooManyRequests
+	// errorBodyTruncLen is the maximum length of an error body message to include.
+	errorBodyTruncLen = 300
+	// httpServerErrorMin is the minimum HTTP status for server errors.
+	httpServerErrorMinProvider = 500
+	// httpServerErrorMax is the maximum HTTP status for server errors.
+	httpServerErrorMax = 600
 )
 
 // ProviderError is a structured error from an LLM provider.
@@ -21,17 +33,17 @@ func (e *ProviderError) Error() string {
 
 // IsAuth returns true for 401/403 authentication errors.
 func (e *ProviderError) IsAuth() bool {
-	return e.StatusCode == 401 || e.StatusCode == 403
+	return e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
 }
 
 // IsRateLimit returns true for 429 quota/rate-limit errors.
 func (e *ProviderError) IsRateLimit() bool {
-	return e.StatusCode == 429
+	return e.StatusCode == httpStatusRateLimit
 }
 
 // IsServerError returns true for 5xx server errors.
 func (e *ProviderError) IsServerError() bool {
-	return e.StatusCode >= 500 && e.StatusCode < 600
+	return e.StatusCode >= httpServerErrorMinProvider && e.StatusCode < httpServerErrorMax
 }
 
 // IsTransient returns true if the error is worth retrying.
@@ -81,8 +93,8 @@ func parseProviderError(statusCode int, body []byte) *ProviderError {
 	if idx := strings.IndexByte(s, '\n'); idx > 0 {
 		s = s[:idx]
 	}
-	if len(s) > 300 {
-		s = s[:300] + "..."
+	if len(s) > errorBodyTruncLen {
+		s = s[:errorBodyTruncLen] + "..."
 	}
 	pe.Message = s
 	return pe

@@ -25,7 +25,7 @@ func (g *AlertGenerator) GenerateAlerts(statuses []ServiceStatus) []Alert {
 				Service:         s.Name,
 				Title:           fmt.Sprintf("%s is %s", s.Name, s.State),
 				Description:     fmt.Sprintf("Container %s is in %s state", s.Name, s.State),
-				SuggestedAction: fmt.Sprintf("Check logs: docker compose logs --tail 50 %s", s.Name),
+				SuggestedAction: "Check logs: docker compose logs --tail 50 " + s.Name,
 				Timestamp:       now,
 				Channel:         ch,
 			})
@@ -108,14 +108,17 @@ func GenerateGroupAlerts(groups []ServiceGroup) []Alert {
 	var alerts []Alert
 	now := time.Now()
 	for _, g := range groups {
-		if g.Name == "" || (g.Health != "critical" && g.Health != "degraded") {
+		if g.Name == "" || (g.Health != string(AlertCritical) && g.Health != healthDegraded) {
 			continue
 		}
-		level := AlertWarning
-		if g.Health == "critical" {
+		var level AlertLevel
+		switch g.Health {
+		case string(AlertCritical):
 			level = AlertCritical
-		} else if g.Health == "degraded" {
+		case healthDegraded:
 			level = AlertError
+		default:
+			level = AlertWarning
 		}
 		alerts = append(alerts, Alert{
 			Level:           level,

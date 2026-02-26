@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -41,7 +40,8 @@ func runWatch(cfg engine.Config, eng *engine.ServerAgent) {
 
 	if err := engine.Watch(sigCtx, cfg); err != nil {
 		slog.Error("watch failed", slog.Any("error", err))
-		os.Exit(1)
+		cancel()
+		os.Exit(1) //nolint:gocritic // explicit cancel called before os.Exit
 	}
 }
 
@@ -98,10 +98,7 @@ func runSmartCheck(ctx context.Context, cfg engine.Config, eng *engine.ServerAge
 
 	slog.Info("triage state changed, analyzing with LLM")
 
-	prompt := fmt.Sprintf(`The following is a server triage report. Analyze the issues and take corrective action if safe to do so. After taking any actions, verify the fixes.
-
-Triage Report:
-%s`, triageResult)
+	prompt := "The following is a server triage report. Analyze the issues and take corrective action if safe to do so. After taking any actions, verify the fixes.\n\nTriage Report:\n" + triageResult
 
 	response, err := loop.Process(ctx, prompt)
 	if err != nil {

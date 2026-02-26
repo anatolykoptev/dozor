@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -37,7 +38,7 @@ func IsContainerExecAllowed(cmd string) (bool, string) {
 	}
 	for _, p := range containerExecBlockedPatterns {
 		if p.MatchString(cmd) {
-			return false, fmt.Sprintf("blocked: %s", p.String())
+			return false, "blocked: " + p.String()
 		}
 	}
 	return true, ""
@@ -46,7 +47,7 @@ func IsContainerExecAllowed(cmd string) (bool, string) {
 // ContainerExec runs a command inside a container using Docker SDK.
 func (a *ServerAgent) ContainerExec(ctx context.Context, containerName, command, user string) (string, error) {
 	if a.discovery == nil {
-		return "", fmt.Errorf("container exec requires local Docker access (Docker SDK not available)")
+		return "", errors.New("container exec requires local Docker access (Docker SDK not available)")
 	}
 
 	containerID, err := a.resolveContainerID(ctx, containerName)

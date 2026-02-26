@@ -41,7 +41,7 @@ func userServicesStatus(ctx context.Context, agent *engine.ServerAgent, singleSe
 	fmt.Fprintf(&b, "User Services [%s] (%d)\n\n", user, len(services))
 
 	for _, svc := range services {
-		res := agent.ExecuteCommand(ctx, fmt.Sprintf("systemctl --user is-active %s", svc.Name))
+		res := agent.ExecuteCommand(ctx, "systemctl --user is-active "+svc.Name)
 		state := strings.TrimSpace(res.Stdout)
 		if state == "" {
 			state = strings.TrimSpace(res.Stderr)
@@ -69,11 +69,11 @@ func userServicesStatus(ctx context.Context, agent *engine.ServerAgent, singleSe
 }
 
 func userServiceRestart(ctx context.Context, agent *engine.ServerAgent, service string) string {
-	res := agent.ExecuteCommand(ctx, fmt.Sprintf("systemctl --user restart %s", service))
+	res := agent.ExecuteCommand(ctx, "systemctl --user restart "+service)
 	if !res.Success {
 		return fmt.Sprintf("Failed to restart %s: %s", service, res.Output())
 	}
-	res = agent.ExecuteCommand(ctx, fmt.Sprintf("systemctl --user is-active %s", service))
+	res = agent.ExecuteCommand(ctx, "systemctl --user is-active "+service)
 	state := strings.TrimSpace(res.Stdout)
 	if state == "active" {
 		return fmt.Sprintf("Service %s restarted successfully (active).", service)
@@ -98,7 +98,7 @@ func userServiceLogs(ctx context.Context, agent *engine.ServerAgent, service str
 	}
 	output := res.Output()
 	if output == "" {
-		return fmt.Sprintf("No logs found for %s", service)
+		return "No logs found for " + service
 	}
 	return fmt.Sprintf("Logs for %s (last %d lines):\n\n%s", service, lines, output)
 }

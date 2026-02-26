@@ -6,6 +6,13 @@ import (
 	"strings"
 )
 
+const (
+	// maxErrorsPerService is the cap for errors shown per service.
+	maxErrorsPerService = 20
+	// maxErrorMessageLen truncates long error messages for display.
+	maxErrorMessageLen = 200
+)
+
 // AnalyzeAll runs error pattern analysis on all services, returning only those with issues.
 func (a *ServerAgent) AnalyzeAll(ctx context.Context) string {
 	services := a.resolveServices(ctx, nil)
@@ -63,10 +70,10 @@ func (a *ServerAgent) GetAllErrors(ctx context.Context) string {
 		}
 		found = true
 
-		// Cap at 20 lines per service
+		// Cap at maxErrorsPerService lines per service
 		shown := errors
-		if len(shown) > 20 {
-			shown = shown[len(shown)-20:]
+		if len(shown) > maxErrorsPerService {
+			shown = shown[len(shown)-maxErrorsPerService:]
 		}
 
 		fmt.Fprintf(&b, "%s (%d errors):\n", svc, len(errors))
@@ -76,13 +83,13 @@ func (a *ServerAgent) GetAllErrors(ctx context.Context) string {
 				ts = e.Timestamp.Format("15:04:05")
 			}
 			msg := e.Message
-			if len(msg) > 200 {
-				msg = msg[:200] + "..."
+			if len(msg) > maxErrorMessageLen {
+				msg = msg[:maxErrorMessageLen] + "..."
 			}
 			fmt.Fprintf(&b, "  [%s] %s\n", ts, msg)
 		}
-		if len(errors) > 20 {
-			fmt.Fprintf(&b, "  ... and %d more\n", len(errors)-20)
+		if len(errors) > maxErrorsPerService {
+			fmt.Fprintf(&b, "  ... and %d more\n", len(errors)-maxErrorsPerService)
 		}
 		b.WriteString("\n")
 	}

@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+
 // ParseSizeMB parses size strings like "1.5G", "500M", "100K", "(1.5 GB)".
 func ParseSizeMB(s string) float64 {
 	s = strings.TrimSpace(s)
@@ -29,15 +30,15 @@ func ParseSizeMB(s string) float64 {
 
 	switch {
 	case strings.HasPrefix(unit, "T"):
-		return val * 1024 * 1024
+		return val * megabytesPerGigabyte * kilobytesPerMegabyte
 	case strings.HasPrefix(unit, "G"):
-		return val * 1024
+		return val * megabytesPerGigabyte
 	case strings.HasPrefix(unit, "M"):
 		return val
 	case strings.HasPrefix(unit, "K"):
-		return val / 1024
+		return val / kilobytesPerMegabyte
 	case strings.HasPrefix(unit, "B"):
-		return val / (1024 * 1024)
+		return val / (megabytesPerGigabyte * kilobytesPerMegabyte)
 	default:
 		return val
 	}
@@ -45,7 +46,7 @@ func ParseSizeMB(s string) float64 {
 
 // ParseSizeGB parses human-readable sizes like "15G", "500M", "1.5T" to GB.
 func ParseSizeGB(s string) float64 {
-	return ParseSizeMB(s) / 1024
+	return ParseSizeMB(s) / megabytesPerGigabyte
 }
 
 // ParseDockerMemoryMB parses docker stats memory format like "123.4MiB / 1.5GiB".
@@ -58,17 +59,18 @@ func ParseDockerMemoryMB(s string) float64 {
 	used = strings.ToLower(used)
 
 	var val float64
-	if strings.HasSuffix(used, "gib") {
+	switch {
+	case strings.HasSuffix(used, "gib"):
 		v, _ := strconv.ParseFloat(strings.TrimSuffix(used, "gib"), 64)
-		val = v * 1024
-	} else if strings.HasSuffix(used, "mib") {
+		val = v * megabytesPerGigabyte
+	case strings.HasSuffix(used, "mib"):
 		val, _ = strconv.ParseFloat(strings.TrimSuffix(used, "mib"), 64)
-	} else if strings.HasSuffix(used, "kib") {
+	case strings.HasSuffix(used, "kib"):
 		v, _ := strconv.ParseFloat(strings.TrimSuffix(used, "kib"), 64)
-		val = v / 1024
-	} else if strings.HasSuffix(used, "b") {
+		val = v / kilobytesPerMegabyte
+	case strings.HasSuffix(used, "b"):
 		v, _ := strconv.ParseFloat(strings.TrimSuffix(used, "b"), 64)
-		val = v / (1024 * 1024)
+		val = v / (megabytesPerGigabyte * kilobytesPerMegabyte)
 	}
 	return val
 }
@@ -87,7 +89,7 @@ func BytesToMB(s string) (float64, bool) {
 	if n <= 0 {
 		return 0, false
 	}
-	return float64(n) / (1024 * 1024), true
+	return float64(n) / (megabytesPerGigabyte * kilobytesPerMegabyte), true
 }
 
 // FormatBytesMB converts bytes string to human-readable MB string.

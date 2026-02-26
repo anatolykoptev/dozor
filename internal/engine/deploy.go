@@ -22,7 +22,7 @@ func (a *ServerAgent) StartDeploy(ctx context.Context, projectPath string, servi
 
 	// Build the deploy command
 	var parts []string
-	parts = append(parts, fmt.Sprintf("cd %s", path))
+	parts = append(parts, "cd "+path)
 
 	if pull {
 		parts = append(parts, "docker compose pull")
@@ -97,13 +97,16 @@ func (a *ServerAgent) GetDeployStatus(ctx context.Context, deployID string) Depl
 	lRes := a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("cat %s 2>/dev/null", logFile))
 	logContent := lRes.Stdout
 
-	status := "UNKNOWN"
-	if processRunning {
+	var status string
+	switch {
+	case processRunning:
 		status = "RUNNING"
-	} else if strings.Contains(logContent, "DEPLOY COMPLETE") {
+	case strings.Contains(logContent, "DEPLOY COMPLETE"):
 		status = "COMPLETED"
-	} else if logContent != "" {
+	case logContent != "":
 		status = "FAILED"
+	default:
+		status = "UNKNOWN"
 	}
 
 	return DeployStatus{

@@ -109,11 +109,12 @@ func (a *ServerAgent) CheckContainerEnv(ctx context.Context, service string, req
 			continue
 		}
 		found = true
-		if val == "" {
+		switch {
+		case val == "":
 			fmt.Fprintf(&b, "  [EMPTY]   %s — WARNING: empty secret\n", name)
-		} else if isDefaultValue(val) {
+		case isDefaultValue(val):
 			fmt.Fprintf(&b, "  [DEFAULT] %s = %q — WARNING: looks like a default/example value\n", name, val)
-		} else {
+		default:
 			fmt.Fprintf(&b, "  [SET]     %s = <redacted>\n", name)
 		}
 	}

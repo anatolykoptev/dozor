@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,7 +41,7 @@ func (t *readMemoryTool) Parameters() map[string]any {
 func (t *readMemoryTool) Execute(_ context.Context, args map[string]any) (string, error) {
 	file, _ := args["file"].(string)
 	if !isAllowedFile(file) {
-		return "", fmt.Errorf("not allowed: only IDENTITY.md, AGENTS.md, MEMORY.md")
+		return "", errors.New("not allowed: only IDENTITY.md, AGENTS.md, MEMORY.md")
 	}
 	data, err := os.ReadFile(filepath.Join(t.workspace, file))
 	if err != nil {
@@ -78,7 +79,7 @@ func (t *updateMemoryTool) Execute(_ context.Context, args map[string]any) (stri
 	title, _ := args["title"].(string)
 	content, _ := args["content"].(string)
 	if title == "" || content == "" {
-		return "", fmt.Errorf("both title and content are required")
+		return "", errors.New("both title and content are required")
 	}
 
 	memoryPath := filepath.Join(t.workspace, "MEMORY.md")
@@ -88,7 +89,7 @@ func (t *updateMemoryTool) Execute(_ context.Context, args map[string]any) (stri
 	entry := fmt.Sprintf("\n### %s\n_Recorded: %s_\n\n%s\n", title, timestamp, strings.TrimSpace(content))
 
 	// Append to MEMORY.md.
-	f, err := os.OpenFile(memoryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0640)
+	f, err := os.OpenFile(memoryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, filePermissions)
 	if err != nil {
 		return "", fmt.Errorf("open MEMORY.md: %w", err)
 	}

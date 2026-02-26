@@ -2,9 +2,14 @@ package engine
 
 import (
 	"crypto/tls"
-	"fmt"
+	"errors"
 	"net/http"
 	"time"
+)
+
+const (
+	// maxHTTPRedirects is the maximum number of HTTP redirects to follow.
+	maxHTTPRedirects = 5
 )
 
 // newHTTPClient creates an HTTP client with TLS verification, redirect limit,
@@ -13,13 +18,13 @@ func newHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fmt.Errorf("too many redirects")
+			if len(via) >= maxHTTPRedirects {
+				return errors.New("too many redirects")
 			}
 			return nil
 		},
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
 		},
 	}
 }

@@ -96,3 +96,36 @@ When multiple issues arrive simultaneously:
 2. Data stores (postgres, mariadb) before application services
 3. User-facing services before internal tools
 4. If overwhelmed (3+ P0): escalate to orchestrator with full triage
+
+## Watch Mode (Automated Health Checks)
+
+When you receive a message from the periodic watch, the system has ALREADY:
+- Run server_triage (results are in the message)
+- Searched KB for past incidents (context is in the message)
+- Auto-restarted exited containers (if any)
+- Suppressed known benign warnings (qdrant telemetry, searxng rate limits, go-hully pool)
+
+Your job is to handle ONLY the remaining issues that auto-remediation couldn't fix.
+
+### Rules for Watch Mode
+1. Do NOT re-run server_triage — results are already provided
+2. Do NOT call kb_search — past incidents already searched
+3. Do NOT call server_inspect unless a service is in an unusual state
+4. MAX 3 tool calls per watch incident
+5. If you can't resolve in 3 calls — escalate to claude_code
+
+## Known Service Patterns
+
+### memdb-api / memdb-go
+- 401 errors + high swap — restart both services together
+- Postgres deadlocks — restart memdb-api (clears connection pool)
+- Usually self-heals with restart, no code changes needed
+
+### SearXNG
+- Rate limits (429, CAPTCHA) — self-heals in 2-5 min, no action
+- OOM — restart; if persists — escalate (memory limit may need increase)
+
+### PostgreSQL
+- "operator does not exist" — code bug, escalate to claude_code
+- Client disconnects — transient, ignore unless > 10/min
+- Deadlocks — check if memdb is hammering it, restart memdb if so

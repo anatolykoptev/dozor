@@ -3,10 +3,12 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -120,8 +122,8 @@ func (t *Transport) executeSSH(ctx context.Context, command string) CommandResul
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=accept-new",
 	}
-	if t.cfg.SSHPort != 22 {
-		args = append(args, "-p", fmt.Sprintf("%d", t.cfg.SSHPort))
+	if t.cfg.SSHPort != defaultSSHPort {
+		args = append(args, "-p", strconv.Itoa(t.cfg.SSHPort))
 	}
 	args = append(args, t.cfg.Host, command)
 
@@ -153,7 +155,8 @@ func (t *Transport) runCommand(cmdCtx context.Context, cmd *exec.Cmd, timeoutFmt
 				Success:    false,
 			}
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			rc = exitErr.ExitCode()
 		} else {
 			rc = 1

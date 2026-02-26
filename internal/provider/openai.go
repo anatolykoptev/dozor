@@ -49,7 +49,7 @@ func NewOpenAI() *OpenAI {
 		apiKey:   os.Getenv("DOZOR_LLM_API_KEY"),
 		model:    model,
 		maxIters: maxIters,
-		client:   &http.Client{Timeout: 120 * time.Second},
+		client:   &http.Client{Timeout: 300 * time.Second},
 	}
 }
 
@@ -61,6 +61,10 @@ const (
 	chatMaxRetries   = 3
 	chatInitialDelay = 2 * time.Second
 	chatMaxDelay     = 30 * time.Second
+	// chatJitterDivisor is the divisor for jitter calculation in exponential backoff.
+	chatJitterDivisor = 4
+	// chatLogTruncLen is the maximum length of raw response data logged for debugging.
+	chatLogTruncLen = 500
 )
 
 // Chat sends a chat completion request and returns the response.
@@ -72,7 +76,7 @@ func (o *OpenAI) Chat(messages []Message, tools []ToolDefinition) (*Response, er
 func (o *OpenAI) chatWithRetry(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
 	var lastErr error
 	for attempt := 0; attempt <= chatMaxRetries; attempt++ {
-		resp, err := o.doChat(messages, tools)
+		resp, err := o.doChatCtx(ctx, messages, tools)
 		if err == nil {
 			return resp, nil
 		}
@@ -120,7 +124,7 @@ func chatBackoff(attempt int) time.Duration {
 	for i := 0; i < attempt; i++ {
 		delay *= 2
 	}
-	jitter := time.Duration(rand.Int64N(int64(delay / 4)))
+	jitter := time.Duration(rand.Int64N(int64(delay / chatJitterDivisor))) //nolint:gosec // non-cryptographic jitter for retry backoff
 	delay += jitter
 	if delay > chatMaxDelay {
 		delay = chatMaxDelay
@@ -139,7 +143,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (o *OpenAI) doChat(messages []Message, tools []ToolDefinition) (*Response, error) {
+func (o *OpenAI) doChatCtx(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
 	body := map[string]any{
 		"model":    o.model,
 		"messages": messages,
@@ -154,7 +158,7 @@ func (o *OpenAI) doChat(messages []Message, tools []ToolDefinition) (*Response, 
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", o.apiURL+"/chat/completions", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.apiURL+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -187,11 +191,11 @@ func (o *OpenAI) doChat(messages []Message, tools []ToolDefinition) (*Response, 
 		if result.PromptFeedback != nil && result.PromptFeedback.BlockReason != "" {
 			slog.Warn("LLM response blocked by safety filter",
 				slog.String("block_reason", result.PromptFeedback.BlockReason),
-				slog.String("raw", truncate(string(data), 500)))
+				slog.String("raw", truncate(string(data), chatLogTruncLen)))
 			return nil, fmt.Errorf("LLM response blocked: %s", result.PromptFeedback.BlockReason)
 		}
-		slog.Warn("empty choices in LLM response", slog.String("raw", truncate(string(data), 500)))
-		return nil, fmt.Errorf("empty choices in LLM response")
+		slog.Warn("empty choices in LLM response", slog.String("raw", truncate(string(data), chatLogTruncLen)))
+		return nil, errors.New("empty choices in LLM response")
 	}
 
 	choice := result.Choices[0]

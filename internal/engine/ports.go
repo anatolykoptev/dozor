@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+const (
+	// ssFieldsMin is the minimum number of fields expected in an ss output line.
+	ssFieldsMin = 5
+)
+
 // PortInfo describes a listening port.
 type PortInfo struct {
 	Port     string
@@ -43,53 +48,57 @@ func parseSsLine(line string) *PortInfo {
 	fields := strings.Fields(line)
 	// ss -tlunp output: Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process
 	// minimum 5 fields
-	if len(fields) < 5 {
+	if len(fields) < ssFieldsMin {
 		return nil
 	}
 
-	netid := strings.ToLower(fields[0])
-	if netid != "tcp" && netid != "udp" && netid != "tcp6" && netid != "udp6" {
+	proto, ok := ssNetProto(fields[0])
+	if !ok {
 		return nil
-	}
-	proto := "TCP"
-	if strings.HasPrefix(netid, "udp") {
-		proto = "UDP"
 	}
 
 	// Local address is field 4 (0-indexed)
-	localAddr := fields[4]
-
-	// Split host:port — handle IPv6 [::1]:80 format
-	addr, port := splitHostPort(localAddr)
-
+	addr, port := splitHostPort(fields[4])
 	if port == "" || port == "*" || port == "0" {
 		return nil
-	}
-
-	exposed := addr == "0.0.0.0" || addr == "::" || addr == "*"
-
-	// Process info is last field if starts with "users:"
-	process := ""
-	for _, f := range fields[5:] {
-		if strings.HasPrefix(f, "users:") {
-			// users:(("nginx",pid=123,fd=6))
-			// Extract process name
-			start := strings.Index(f, "((\"")
-			end := strings.Index(f, "\",")
-			if start >= 0 && end > start {
-				process = f[start+3 : end]
-			}
-			break
-		}
 	}
 
 	return &PortInfo{
 		Port:     port,
 		Protocol: proto,
 		BindAddr: addr,
-		Process:  process,
-		Exposed:  exposed,
+		Process:  ssExtractProcess(fields[5:]),
+		Exposed:  addr == "0.0.0.0" || addr == "::" || addr == "*",
 	}
+}
+
+// ssNetProto maps the netid field to a protocol string, returning false if not TCP/UDP.
+func ssNetProto(netid string) (string, bool) {
+	switch strings.ToLower(netid) {
+	case "tcp", "tcp6":
+		return "TCP", true
+	case "udp", "udp6":
+		return "UDP", true
+	default:
+		return "", false
+	}
+}
+
+// ssExtractProcess extracts the process name from ss users:... fields.
+func ssExtractProcess(fields []string) string {
+	for _, f := range fields {
+		if !strings.HasPrefix(f, "users:") {
+			continue
+		}
+		// users:(("nginx",pid=123,fd=6))
+		start := strings.Index(f, "((\"")
+		end := strings.Index(f, "\",")
+		if start >= 0 && end > start {
+			return f[start+3 : end]
+		}
+		break
+	}
+	return ""
 }
 
 func splitHostPort(addr string) (host, port string) {
@@ -138,7 +147,7 @@ func FormatPorts(ports []PortInfo) string {
 		for _, p := range exposed {
 			proc := p.Process
 			if proc == "" {
-				proc = "unknown"
+				proc = string(StateUnknown)
 			}
 			fmt.Fprintf(&b, "  [!!] %s/%s  addr=%s  process=%s\n", p.Port, p.Protocol, p.BindAddr, proc)
 		}
@@ -150,7 +159,7 @@ func FormatPorts(ports []PortInfo) string {
 		for _, p := range internal {
 			proc := p.Process
 			if proc == "" {
-				proc = "unknown"
+				proc = string(StateUnknown)
 			}
 			fmt.Fprintf(&b, "  [OK] %s/%s  addr=%s  process=%s\n", p.Port, p.Protocol, p.BindAddr, proc)
 		}

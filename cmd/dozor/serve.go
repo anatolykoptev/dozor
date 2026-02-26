@@ -35,7 +35,8 @@ func runServe(cfg engine.Config, eng *engine.ServerAgent) {
 		slog.Info("running in stdio mode")
 		if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 			slog.Error("stdio server failed", slog.Any("error", err))
-			os.Exit(1)
+			eng.Close()
+			os.Exit(1) //nolint:gocritic // explicit cleanup called before os.Exit
 		}
 		return
 	}

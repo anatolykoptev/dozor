@@ -3,11 +3,17 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/toolreg"
+)
+
+const (
+	// defaultKBUserID is the default user ID for the knowledge base.
+	defaultKBUserID = "default"
 )
 
 // KBConfig holds configuration for the knowledge base tools.
@@ -26,10 +32,10 @@ func RegisterKBTools(registry *toolreg.Registry, mgr *ClientManager, cfg KBConfi
 		cfg.ServerID = "memdb"
 	}
 	if cfg.UserID == "" {
-		cfg.UserID = "default"
+		cfg.UserID = defaultKBUserID
 	}
 	if cfg.CubeID == "" {
-		cfg.CubeID = "default"
+		cfg.CubeID = defaultKBUserID
 	}
 	if cfg.SearchTool == "" {
 		cfg.SearchTool = "search_memories"
@@ -78,7 +84,7 @@ func (t *kbSearchTool) Parameters() map[string]any {
 func (t *kbSearchTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	query, _ := args["query"].(string)
 	if query == "" {
-		return "", fmt.Errorf("query is required")
+		return "", errors.New("query is required")
 	}
 
 	topK := 5
@@ -128,7 +134,7 @@ func (t *kbSaveTool) Parameters() map[string]any {
 func (t *kbSaveTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	content, _ := args["content"].(string)
 	if content == "" {
-		return "", fmt.Errorf("content is required")
+		return "", errors.New("content is required")
 	}
 
 	result, err := t.mgr.Call(ctx, t.cfg.ServerID, t.cfg.SaveTool, map[string]any{
@@ -157,10 +163,10 @@ func NewKBSearcher(mgr *ClientManager, cfg KBConfig, cb *engine.CircuitBreaker) 
 		cfg.ServerID = "memdb"
 	}
 	if cfg.UserID == "" {
-		cfg.UserID = "default"
+		cfg.UserID = defaultKBUserID
 	}
 	if cfg.CubeID == "" {
-		cfg.CubeID = "default"
+		cfg.CubeID = defaultKBUserID
 	}
 	if cfg.SearchTool == "" {
 		cfg.SearchTool = "search_memories"

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -34,7 +35,7 @@ func registerExec(server *mcp.Server, agent *engine.ServerAgent, opts ExecOption
 			"full (unrestricted — use with caution).",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.ExecInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		if input.Command == "" {
-			return nil, engine.TextOutput{}, fmt.Errorf("command is required")
+			return nil, engine.TextOutput{}, errors.New("command is required")
 		}
 
 		security := cfg.Get()
@@ -49,8 +50,7 @@ func registerExec(server *mcp.Server, agent *engine.ServerAgent, opts ExecOption
 		case "ask":
 			// Request user approval via Telegram before executing.
 			if opts.Approvals == nil || opts.Notify == nil {
-				return nil, engine.TextOutput{}, fmt.Errorf(
-					"security=ask unavailable: no Telegram notify channel configured")
+				return nil, engine.TextOutput{}, errors.New("security=ask unavailable: no Telegram notify channel configured")
 			}
 			req := opts.Approvals.Create(input.Command)
 			opts.Notify(fmt.Sprintf(
@@ -62,7 +62,7 @@ func registerExec(server *mcp.Server, agent *engine.ServerAgent, opts ExecOption
 				// approved — fall through to execution
 			case approvals.StatusDenied:
 				return nil, engine.TextOutput{
-					Text: fmt.Sprintf("Command rejected by user: %s", input.Command),
+					Text: "Command rejected by user: " + input.Command,
 				}, nil
 			default: // StatusExpired
 				return nil, engine.TextOutput{}, fmt.Errorf(

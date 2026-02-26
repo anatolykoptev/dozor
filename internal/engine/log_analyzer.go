@@ -8,6 +8,25 @@ import (
 	"time"
 )
 
+const (
+	// logLevelError is the string for ERROR level log entries.
+	logLevelError = "ERROR"
+	// logLevelFatal is the string for FATAL level log entries.
+	logLevelFatal = "FATAL"
+	// logLevelCritical is the string for CRITICAL level log entries.
+	logLevelCritical = "CRITICAL"
+	// timelineBuckets is the number of hourly buckets in the error timeline.
+	timelineBuckets = 24
+	// timelineBarWidth is the maximum bar width in the ASCII histogram.
+	timelineBarWidth = 30
+	// issueExampleMaxLen is the maximum length of an issue example message.
+	issueExampleMaxLen = 200
+	// normalizeMaxLen is the maximum length for a normalized error message template.
+	normalizeMaxLen = 120
+	// topClusterCount is the maximum number of error clusters returned.
+	topClusterCount = 5
+)
+
 var errorPatterns = []ErrorPattern{
 	// Database errors (generic — works with any SQL database)
 	{
@@ -141,6 +160,68 @@ type Issue struct {
 	Example     string     `json:"example,omitempty"`
 }
 
+// buildEffectivePatterns merges built-in compiled patterns with user-supplied extras.
+func buildEffectivePatterns(extraPatterns []ErrorPattern) []compiledErrorPattern {
+	if len(extraPatterns) == 0 {
+		return compiledPatterns
+	}
+	all := make([]compiledErrorPattern, len(compiledPatterns), len(compiledPatterns)+len(extraPatterns))
+	copy(all, compiledPatterns)
+	for _, ep := range extraPatterns {
+		re, err := regexp.Compile(ep.Pattern)
+		if err != nil {
+			continue // skip invalid regex
+		}
+		all = append(all, compiledErrorPattern{re: re, pattern: ep})
+	}
+	return all
+}
+
+// patternMatchesEntry returns true if cp matches the entry and its service filter allows service.
+func patternMatchesEntry(cp compiledErrorPattern, entry LogEntry, service string) bool {
+	if cp.pattern.Services != nil {
+		allowed := false
+		for _, s := range cp.pattern.Services {
+			if s == service {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false
+		}
+	}
+	return cp.re.MatchString(entry.Message) || cp.re.MatchString(entry.Raw)
+}
+
+// countLogLevels increments error/warning counters in result based on entry level.
+func countLogLevels(result *AnalyzeResult, entry LogEntry) {
+	if entry.IsErrorLevel() {
+		result.ErrorCount++
+	}
+	if entry.Level == "WARNING" || entry.Level == "WARN" {
+		result.WarningCount++
+	}
+}
+
+// matchEntryToPatterns checks entry against all patterns and records counts/examples.
+func matchEntryToPatterns(entry LogEntry, service string, allPatterns []compiledErrorPattern, issueCounts map[string]int, issueExamples map[string]string) {
+	for _, cp := range allPatterns {
+		if !patternMatchesEntry(cp, entry, service) {
+			continue
+		}
+		key := cp.pattern.Category + ":" + cp.pattern.Description
+		issueCounts[key]++
+		if _, ok := issueExamples[key]; !ok {
+			example := entry.Message
+			if len(example) > issueExampleMaxLen {
+				example = example[:issueExampleMaxLen] + "..."
+			}
+			issueExamples[key] = example
+		}
+	}
+}
+
 // AnalyzeLogs examines log entries for known error patterns.
 // Extra patterns (e.g. from dozor.logs.pattern labels) are appended to built-in patterns.
 func AnalyzeLogs(entries []LogEntry, service string, extraPatterns ...ErrorPattern) AnalyzeResult {
@@ -149,68 +230,22 @@ func AnalyzeLogs(entries []LogEntry, service string, extraPatterns ...ErrorPatte
 		TotalLines: len(entries),
 	}
 
-	// Build effective pattern list: built-in + extras
-	allPatterns := compiledPatterns
-	if len(extraPatterns) > 0 {
-		allPatterns = make([]compiledErrorPattern, len(compiledPatterns), len(compiledPatterns)+len(extraPatterns))
-		copy(allPatterns, compiledPatterns)
-		for _, ep := range extraPatterns {
-			re, err := regexp.Compile(ep.Pattern)
-			if err != nil {
-				continue // skip invalid regex
-			}
-			allPatterns = append(allPatterns, compiledErrorPattern{re: re, pattern: ep})
-		}
-	}
-
+	allPatterns := buildEffectivePatterns(extraPatterns)
 	issueCounts := make(map[string]int)
 	issueExamples := make(map[string]string)
 
 	for _, entry := range entries {
-		if entry.IsErrorLevel() {
-			result.ErrorCount++
-		}
-		if entry.Level == "WARNING" || entry.Level == "WARN" {
-			result.WarningCount++
-		}
-
-		for _, cp := range allPatterns {
-			// Check service filter
-			if cp.pattern.Services != nil {
-				matched := false
-				for _, s := range cp.pattern.Services {
-					if s == service {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					continue
-				}
-			}
-
-			if cp.re.MatchString(entry.Message) || cp.re.MatchString(entry.Raw) {
-				key := cp.pattern.Category + ":" + cp.pattern.Description
-				issueCounts[key]++
-				if _, ok := issueExamples[key]; !ok {
-					example := entry.Message
-					if len(example) > 200 {
-						example = example[:200] + "..."
-					}
-					issueExamples[key] = example
-				}
-			}
-		}
+		countLogLevels(&result, entry)
+		matchEntryToPatterns(entry, service, allPatterns, issueCounts, issueExamples)
 	}
 
-	// Build issue list
+	// Build issue list preserving pattern order, skipping duplicates.
 	for _, cp := range allPatterns {
 		key := cp.pattern.Category + ":" + cp.pattern.Description
 		count, ok := issueCounts[key]
 		if !ok {
 			continue
 		}
-		// Avoid duplicates
 		delete(issueCounts, key)
 		result.Issues = append(result.Issues, Issue{
 			Level:       cp.pattern.Level,
@@ -242,8 +277,8 @@ func normalizeErrorMessage(msg string) string {
 	s = normalizeHexRe.ReplaceAllString(s, "<HEX>")
 	s = normalizeNumRe.ReplaceAllString(s, "<N>")
 	s = strings.TrimSpace(s)
-	if len(s) > 120 {
-		s = s[:120]
+	if len(s) > normalizeMaxLen {
+		s = s[:normalizeMaxLen]
 	}
 	return s
 }
@@ -251,24 +286,24 @@ func normalizeErrorMessage(msg string) string {
 // AnalyzeErrorTimeline buckets errors per hour for the last 24h and returns an ASCII histogram.
 func AnalyzeErrorTimeline(entries []LogEntry) string {
 	now := time.Now()
-	buckets := make([]int, 24)
+	buckets := make([]int, timelineBuckets)
 
 	for _, e := range entries {
 		if e.Timestamp == nil {
 			continue
 		}
-		if e.Level != "ERROR" && e.Level != "FATAL" && e.Level != "CRITICAL" {
+		if e.Level != logLevelError && e.Level != logLevelFatal && e.Level != logLevelCritical {
 			continue
 		}
 		age := now.Sub(*e.Timestamp)
-		if age < 0 || age > 24*time.Hour {
+		if age < 0 || age > timelineBuckets*time.Hour {
 			continue
 		}
 		hour := int(age.Hours())
-		if hour >= 24 {
-			hour = 23
+		if hour >= timelineBuckets {
+			hour = timelineBuckets - 1
 		}
-		buckets[23-hour]++
+		buckets[timelineBuckets-1-hour]++
 	}
 
 	// Find max for scaling
@@ -287,25 +322,28 @@ func AnalyzeErrorTimeline(entries []LogEntry) string {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Error Timeline (last 24h, %d total)\n", total)
-	barWidth := 30
 	for i, v := range buckets {
-		hour := now.Add(-time.Duration(23-i) * time.Hour)
-		label := hour.Format("15:00")
-		bar := ""
-		if maxVal > 0 && v > 0 {
-			width := (v * barWidth) / maxVal
-			if width == 0 {
-				width = 1
-			}
-			bar = strings.Repeat("█", width)
-		}
-		if v > 0 {
-			fmt.Fprintf(&b, "  %s |%-*s %d\n", label, barWidth, bar, v)
-		} else {
-			fmt.Fprintf(&b, "  %s |%*s\n", label, barWidth, "")
-		}
+		hour := now.Add(-time.Duration(timelineBuckets-1-i) * time.Hour)
+		fmt.Fprint(&b, timelineBarLine(hour, v, maxVal))
 	}
 	return b.String()
+}
+
+// timelineBarLine renders a single row in the error timeline ASCII histogram.
+func timelineBarLine(hour time.Time, v, maxVal int) string {
+	label := hour.Format("15:00")
+	if v == 0 {
+		return fmt.Sprintf("  %s |%*s\n", label, timelineBarWidth, "")
+	}
+	width := 1
+	if maxVal > 0 {
+		width = (v * timelineBarWidth) / maxVal
+		if width == 0 {
+			width = 1
+		}
+	}
+	bar := strings.Repeat("█", width)
+	return fmt.Sprintf("  %s |%-*s %d\n", label, timelineBarWidth, bar, v)
 }
 
 // ClusterErrors groups similar errors by normalized template.
@@ -313,7 +351,7 @@ func ClusterErrors(entries []LogEntry) []ErrorCluster {
 	clusters := make(map[string]*ErrorCluster)
 
 	for _, e := range entries {
-		if e.Level != "ERROR" && e.Level != "FATAL" && e.Level != "CRITICAL" {
+		if e.Level != logLevelError && e.Level != logLevelFatal && e.Level != logLevelCritical {
 			continue
 		}
 		template := normalizeErrorMessage(e.Message)
@@ -327,8 +365,8 @@ func ClusterErrors(entries []LogEntry) []ErrorCluster {
 			c.Count++
 		} else {
 			example := e.Message
-			if len(example) > 200 {
-				example = example[:200] + "..."
+			if len(example) > issueExampleMaxLen {
+				example = example[:issueExampleMaxLen] + "..."
 			}
 			clusters[template] = &ErrorCluster{
 				Template: template,
@@ -347,8 +385,8 @@ func ClusterErrors(entries []LogEntry) []ErrorCluster {
 	})
 
 	// Return top 5
-	if len(result) > 5 {
-		result = result[:5]
+	if len(result) > topClusterCount {
+		result = result[:topClusterCount]
 	}
 	return result
 }
@@ -366,4 +404,3 @@ func FormatErrorClusters(clusters []ErrorCluster) string {
 	}
 	return b.String()
 }
-

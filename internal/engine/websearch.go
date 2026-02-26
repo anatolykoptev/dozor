@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,15 @@ import (
 	"regexp"
 	"strings"
 	"time"
+)
+
+const (
+	// ddgExtraMatches is extra regex matches fetched beyond count for DDG to allow filtering.
+	ddgExtraMatches = 5
+	// webFetchErrorThreshold is the HTTP status code threshold for treating a response as an error.
+	webFetchErrorThreshold = 400
+	// webFetchContentMaxLen is the maximum content length returned by FetchURL.
+	webFetchContentMaxLen = 40000
 )
 
 // WebSearchConfig holds search provider configuration.
@@ -40,7 +50,7 @@ func (p *BraveSearchProvider) Name() string { return "brave" }
 func (p *BraveSearchProvider) Search(ctx context.Context, query string, count int) (string, error) {
 	searchURL := fmt.Sprintf("https://api.search.brave.com/res/v1/web/search?q=%s&count=%d", url.QueryEscape(query), count)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -76,7 +86,7 @@ func (p *BraveSearchProvider) Search(ctx context.Context, query string, count in
 
 	results := searchResp.Web.Results
 	if len(results) == 0 {
-		return fmt.Sprintf("No results for: %s", query), nil
+		return "No results for: " + query, nil
 	}
 
 	var lines []string
@@ -87,7 +97,7 @@ func (p *BraveSearchProvider) Search(ctx context.Context, query string, count in
 		}
 		lines = append(lines, fmt.Sprintf("%d. %s\n   %s", i+1, item.Title, item.URL))
 		if item.Description != "" {
-			lines = append(lines, fmt.Sprintf("   %s", item.Description))
+			lines = append(lines, "   " + item.Description)
 		}
 	}
 
@@ -102,9 +112,9 @@ func (p *DuckDuckGoSearchProvider) Name() string { return "duckduckgo" }
 const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 func (p *DuckDuckGoSearchProvider) Search(ctx context.Context, query string, count int) (string, error) {
-	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(query))
+	searchURL := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,searchURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -129,10 +139,10 @@ func (p *DuckDuckGoSearchProvider) Search(ctx context.Context, query string, cou
 func (p *DuckDuckGoSearchProvider) extractResults(html string, count int, query string) (string, error) {
 	// Extract result links
 	reLink := regexp.MustCompile(`<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([^<]+)</a>`)
-	matches := reLink.FindAllStringSubmatch(html, count+5)
+	matches := reLink.FindAllStringSubmatch(html, count+ddgExtraMatches)
 
 	if len(matches) == 0 {
-		return fmt.Sprintf("No results found for: %s", query), nil
+		return "No results found for: " + query, nil
 	}
 
 	var lines []string
@@ -140,7 +150,7 @@ func (p *DuckDuckGoSearchProvider) extractResults(html string, count int, query 
 
 	// Extract snippets
 	reSnippet := regexp.MustCompile(`<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([^<]+)</a>`)
-	snippetMatches := reSnippet.FindAllStringSubmatch(html, count+5)
+	snippetMatches := reSnippet.FindAllStringSubmatch(html, count+ddgExtraMatches)
 
 	maxItems := min(len(matches), count)
 	for i := 0; i < maxItems; i++ {
@@ -164,7 +174,7 @@ func (p *DuckDuckGoSearchProvider) extractResults(html string, count int, query 
 		if i < len(snippetMatches) {
 			snippet := strings.TrimSpace(snippetMatches[i][1])
 			if snippet != "" {
-				lines = append(lines, fmt.Sprintf("   %s", snippet))
+				lines = append(lines, "   "+snippet)
 			}
 		}
 	}
@@ -196,7 +206,7 @@ func (p *PerplexitySearchProvider) Search(ctx context.Context, query string, cou
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", searchURL, strings.NewReader(string(payloadBytes)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, searchURL, strings.NewReader(string(payloadBytes)))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -229,7 +239,7 @@ func (p *PerplexitySearchProvider) Search(ctx context.Context, query string, cou
 	}
 
 	if len(perplexityResp.Choices) == 0 {
-		return fmt.Sprintf("No results for: %s", query), nil
+		return "No results for: " + query, nil
 	}
 
 	return fmt.Sprintf("Results for: %s (via Perplexity)\n\n%s", query, perplexityResp.Choices[0].Message.Content), nil
@@ -272,7 +282,7 @@ func WebSearch(ctx context.Context, cfg WebSearchConfig, query string, count int
 	if lastErr != nil {
 		return "", fmt.Errorf("all search providers failed: %w", lastErr)
 	}
-	return "", fmt.Errorf("no search providers available")
+	return "", errors.New("no search providers available")
 }
 
 // WebFetch fetches content from a URL.
@@ -281,7 +291,7 @@ func WebFetch(ctx context.Context, fetchURL string, maxLength int) (string, erro
 		maxLength = 50000
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", fetchURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,fetchURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -292,7 +302,7 @@ func WebFetch(ctx context.Context, fetchURL string, maxLength int) (string, erro
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
+				return errors.New("too many redirects")
 			}
 			return nil
 		},
@@ -304,7 +314,7 @@ func WebFetch(ctx context.Context, fetchURL string, maxLength int) (string, erro
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= webFetchErrorThreshold {
 		return "", fmt.Errorf("HTTP error: %d %s", resp.StatusCode, resp.Status)
 	}
 
@@ -389,10 +399,9 @@ func extractTextContent(html string) string {
 
 	// Limit output length
 	content := strings.Join(result, "\n")
-	if len(content) > 40000 {
-		content = content[:40000] + "\n... (content truncated)"
+	if len(content) > webFetchContentMaxLen {
+		content = content[:webFetchContentMaxLen] + "\n... (content truncated)"
 	}
 
 	return content
 }
-

@@ -1,9 +1,13 @@
 package engine
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
+)
+
+const (
+	// maxNameLen is the maximum length for service, binary, and GitHub names.
+	maxNameLen = 63
 )
 
 var blockedPatterns = []*regexp.Regexp{
@@ -84,7 +88,7 @@ func IsCommandAllowed(command string) (bool, string) {
 	// Check blocklist
 	for _, p := range blockedPatterns {
 		if p.MatchString(cmd) {
-			return false, fmt.Sprintf("blocked pattern: %s", p.String())
+			return false, "blocked pattern: " + p.String()
 		}
 	}
 
@@ -112,7 +116,7 @@ func ValidateServiceName(name string) (bool, string) {
 	if name == "" {
 		return false, "service name is required"
 	}
-	if len(name) > 63 {
+	if len(name) > maxNameLen {
 		return false, "service name too long (max 63 characters)"
 	}
 	if !serviceNameRe.MatchString(name) {
@@ -128,7 +132,7 @@ func ValidateBinaryName(name string) (bool, string) {
 	if name == "" {
 		return false, "binary name is required"
 	}
-	if len(name) > 63 {
+	if len(name) > maxNameLen {
 		return false, "binary name too long (max 63 characters)"
 	}
 	if !binaryNameRe.MatchString(name) {

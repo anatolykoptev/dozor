@@ -3,9 +3,17 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
+)
+
+const (
+	// archAMD64 is the Go architecture name for x86-64.
+	archAMD64 = "amd64"
+	// archARM64 is the Go architecture name for ARM 64-bit.
+	archARM64 = "arm64"
 )
 
 // UpdatesCollector checks for binary updates via GitHub releases.
@@ -305,7 +313,7 @@ func (u *UpdatesCollector) getLatestRelease(ctx context.Context, owner, repo str
 		return nil, fmt.Errorf("GitHub API request failed: %s", strings.TrimSpace(res.Stderr))
 	}
 	if res.Stdout == "" {
-		return nil, fmt.Errorf("empty response from GitHub API")
+		return nil, errors.New("empty response from GitHub API")
 	}
 
 	var release githubRelease
@@ -339,7 +347,7 @@ func (u *UpdatesCollector) downloadAndInstall(ctx context.Context, b *TrackedBin
 	}
 	tmpDir := strings.TrimSpace(res.Stdout)
 	if tmpDir == "" {
-		return "", fmt.Errorf("mktemp returned empty path")
+		return "", errors.New("mktemp returned empty path")
 	}
 
 	// Download using token from env var (avoids leaking in process table)
@@ -592,14 +600,14 @@ func (u *UpdatesCollector) detectArch() string {
 	if res.Success {
 		switch strings.TrimSpace(res.Stdout) {
 		case "x86_64":
-			return "amd64"
+			return archAMD64
 		case "aarch64":
-			return "arm64"
+			return archARM64
 		case "armv7l":
 			return "arm"
 		}
 	}
-	return "arm64"
+	return archARM64
 }
 
 // platformOSPatterns returns lowercase OS name patterns for asset matching.
@@ -619,10 +627,10 @@ func platformOSPatterns(goos string) []string {
 // platformArchPatterns returns lowercase arch name patterns for asset matching.
 func platformArchPatterns(goarch string) []string {
 	switch goarch {
-	case "amd64":
-		return []string{"amd64", "x86_64", "x64"}
-	case "arm64":
-		return []string{"arm64", "aarch64"}
+	case archAMD64:
+		return []string{archAMD64, "x86_64", "x64"}
+	case archARM64:
+		return []string{archARM64, "aarch64"}
 	case "arm":
 		return []string{"armv7", "arm"}
 	case "386":

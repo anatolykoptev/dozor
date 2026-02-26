@@ -6,6 +6,21 @@ import (
 	"time"
 )
 
+const (
+	// megabytesPerGigabyte is the conversion factor from MB to GB.
+	megabytesPerGigabyte = 1024
+	// hoursPerDay is the number of hours in a day.
+	hoursPerDay = 24
+	// ungroupedName is the display name for services without a group label.
+	ungroupedName = "ungrouped"
+	// stateActive is the string representation of an active systemd service.
+	stateActive = "active"
+	// httpErrorThreshold is the minimum HTTP status code considered an error.
+	httpErrorThreshold = 400
+	// sslWarnDays is the number of days before SSL expiry to show a warning icon.
+	sslWarnDays = 14
+)
+
 // FormatReport creates a human-readable diagnostic report.
 // If any service has a group label, renders by group instead of flat list.
 func FormatReport(r DiagnosticReport) string {
@@ -29,7 +44,7 @@ func FormatReport(r DiagnosticReport) string {
 		for _, g := range groups {
 			name := g.Name
 			if name == "" {
-				name = "ungrouped"
+				name = ungroupedName
 			}
 			fmt.Fprintf(&b, "%s (%d services, %s):\n", name, len(g.Services), g.Health)
 			for _, s := range g.Services {
@@ -93,7 +108,7 @@ func FormatGroups(groups []ServiceGroup) string {
 	for _, g := range groups {
 		name := g.Name
 		if name == "" {
-			name = "ungrouped"
+			name = ungroupedName
 		}
 		healthTag := strings.ToUpper(g.Health)
 		fmt.Fprintf(&b, "\n[%s] %s (%d services)\n", healthTag, name, len(g.Services))
@@ -158,8 +173,8 @@ func FormatScanResults(results []CleanupTarget) string {
 			fmt.Fprintf(&b, "  [!!] %-10s error: %s\n", r.Name, r.Error)
 			continue
 		}
-		if r.SizeMB >= 1024 {
-			fmt.Fprintf(&b, "  [OK] %-10s %.1f GB\n", r.Name, r.SizeMB/1024)
+		if r.SizeMB >= megabytesPerGigabyte {
+			fmt.Fprintf(&b, "  [OK] %-10s %.1f GB\n", r.Name, r.SizeMB/megabytesPerGigabyte)
 		} else {
 			fmt.Fprintf(&b, "  [OK] %-10s %.0f MB\n", r.Name, r.SizeMB)
 		}
@@ -167,8 +182,8 @@ func FormatScanResults(results []CleanupTarget) string {
 	}
 
 	b.WriteString("\n")
-	if totalMB >= 1024 {
-		fmt.Fprintf(&b, "Total reclaimable: %.1f GB\n", totalMB/1024)
+	if totalMB >= megabytesPerGigabyte {
+		fmt.Fprintf(&b, "Total reclaimable: %.1f GB\n", totalMB/megabytesPerGigabyte)
 	} else {
 		fmt.Fprintf(&b, "Total reclaimable: %.0f MB\n", totalMB)
 	}
@@ -208,16 +223,16 @@ func FormatRemoteStatus(s *RemoteServerStatus) string {
 
 	if s.HTTPStatus > 0 {
 		icon := "OK"
-		if s.HTTPStatus >= 400 {
+		if s.HTTPStatus >= httpErrorThreshold {
 			icon = "!!"
 		}
 		fmt.Fprintf(&b, "[%s] HTTP: %d\n", icon, s.HTTPStatus)
 	}
 
 	if s.SSLExpiry != nil {
-		days := int(time.Until(*s.SSLExpiry).Hours() / 24)
+		days := int(time.Until(*s.SSLExpiry).Hours() / hoursPerDay)
 		icon := "OK"
-		if days < 14 {
+		if days < sslWarnDays {
 			icon = "!!"
 		}
 		fmt.Fprintf(&b, "[%s] SSL expires: %s (%d days)\n", icon, s.SSLExpiry.Format("2006-01-02"), days)
@@ -227,7 +242,7 @@ func FormatRemoteStatus(s *RemoteServerStatus) string {
 		b.WriteString("\nServices:\n")
 		for name, state := range s.Services {
 			icon := "OK"
-			if state != "active" {
+			if state != stateActive {
 				icon = "!!"
 			}
 			fmt.Fprintf(&b, "  [%s] %s: %s\n", icon, name, state)

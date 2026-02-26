@@ -57,8 +57,8 @@ func (a *ServerAgent) GetGitStatus(ctx context.Context, path string) GitStatus {
 	if aheadBehind != "" {
 		fields := strings.Fields(aheadBehind)
 		if len(fields) == 2 {
-			fmt.Sscanf(fields[0], "%d", &s.Ahead)
-			fmt.Sscanf(fields[1], "%d", &s.Behind)
+			_, _ = fmt.Sscanf(fields[0], "%d", &s.Ahead)
+			_, _ = fmt.Sscanf(fields[1], "%d", &s.Behind)
 		}
 	}
 

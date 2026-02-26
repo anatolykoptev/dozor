@@ -50,6 +50,10 @@ var levelPatterns = []levelPattern{
 	{regexp.MustCompile(`out of memory`), "ERROR"},
 }
 
+// logsSinceWindow limits log collection to recent entries only,
+// preventing old log lines from being reported as current issues.
+const logsSinceWindow = "1h"
+
 // GetLogs fetches logs for a service.
 func (c *LogCollector) GetLogs(ctx context.Context, service string, lines int, errorsOnly bool) []LogEntry {
 	tailN := lines
@@ -57,7 +61,7 @@ func (c *LogCollector) GetLogs(ctx context.Context, service string, lines int, e
 		tailN = 100
 	}
 
-	cmd := fmt.Sprintf("logs --tail %d --timestamps %s 2>&1", tailN, service)
+	cmd := fmt.Sprintf("logs --tail %d --since %s --timestamps %s 2>&1", tailN, logsSinceWindow, service)
 	res := c.transport.DockerComposeCommand(ctx, cmd)
 	if !res.Success {
 		return nil

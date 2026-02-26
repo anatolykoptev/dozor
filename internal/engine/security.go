@@ -7,6 +7,17 @@ import (
 	"strings"
 )
 
+const (
+	// firewallEvidenceMaxLen is the max length for firewall evidence snippets.
+	firewallEvidenceMaxLen = 500
+	// cronEvidenceMaxLen is the max length for cron evidence snippets.
+	cronEvidenceMaxLen = 800
+	// permFieldsMin is the minimum field count when checking file permissions.
+	permFieldsMin = 3
+	// firewallAcceptWarnCount is the number of blanket ACCEPT iptables rules triggering a warning.
+	firewallAcceptWarnCount = 3
+)
+
 // SecurityCollector runs all security checks.
 type SecurityCollector struct {
 	transport *Transport
@@ -116,6 +127,19 @@ func (c *SecurityCollector) checkNetworkExposure(ctx context.Context) []Security
 	return issues
 }
 
+// containerRootAllowed returns true if name matches any key in rootAllowedContainers.
+func containerRootAllowed(name string) bool {
+	if rootAllowedContainers[name] {
+		return true
+	}
+	for container := range rootAllowedContainers {
+		if strings.Contains(name, container) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *SecurityCollector) checkContainerSecurity(ctx context.Context) []SecurityIssue {
 	var issues []SecurityIssue
 
@@ -131,29 +155,15 @@ func (c *SecurityCollector) checkContainerSecurity(ctx context.Context) []Securi
 			continue
 		}
 
-		// Check user
 		userRes := c.transport.DockerCommand(ctx, fmt.Sprintf("exec %s whoami 2>/dev/null", name))
-		if userRes.Success {
-			user := strings.TrimSpace(userRes.Stdout)
-			if user == "root" && !rootAllowedContainers[name] {
-				// Check partial match (e.g., "krolik-server-postgres-1")
-				allowed := false
-				for container := range rootAllowedContainers {
-					if strings.Contains(name, container) {
-						allowed = true
-						break
-					}
-				}
-				if !allowed {
-					issues = append(issues, SecurityIssue{
-						Level:       AlertWarning,
-						Category:    "container",
-						Title:       fmt.Sprintf("Container %s running as root", name),
-						Description: "Running as root increases attack surface if container is compromised",
-						Remediation: "Add USER directive in Dockerfile or user: in docker-compose.yml",
-					})
-				}
-			}
+		if userRes.Success && strings.TrimSpace(userRes.Stdout) == "root" && !containerRootAllowed(name) {
+			issues = append(issues, SecurityIssue{
+				Level:       AlertWarning,
+				Category:    "container",
+				Title:       fmt.Sprintf("Container %s running as root", name),
+				Description: "Running as root increases attack surface if container is compromised",
+				Remediation: "Add USER directive in Dockerfile or user: in docker-compose.yml",
+			})
 		}
 	}
 
@@ -165,8 +175,8 @@ func (c *SecurityCollector) checkContainerSecurity(ctx context.Context) []Securi
 				issues = append(issues, SecurityIssue{
 					Level:       AlertCritical,
 					Category:    "container",
-					Title:       fmt.Sprintf("Dangerous host mount: %s", mount),
-					Description: fmt.Sprintf("Host path %s is mounted into a container", mount),
+					Title:       "Dangerous host mount: " + mount,
+					Description: "Host path " + mount + " is mounted into a container",
 					Remediation: "Remove the mount or use a read-only mount (:ro)",
 				})
 			}
@@ -195,9 +205,9 @@ func (c *SecurityCollector) checkAuthentication(ctx context.Context) []SecurityI
 			issues = append(issues, SecurityIssue{
 				Level:       AlertWarning,
 				Category:    "authentication",
-				Title:       fmt.Sprintf("Missing auth config: %s", v),
-				Description: fmt.Sprintf("Environment variable %s not found in compose config", v),
-				Remediation: fmt.Sprintf("Add %s to your .env or compose environment", v),
+				Title:       "Missing auth config: " + v,
+				Description: "Environment variable " + v + " not found in compose config",
+				Remediation: "Add " + v + " to your .env or compose environment",
 			})
 		}
 	}
@@ -385,7 +395,7 @@ func (c *SecurityCollector) checkEnvFilePermissions(ctx context.Context) []Secur
 		}
 		perm := strings.TrimSpace(permRes.Stdout)
 		// Warn if world-readable (perms end in non-zero last digit) or group-readable
-		if len(perm) >= 3 {
+		if len(perm) >= permFieldsMin {
 			groupPerm := string(perm[len(perm)-2])
 			worldPerm := string(perm[len(perm)-1])
 			if worldPerm != "0" || groupPerm == "4" || groupPerm == "6" || groupPerm == "7" {
@@ -394,7 +404,7 @@ func (c *SecurityCollector) checkEnvFilePermissions(ctx context.Context) []Secur
 					Category:    "files",
 					Title:       fmt.Sprintf(".env file has permissive permissions (%s): %s", perm, path),
 					Description: "Secrets file is readable by group or world",
-					Remediation: fmt.Sprintf("Run: chmod 600 %s", path),
+					Remediation: "Run: chmod 600 " + path,
 					Evidence:    path,
 				})
 			}
@@ -471,14 +481,14 @@ func (c *SecurityCollector) checkFirewallRules(ctx context.Context) []SecurityIs
 				acceptCount++
 			}
 		}
-		if acceptCount > 3 {
+		if acceptCount > firewallAcceptWarnCount {
 			issues = append(issues, SecurityIssue{
 				Level:       AlertWarning,
 				Category:    "firewall",
 				Title:       fmt.Sprintf("iptables has %d blanket ACCEPT rules", acceptCount),
 				Description: "Multiple blanket ACCEPT rules may indicate overly permissive firewall",
 				Remediation: "Review iptables rules; restrict ACCEPT to specific ports/IPs",
-				Evidence:    truncate(res.Stdout, 500),
+				Evidence:    truncate(res.Stdout, firewallEvidenceMaxLen),
 			})
 		}
 	}
@@ -501,45 +511,57 @@ func (c *SecurityCollector) checkFirewallRules(ctx context.Context) []SecurityIs
 	return issues
 }
 
-func (c *SecurityCollector) checkCrontabs(ctx context.Context) []SecurityIssue {
-	var issues []SecurityIssue
+// appendNonCommentLines appends non-empty, non-comment lines with optional prefix to a builder.
+// Returns the count of lines appended.
+func appendNonCommentLines(b *strings.Builder, text, prefix string) int {
+	count := 0
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		count++
+		if prefix != "" {
+			fmt.Fprintf(b, "[%s] %s\n", prefix, line)
+		} else {
+			b.WriteString(line + "\n")
+		}
+	}
+	return count
+}
 
+// collectCronLines counts and collects non-comment cron lines, returning the count and combined text.
+func (c *SecurityCollector) collectCronLines(ctx context.Context) (int, string) {
 	var allCrons strings.Builder
 	cronCount := 0
 
-	// System crontab
 	res := c.transport.ExecuteUnsafe(ctx, "cat /etc/crontab 2>/dev/null")
 	if res.Success && strings.TrimSpace(res.Stdout) != "" {
-		for _, line := range strings.Split(res.Stdout, "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(line, "#") {
-				cronCount++
-				allCrons.WriteString(line)
-				allCrons.WriteString("\n")
-			}
-		}
+		cronCount += appendNonCommentLines(&allCrons, res.Stdout, "")
 	}
 
-	// Per-user crontabs
 	res = c.transport.ExecuteUnsafe(ctx, "cut -d: -f1 /etc/passwd 2>/dev/null")
-	if res.Success {
-		for _, user := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
-			user = strings.TrimSpace(user)
-			if user == "" {
-				continue
-			}
-			uRes := c.transport.ExecuteUnsafe(ctx, fmt.Sprintf("crontab -l -u %s 2>/dev/null", user))
-			if uRes.Success && strings.TrimSpace(uRes.Stdout) != "" && !strings.Contains(uRes.Stdout, "no crontab for") {
-				for _, line := range strings.Split(uRes.Stdout, "\n") {
-					line = strings.TrimSpace(line)
-					if line != "" && !strings.HasPrefix(line, "#") {
-						cronCount++
-						allCrons.WriteString(fmt.Sprintf("[%s] %s\n", user, line))
-					}
-				}
-			}
-		}
+	if !res.Success {
+		return cronCount, allCrons.String()
 	}
+	for _, user := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+		user = strings.TrimSpace(user)
+		if user == "" {
+			continue
+		}
+		uRes := c.transport.ExecuteUnsafe(ctx, "crontab -l -u "+user+" 2>/dev/null")
+		if !uRes.Success || strings.TrimSpace(uRes.Stdout) == "" || strings.Contains(uRes.Stdout, "no crontab for") {
+			continue
+		}
+		cronCount += appendNonCommentLines(&allCrons, uRes.Stdout, user)
+	}
+	return cronCount, allCrons.String()
+}
+
+func (c *SecurityCollector) checkCrontabs(ctx context.Context) []SecurityIssue {
+	var issues []SecurityIssue
+
+	cronCount, cronText := c.collectCronLines(ctx)
 
 	if cronCount > 0 {
 		issues = append(issues, SecurityIssue{
@@ -548,12 +570,11 @@ func (c *SecurityCollector) checkCrontabs(ctx context.Context) []SecurityIssue {
 			Title:       fmt.Sprintf("%d cron job(s) found", cronCount),
 			Description: "Active cron jobs on the system",
 			Remediation: "Review cron jobs for unneeded or suspicious entries",
-			Evidence:    truncate(allCrons.String(), 800),
+			Evidence:    truncate(cronText, cronEvidenceMaxLen),
 		})
 	}
 
 	// Flag suspicious patterns
-	cronText := allCrons.String()
 	if suspiciousCronRe.MatchString(cronText) {
 		issues = append(issues, SecurityIssue{
 			Level:       AlertCritical,
@@ -567,51 +588,52 @@ func (c *SecurityCollector) checkCrontabs(ctx context.Context) []SecurityIssue {
 	return issues
 }
 
+// parseCountField parses the count from the first field of a `uniq -c` output line.
+func parseCountField(fields []string) int {
+	if len(fields) < 2 {
+		return 0
+	}
+	count := 0
+	_, _ = fmt.Sscanf(fields[0], "%d", &count)
+	return count
+}
+
 func (c *SecurityCollector) checkActiveConnections(ctx context.Context) []SecurityIssue {
 	var issues []SecurityIssue
 
-	// Top remote IPs by connection count
 	res := c.transport.ExecuteUnsafe(ctx, "ss -tn state established 2>/dev/null | awk 'NR>1{split($4,a,\":\"); print a[1]}' | sort | uniq -c | sort -rn | head -10")
 	if res.Success && strings.TrimSpace(res.Stdout) != "" {
 		for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
 			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				count := 0
-				fmt.Sscanf(fields[0], "%d", &count)
-				if count > 100 {
-					issues = append(issues, SecurityIssue{
-						Level:       AlertWarning,
-						Category:    "network",
-						Title:       fmt.Sprintf("IP %s has %d active connections", fields[1], count),
-						Description: "Single IP with unusually high connection count may indicate abuse or misconfigured client",
-						Remediation: "Investigate the source IP; consider rate limiting or firewall rules",
-					})
-				}
+			count := parseCountField(fields)
+			if count > connIPHighWarn {
+				issues = append(issues, SecurityIssue{
+					Level:       AlertWarning,
+					Category:    "network",
+					Title:       fmt.Sprintf("IP %s has %d active connections", fields[1], count),
+					Description: "Single IP with unusually high connection count may indicate abuse or misconfigured client",
+					Remediation: "Investigate the source IP; consider rate limiting or firewall rules",
+				})
 			}
 		}
 	}
 
-	// Connection state summary — check for CLOSE-WAIT leak
 	res = c.transport.ExecuteUnsafe(ctx, "ss -tn 2>/dev/null | awk 'NR>1{print $1}' | sort | uniq -c | sort -rn")
 	if res.Success && strings.TrimSpace(res.Stdout) != "" {
 		for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
 			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				count := 0
-				fmt.Sscanf(fields[0], "%d", &count)
-				if strings.EqualFold(fields[1], "CLOSE-WAIT") && count > 50 {
-					issues = append(issues, SecurityIssue{
-						Level:       AlertWarning,
-						Category:    "network",
-						Title:       fmt.Sprintf("%d connections in CLOSE-WAIT state", count),
-						Description: "High CLOSE-WAIT count indicates connection leak — application not closing sockets properly",
-						Remediation: "Identify the leaking service and fix socket cleanup in application code",
-					})
-				}
+			count := parseCountField(fields)
+			if len(fields) >= 2 && strings.EqualFold(fields[1], "CLOSE-WAIT") && count > connCloseWaitWarn {
+				issues = append(issues, SecurityIssue{
+					Level:       AlertWarning,
+					Category:    "network",
+					Title:       fmt.Sprintf("%d connections in CLOSE-WAIT state", count),
+					Description: "High CLOSE-WAIT count indicates connection leak — application not closing sockets properly",
+					Remediation: "Identify the leaking service and fix socket cleanup in application code",
+				})
 			}
 		}
 	}
 
 	return issues
 }
-

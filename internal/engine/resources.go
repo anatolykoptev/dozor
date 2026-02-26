@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+const (
+	// dockerStatFields is the number of pipe-separated fields in docker stats output.
+	dockerStatFields = 3
+)
+
 // ResourceCollector gathers resource usage data.
 type ResourceCollector struct {
 	transport *Transport
@@ -20,8 +25,8 @@ func (c *ResourceCollector) GetResourceUsage(ctx context.Context, statuses []Ser
 
 	usage := make(map[string][2]float64) // name -> [cpu%, mem_mb]
 	for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
-		parts := strings.SplitN(line, "|", 3)
-		if len(parts) < 3 {
+		parts := strings.SplitN(line, "|", dockerStatFields)
+		if len(parts) < dockerStatFields {
 			continue
 		}
 		name := strings.TrimSpace(parts[0])
@@ -61,4 +66,3 @@ func (c *ResourceCollector) GetSystemLoad(ctx context.Context) string {
 	res := c.transport.ExecuteUnsafe(ctx, "cat /proc/loadavg 2>/dev/null || uptime")
 	return strings.TrimSpace(res.Stdout)
 }
-

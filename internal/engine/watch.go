@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
+)
+
+const (
+	// webhookSuccessMaxStatusWatch is the maximum HTTP status code for a successful webhook delivery.
+	webhookSuccessMaxStatusWatch = 300
 )
 
 // Watch runs periodic health checks and sends webhook alerts on changes.
@@ -56,6 +62,12 @@ func runCheck(ctx context.Context, agent *ServerAgent, cfg Config, prevHash stri
 		if remote != nil {
 			report.Alerts = append(report.Alerts, remote.Alerts...)
 		}
+	}
+
+	// LLM health check (API keys + proxy channels)
+	if cfg.HasLLMKeys() {
+		llmAlerts := CheckLLMKeys(ctx, cfg)
+		report.Alerts = append(report.Alerts, llmAlerts...)
 	}
 
 	// Filter alerts through confirmation + flap detection.
@@ -135,13 +147,13 @@ func hashAlerts(alerts []Alert) string {
 	for _, a := range alerts {
 		fmt.Fprintf(h, "%s:%s:%s\n", a.Level, a.Service, a.Title)
 	}
-	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 func sendWebhook(ctx context.Context, url, text string) error {
 	body, _ := json.Marshal(map[string]string{"text": text})
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -153,7 +165,7 @@ func sendWebhook(ctx context.Context, url, text string) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 300 {
+	if resp.StatusCode >= webhookSuccessMaxStatusWatch {
 		return fmt.Errorf("webhook returned status %d", resp.StatusCode)
 	}
 	return nil

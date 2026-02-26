@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 // StatusCollector gathers container status info.
@@ -25,6 +26,7 @@ type dockerInspectEntry struct {
 	State struct {
 		Status        string `json:"Status"`
 		Running       bool   `json:"Running"`
+		StartedAt     string `json:"StartedAt"`
 		RestartCount  int    `json:"RestartCount"`
 		Health        *struct {
 			Status string `json:"Status"`
@@ -46,6 +48,17 @@ func (c *StatusCollector) GetContainerStatus(ctx context.Context, service string
 	return c.getContainerStatusCLI(ctx, service)
 }
 
+// containerNameMatches checks if any of the comma-separated container names matches the service.
+func containerNameMatches(names, service string) bool {
+	for _, n := range strings.Split(names, ",") {
+		n = strings.TrimSpace(n)
+		if n == service || strings.Contains(n, service) {
+			return true
+		}
+	}
+	return false
+}
+
 // getContainerStatusCLI uses docker CLI for container status (fallback).
 func (c *StatusCollector) getContainerStatusCLI(ctx context.Context, service string) ServiceStatus {
 	status := ServiceStatus{Name: service, State: StateUnknown}
@@ -64,20 +77,9 @@ func (c *StatusCollector) getContainerStatusCLI(ctx context.Context, service str
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		// Match exact service name (docker ps may return partial matches)
-		names := strings.Split(entry.Names, ",")
-		matched := false
-		for _, n := range names {
-			n = strings.TrimSpace(n)
-			if n == service || strings.Contains(n, service) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
+		if !containerNameMatches(entry.Names, service) {
 			continue
 		}
-
 		status.State = parseContainerState(entry.State)
 		status.Uptime = entry.RunTime
 	}
@@ -91,6 +93,9 @@ func (c *StatusCollector) getContainerStatusCLI(ctx context.Context, service str
 			status.RestartCount = entry.RestartCount
 			if entry.State.Health != nil {
 				status.Health = entry.State.Health.Status
+			}
+			if t, err := time.Parse(time.RFC3339Nano, entry.State.StartedAt); err == nil {
+				status.StartedAt = t
 			}
 		}
 	}

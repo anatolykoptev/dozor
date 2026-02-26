@@ -1,10 +1,46 @@
 package engine
 
 import (
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	// defaultSSHPort is the standard SSH port.
+	defaultSSHPort = 22
+	// defaultTimeoutSec is the default command execution timeout in seconds.
+	defaultTimeoutSec = 30
+	// defaultErrorThreshold is the default number of errors before alerting.
+	defaultErrorThreshold = 5
+	// defaultRemoteCheckIntervalMin is the default remote check interval in minutes.
+	defaultRemoteCheckIntervalMin = 3
+	// defaultDiskThreshold is the default disk usage warning percentage.
+	defaultDiskThreshold = 80
+	// defaultDiskCritical is the default disk usage critical percentage.
+	defaultDiskCritical = 95
+	// defaultBraveMaxResults is the default max results for Brave search.
+	defaultBraveMaxResults = 5
+	// defaultFlapHigh is the threshold to start suppressing flapping services.
+	defaultFlapHigh = 0.7
+	// defaultFlapLow is the threshold to stop suppressing flapping services.
+	defaultFlapLow = 0.3
+	// defaultCBKBThreshold is the default circuit breaker KB failure threshold.
+	defaultCBKBThreshold = 3
+	// defaultWatchIntervalHours is the default watch interval in hours.
+	defaultWatchIntervalHours = 4
+	// defaultCPUThreshold is the default CPU usage alert percentage.
+	defaultCPUThreshold = 90
+	// defaultMemoryThreshold is the default memory usage alert percentage.
+	defaultMemoryThreshold = 90
+	// defaultCBLLMResetMin is the default LLM circuit breaker reset time in minutes.
+	defaultCBLLMResetMin = 10
+	// defaultCBKBResetMin is the default KB circuit breaker reset time in minutes.
+	defaultCBKBResetMin = 5
 )
 
 // HasRemote returns true if remote monitoring is configured.
@@ -15,6 +51,11 @@ func (c Config) HasRemote() bool {
 // HasUserServices returns true if user-level systemd services are configured via env.
 func (c Config) HasUserServices() bool {
 	return len(c.UserServices) > 0
+}
+
+// HasLLMKeys returns true if LLM health check is configured.
+func (c Config) HasLLMKeys() bool {
+	return len(c.GeminiAPIKeys) > 0 || len(c.LLMCheckModels) > 0
 }
 
 // Config holds all dozor configuration.
@@ -86,6 +127,13 @@ type Config struct {
 	CBKBReset      time.Duration // wait before half-open probe (default 5m)
 	CBLLMThreshold int           // LLM failures before opening (default 5)
 	CBLLMReset     time.Duration // wait before half-open probe (default 10m)
+
+	// LLM health check
+	LLMConfigPath  string   // DOZOR_LLM_CONFIG_PATH — path to CLIProxyAPI config.yaml
+	GeminiAPIKeys  []string // parsed from CLIProxyAPI config.yaml
+	LLMCheckURL    string   // proxy URL for channel tests (reuses DOZOR_LLM_URL)
+	LLMCheckAPIKey string   // proxy auth key (reuses DOZOR_LLM_API_KEY)
+	LLMCheckModels []string // DOZOR_LLM_CHECK_MODELS (models to test through proxy)
 }
 
 // MCPServerConfig holds config for a remote MCP server.
@@ -102,29 +150,29 @@ func (c Config) IsLocal() bool {
 
 // Init loads config from environment variables.
 func Init() Config {
-	return Config{
+	c := Config{
 		Host:             env("DOZOR_HOST", "local"),
-		SSHPort:          envInt("DOZOR_SSH_PORT", 22),
+		SSHPort:          envInt("DOZOR_SSH_PORT", defaultSSHPort),
 		ComposePath:      env("DOZOR_COMPOSE_PATH", ""),
 		Services:         envList("DOZOR_SERVICES", ""),
-		Timeout:          envDuration("DOZOR_TIMEOUT", 30*time.Second),
+		Timeout:          envDuration("DOZOR_TIMEOUT", defaultTimeoutSec*time.Second),
 		MCPPort:          env("DOZOR_MCP_PORT", "8765"),
 		WebhookURL:       env("DOZOR_WEBHOOK_URL", ""),
-		WatchInterval:    envDurationStr("DOZOR_WATCH_INTERVAL", 4*time.Hour),
-		CPUThreshold:     envFloat("DOZOR_CPU_THRESHOLD", 90),
-		MemoryThreshold:  envFloat("DOZOR_MEMORY_THRESHOLD", 90),
-		ErrorThreshold:   envInt("DOZOR_ERROR_THRESHOLD", 5),
+		WatchInterval:    envDurationStr("DOZOR_WATCH_INTERVAL", defaultWatchIntervalHours*time.Hour),
+		CPUThreshold:     envFloat("DOZOR_CPU_THRESHOLD", defaultCPUThreshold),
+		MemoryThreshold:  envFloat("DOZOR_MEMORY_THRESHOLD", defaultMemoryThreshold),
+		ErrorThreshold:   envInt("DOZOR_ERROR_THRESHOLD", defaultErrorThreshold),
 		RestartThreshold: envInt("DOZOR_RESTART_THRESHOLD", 1),
 		LogLines:         envInt("DOZOR_LOG_LINES", 100),
 		RemoteHost:          env("DOZOR_REMOTE_HOST", ""),
 		RemoteURL:           env("DOZOR_REMOTE_URL", ""),
 		RemoteServices:      envList("DOZOR_REMOTE_SERVICES", ""),
-		RemoteSSHPort:       envInt("DOZOR_REMOTE_SSH_PORT", 22),
-		RemoteCheckInterval: envDurationStr("DOZOR_REMOTE_CHECK_INTERVAL", 3*time.Minute),
+		RemoteSSHPort:       envInt("DOZOR_REMOTE_SSH_PORT", defaultSSHPort),
+		RemoteCheckInterval: envDurationStr("DOZOR_REMOTE_CHECK_INTERVAL", defaultRemoteCheckIntervalMin*time.Minute),
 		SystemdServices:  envList("DOZOR_SYSTEMD_SERVICES", ""),
 		RequiredAuthVars: envList("DOZOR_REQUIRED_AUTH_VARS", ""),
-		DiskThreshold:    envFloat("DOZOR_DISK_THRESHOLD", 80),
-		DiskCritical:     envFloat("DOZOR_DISK_CRITICAL", 95),
+		DiskThreshold:    envFloat("DOZOR_DISK_THRESHOLD", defaultDiskThreshold),
+		DiskCritical:     envFloat("DOZOR_DISK_CRITICAL", defaultDiskCritical),
 		UserServices:     parseUserServices(env("DOZOR_USER_SERVICES", "")),
 		UserServicesUser: env("DOZOR_USER_SERVICES_USER", ""),
 		TrackedBinaries:  parseTrackedBinaries(env("DOZOR_TRACKED_BINARIES", "")),
@@ -132,12 +180,12 @@ func Init() Config {
 
 		// Web Search
 		BraveAPIKey:          env("DOZOR_BRAVE_API_KEY", ""),
-		BraveMaxResults:      envInt("DOZOR_BRAVE_MAX_RESULTS", 5),
+		BraveMaxResults:      envInt("DOZOR_BRAVE_MAX_RESULTS", defaultBraveMaxResults),
 		BraveEnabled:         envBool("DOZOR_BRAVE_ENABLED", false),
-		DuckDuckGoMaxResults: envInt("DOZOR_DDG_MAX_RESULTS", 5),
+		DuckDuckGoMaxResults: envInt("DOZOR_DDG_MAX_RESULTS", defaultBraveMaxResults),
 		DuckDuckGoEnabled:    envBool("DOZOR_DDG_ENABLED", true),
 		PerplexityAPIKey:     env("DOZOR_PERPLEXITY_API_KEY", ""),
-		PerplexityMaxResults: envInt("DOZOR_PERPLEXITY_MAX_RESULTS", 5),
+		PerplexityMaxResults: envInt("DOZOR_PERPLEXITY_MAX_RESULTS", defaultBraveMaxResults),
 		PerplexityEnabled:    envBool("DOZOR_PERPLEXITY_ENABLED", false),
 
 		// Remote MCP Servers
@@ -155,15 +203,32 @@ func Init() Config {
 
 		// Flap detection
 		FlapWindow: envInt("DOZOR_FLAP_WINDOW", 10),
-		FlapHigh:   envFloat("DOZOR_FLAP_HIGH", 0.7),
-		FlapLow:    envFloat("DOZOR_FLAP_LOW", 0.3),
+		FlapHigh:   envFloat("DOZOR_FLAP_HIGH", defaultFlapHigh),
+		FlapLow:    envFloat("DOZOR_FLAP_LOW", defaultFlapLow),
 
 		// Circuit breaker
-		CBKBThreshold:  envInt("DOZOR_CB_KB_THRESHOLD", 3),
-		CBKBReset:      envDurationStr("DOZOR_CB_KB_RESET", 5*time.Minute),
-		CBLLMThreshold: envInt("DOZOR_CB_LLM_THRESHOLD", 5),
-		CBLLMReset:     envDurationStr("DOZOR_CB_LLM_RESET", 10*time.Minute),
+		CBKBThreshold:  envInt("DOZOR_CB_KB_THRESHOLD", defaultCBKBThreshold),
+		CBKBReset:      envDurationStr("DOZOR_CB_KB_RESET", defaultCBKBResetMin*time.Minute),
+		CBLLMThreshold: envInt("DOZOR_CB_LLM_THRESHOLD", defaultErrorThreshold),
+		CBLLMReset:     envDurationStr("DOZOR_CB_LLM_RESET", defaultCBLLMResetMin*time.Minute),
+
+		// LLM health check (parsed below)
+		LLMConfigPath:  env("DOZOR_LLM_CONFIG_PATH", ""),
+		LLMCheckURL:    env("DOZOR_LLM_URL", ""),
+		LLMCheckAPIKey: env("DOZOR_LLM_API_KEY", ""),
+		LLMCheckModels: envList("DOZOR_LLM_CHECK_MODELS", ""),
 	}
+
+	// Parse CLIProxyAPI config — fills GeminiAPIKeys and overrides LLMCheckAPIKey if available.
+	if c.LLMConfigPath != "" {
+		parsed := parseLLMConfig(c.LLMConfigPath)
+		c.GeminiAPIKeys = parsed.GeminiAPIKeys
+		if parsed.ProxyAPIKey != "" && c.LLMCheckAPIKey == "" {
+			c.LLMCheckAPIKey = parsed.ProxyAPIKey
+		}
+	}
+
+	return c
 }
 
 // parseTrackedBinaries parses "owner/repo:binary,owner/repo:binary" format.
@@ -311,6 +376,63 @@ func envDurationStr(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+// cliProxyConfig is a partial representation of CLIProxyAPI config.yaml.
+type cliProxyConfig struct {
+	APIKeys      []string `yaml:"api-keys"`
+	GeminiAPIKey []struct {
+		APIKey string `yaml:"api-key"`
+	} `yaml:"gemini-api-key"`
+}
+
+// parsedProxyConfig holds values extracted from CLIProxyAPI config.yaml.
+type parsedProxyConfig struct {
+	ProxyAPIKey   string   // first entry from api-keys
+	GeminiAPIKeys []string // all gemini-api-key entries
+}
+
+// parseLLMConfig reads CLIProxyAPI config.yaml and extracts proxy API key + Gemini keys.
+func parseLLMConfig(path string) parsedProxyConfig {
+	var result parsedProxyConfig
+	if path == "" {
+		return result
+	}
+	path = expandHome(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		slog.Warn("failed to read LLM config", slog.String("path", path), slog.Any("error", err))
+		return result
+	}
+	var cfg cliProxyConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		slog.Warn("failed to parse LLM config", slog.String("path", path), slog.Any("error", err))
+		return result
+	}
+	if len(cfg.APIKeys) > 0 {
+		result.ProxyAPIKey = cfg.APIKeys[0]
+	}
+	result.GeminiAPIKeys = make([]string, 0, len(cfg.GeminiAPIKey))
+	for _, k := range cfg.GeminiAPIKey {
+		if k.APIKey != "" {
+			result.GeminiAPIKeys = append(result.GeminiAPIKeys, k.APIKey)
+		}
+	}
+	slog.Info("loaded LLM config",
+		slog.Int("gemini_keys", len(result.GeminiAPIKeys)),
+		slog.Bool("proxy_key", result.ProxyAPIKey != ""),
+		slog.String("path", path))
+	return result
+}
+
+// expandHome replaces leading ~/ with user's home directory.
+func expandHome(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home + path[1:]
+		}
+	}
+	return path
 }
 
 // parseMCPServers parses "id=url,id=url" format.

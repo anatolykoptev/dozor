@@ -3,6 +3,7 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -69,7 +70,7 @@ func (t *discoverTool) Parameters() map[string]any {
 func (t *discoverTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	serverID, _ := args["server_id"].(string)
 	if serverID == "" {
-		return "", fmt.Errorf("server_id is required")
+		return "", errors.New("server_id is required")
 	}
 
 	tools, err := t.mgr.Discover(ctx, serverID)
@@ -118,10 +119,10 @@ func (t *callTool) Execute(ctx context.Context, args map[string]any) (string, er
 	toolName, _ := args["tool_name"].(string)
 
 	if serverID == "" {
-		return "", fmt.Errorf("server_id is required")
+		return "", errors.New("server_id is required")
 	}
 	if toolName == "" {
-		return "", fmt.Errorf("tool_name is required")
+		return "", errors.New("tool_name is required")
 	}
 
 	// Extract params (may be nil or map)

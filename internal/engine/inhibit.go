@@ -59,5 +59,5 @@ func findDownParent(service string, graph DependencyGraph, down map[string]bool)
 			return dep
 		}
 	}
-	return "unknown"
+	return string(StateUnknown)
 }

@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+const (
+	// kilobytesPerMegabyte is the conversion factor from kilobytes to megabytes.
+	kilobytesPerMegabyte = 1024
+)
+
 // --- Docker ---
 
 func (c *CleanupCollector) scanDocker(ctx context.Context) CleanupTarget {
@@ -339,14 +344,14 @@ func (c *CleanupCollector) scanMemory(ctx context.Context) CleanupTarget {
 	swapTotal, swapUsed := c.memSwapMB(ctx)
 	pids, rssKB := c.staleProcsInfo(ctx)
 
-	t.SizeMB = swapUsed + rssKB/1024
+	t.SizeMB = swapUsed + rssKB/kilobytesPerMegabyte
 
 	var parts []string
 	if swapTotal > 0 && swapUsed > 0 {
 		parts = append(parts, fmt.Sprintf("swap %g/%g MB", swapUsed, swapTotal))
 	}
 	if len(pids) > 0 {
-		parts = append(parts, fmt.Sprintf("%d stale procs %.0f MB", len(pids), rssKB/1024))
+		parts = append(parts, fmt.Sprintf("%d stale procs %.0f MB", len(pids), rssKB/kilobytesPerMegabyte))
 	}
 	if len(parts) > 0 {
 		t.Freed = strings.Join(parts, ", ")

@@ -25,7 +25,7 @@ func (s CBState) String() string {
 	case CBHalfOpen:
 		return "half-open"
 	default:
-		return "unknown"
+		return string(StateUnknown)
 	}
 }
 

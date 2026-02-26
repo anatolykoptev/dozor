@@ -63,3 +63,14 @@ Systematic approach to diagnosing server issues.
 - Don't restart blindly — understand the error first
 - After any fix, verify with another health check
 - If the same service fails 3+ times, escalate — don't loop
+
+## Efficiency Rules
+
+1. **One inspect per incident** — do NOT call server_inspect more than once
+   for the same incident. The first call has all the data you need.
+2. **Triage first, inspect second** — if triage already shows the issue clearly,
+   skip server_inspect entirely.
+3. **Read memory before tools** — call read_memory or kb_search before
+   running diagnostics. Past incidents may have the answer.
+4. **3-iteration budget** — if not resolved in 3 tool calls, escalate.
+   Don't loop through server_inspect -> server_exec -> server_inspect.

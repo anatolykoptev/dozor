@@ -53,7 +53,6 @@ func (r *Registry) LoadAll(ctx context.Context, agent *engine.ServerAgent, tools
 	}
 
 	// Register phase — each extension gets its own scoped runtime
-	registered := make([]string, 0, len(r.order))
 	for _, name := range r.order {
 		ext := r.extensions[name]
 		runtime := NewRuntime(name)
@@ -71,7 +70,6 @@ func (r *Registry) LoadAll(ctx context.Context, agent *engine.ServerAgent, tools
 			runtime.Logger.Warn("extension skipped", slog.String("phase", string(err.Phase)), slog.Any("error", err.Err))
 			continue
 		}
-		registered = append(registered, name)
 
 		// Start phase immediately after successful registration
 		if err := r.startOne(ctx, name, ext, extCtx); err != nil {

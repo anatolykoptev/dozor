@@ -6,6 +6,19 @@ import (
 	"strings"
 )
 
+const (
+	// healthHealthy is the string for a healthy group.
+	healthHealthy = "healthy"
+	// healthDegraded is the string for a degraded group.
+	healthDegraded = "degraded"
+	// healthSeverityCritical is the numeric severity for critical health.
+	healthSeverityCritical = 3
+	// healthSeverityDegraded is the numeric severity for degraded health.
+	healthSeverityDegraded = 2
+	// healthSeverityWarning is the numeric severity for warning health.
+	healthSeverityWarning = 1
+)
+
 // BuildDependencyGraph constructs a graph from dozor.depends_on labels.
 // Each service's label is parsed as comma-separated dependency names.
 // Dangling references (deps not in statuses) are logged and skipped.
@@ -75,7 +88,7 @@ func GroupServices(statuses []ServiceStatus) []ServiceGroup {
 
 // worstHealth returns the worst health level across services.
 func worstHealth(statuses []ServiceStatus) string {
-	worst := "healthy"
+	worst := healthHealthy
 	for _, s := range statuses {
 		level := serviceHealthLevel(s)
 		if healthSeverity(level) > healthSeverity(worst) {
@@ -88,29 +101,29 @@ func worstHealth(statuses []ServiceStatus) string {
 // serviceHealthLevel maps a service status to a health string.
 func serviceHealthLevel(s ServiceStatus) string {
 	if s.State != StateRunning {
-		return "critical"
+		return string(AlertCritical)
 	}
 	if s.HealthcheckOK != nil && !*s.HealthcheckOK {
-		return "degraded"
+		return healthDegraded
 	}
-	if s.RestartCount > 0 || s.ErrorCount > 5 {
-		return "degraded"
+	if s.RestartCount > 0 || s.ErrorCount > maxRecentErrors {
+		return healthDegraded
 	}
 	if s.ErrorCount > 0 {
-		return "warning"
+		return string(AlertWarning)
 	}
-	return "healthy"
+	return healthHealthy
 }
 
 // healthSeverity returns a numeric severity for ordering.
 func healthSeverity(health string) int {
 	switch health {
-	case "critical":
-		return 3
-	case "degraded":
-		return 2
-	case "warning":
-		return 1
+	case string(AlertCritical):
+		return healthSeverityCritical
+	case healthDegraded:
+		return healthSeverityDegraded
+	case string(AlertWarning):
+		return healthSeverityWarning
 	default:
 		return 0
 	}

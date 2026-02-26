@@ -11,6 +11,17 @@ import (
 	"time"
 )
 
+const (
+	// sslHoursPerDay is hours per day for SSL expiry calculations.
+	sslHoursPerDay = 24
+	// sslCriticalDays is the number of days before SSL expiry to show a critical alert.
+	sslCriticalDays = 7
+	// sslWarnDaysProbe is the number of days before SSL expiry to show a warning.
+	sslWarnDaysProbe = 30
+	// cspTruncLen is the maximum length of a CSP header value to display.
+	cspTruncLen = 80
+)
+
 // ProbeResult is the result of probing one URL.
 type ProbeResult struct {
 	URL             string
@@ -68,7 +79,7 @@ func probeOne(ctx context.Context, rawURL string, timeoutSec int, checkHeaders b
 
 	client := newHTTPClient(time.Duration(timeoutSec) * time.Second)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		r.Error = err.Error()
 		return r
@@ -90,7 +101,7 @@ func probeOne(ctx context.Context, rawURL string, timeoutSec int, checkHeaders b
 	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
 		expiry := resp.TLS.PeerCertificates[0].NotAfter
 		r.SSLExpiry = &expiry
-		days := int(time.Until(expiry).Hours() / 24)
+		days := int(time.Until(expiry).Hours() / sslHoursPerDay)
 		r.SSLDays = &days
 	}
 
@@ -196,6 +207,40 @@ func ExtractHostname(rawURL string) string {
 	return rawURL
 }
 
+// writeProbeSSL appends SSL information to the builder for a probe result.
+func writeProbeSSL(b *strings.Builder, r ProbeResult) {
+	if r.SSLDays == nil {
+		return
+	}
+	sslIcon := "OK"
+	if *r.SSLDays < sslCriticalDays {
+		sslIcon = displayIconCritical
+	} else if *r.SSLDays < sslWarnDaysProbe {
+		sslIcon = displayIconWarning
+	}
+	fmt.Fprintf(b, "     SSL [%s]: %d days remaining (expires %s)\n",
+		sslIcon, *r.SSLDays, r.SSLExpiry.Format("2006-01-02"))
+}
+
+// writeProbeSecurityHeaders appends security header info to the builder.
+func writeProbeSecurityHeaders(b *strings.Builder, h *SecurityHeadersResult) {
+	if len(h.Missing) > 0 {
+		fmt.Fprintf(b, "     Security headers [!!]: missing %s\n", strings.Join(h.Missing, ", "))
+	} else {
+		b.WriteString("     Security headers [OK]: all present\n")
+	}
+	if h.HSTS != "" {
+		fmt.Fprintf(b, "       HSTS: %s\n", h.HSTS)
+	}
+	if h.CSP != "" {
+		csp := h.CSP
+		if len(csp) > cspTruncLen {
+			csp = csp[:cspTruncLen] + "..."
+		}
+		fmt.Fprintf(b, "       CSP: %s\n", csp)
+	}
+}
+
 // FormatProbeResults formats probe results for display.
 func FormatProbeResults(results []ProbeResult) string {
 	var b strings.Builder
@@ -213,37 +258,10 @@ func FormatProbeResults(results []ProbeResult) string {
 		}
 
 		fmt.Fprintf(&b, "[%s] %s — HTTP %d (%dms)\n", icon, r.URL, r.Status, r.LatencyMs)
-
-		if r.SSLDays != nil {
-			sslIcon := "OK"
-			if *r.SSLDays < 7 {
-				sslIcon = "CRITICAL"
-			} else if *r.SSLDays < 30 {
-				sslIcon = "WARNING"
-			}
-			fmt.Fprintf(&b, "     SSL [%s]: %d days remaining (expires %s)\n",
-				sslIcon, *r.SSLDays, r.SSLExpiry.Format("2006-01-02"))
-		}
-
+		writeProbeSSL(&b, r)
 		if r.SecurityHeaders != nil {
-			h := r.SecurityHeaders
-			if len(h.Missing) > 0 {
-				fmt.Fprintf(&b, "     Security headers [!!]: missing %s\n", strings.Join(h.Missing, ", "))
-			} else {
-				b.WriteString("     Security headers [OK]: all present\n")
-			}
-			if h.HSTS != "" {
-				fmt.Fprintf(&b, "       HSTS: %s\n", h.HSTS)
-			}
-			if h.CSP != "" {
-				csp := h.CSP
-				if len(csp) > 80 {
-					csp = csp[:80] + "..."
-				}
-				fmt.Fprintf(&b, "       CSP: %s\n", csp)
-			}
+			writeProbeSecurityHeaders(&b, r.SecurityHeaders)
 		}
-
 		b.WriteString("\n")
 	}
 

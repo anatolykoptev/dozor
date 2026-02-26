@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/anatolykoptev/dozor/internal/toolreg"
@@ -34,7 +35,7 @@ func (t *readSkillTool) Parameters() map[string]any {
 func (t *readSkillTool) Execute(_ context.Context, args map[string]any) (string, error) {
 	name, _ := args["name"].(string)
 	if name == "" {
-		return "", fmt.Errorf("skill name is required")
+		return "", errors.New("skill name is required")
 	}
 
 	content, ok := t.loader.LoadSkill(name)

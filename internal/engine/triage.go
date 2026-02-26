@@ -7,118 +7,171 @@ import (
 	"time"
 )
 
-// Triage performs full auto-diagnosis: discovers services, checks health,
-// analyzes errors for problematic services, and includes disk pressure.
-func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
-	services = a.resolveServices(ctx, services)
+const (
+	// triageProbeTimeout is the timeout in seconds for healthcheck probes during triage.
+	triageProbeTimeout = 5
+	// triageRecentErrorsMax is the max number of recent errors to attach to a service.
+	triageRecentErrorsMax = 5
+	// triageErrorMsgMaxLen is the maximum length of an error message shown in triage.
+	triageErrorMsgMaxLen = 150
+)
 
-	// Filter out dev-excluded services, but override for critical (exited/dead/restarting)
-	var excluded []string
-	var overridden []string
-	if exclusions := a.ListExclusions(); len(exclusions) > 0 {
-		// Pre-fetch statuses for excluded services to check for P0 override
-		var excludedNames []string
-		for _, svc := range services {
-			if _, ok := exclusions[svc]; ok {
-				excludedNames = append(excludedNames, svc)
-			}
-		}
-		criticalExcluded := make(map[string]bool)
-		if len(excludedNames) > 0 {
-			for _, s := range a.status.GetAllStatuses(ctx, excludedNames) {
-				if s.State == StateExited || s.State == StateDead || s.State == StateRestarting {
-					criticalExcluded[s.Name] = true
-				}
-			}
-		}
+// triageExclusionResult holds the outcome of applying dev-mode exclusions.
+type triageExclusionResult struct {
+	services  []string
+	excluded  []string
+	overridden []string
+}
 
-		filtered := services[:0:0]
-		for _, svc := range services {
-			if _, ok := exclusions[svc]; !ok {
-				filtered = append(filtered, svc)
-			} else if criticalExcluded[svc] {
-				// P0 override: service is excluded but down — re-include it
-				filtered = append(filtered, svc)
-				overridden = append(overridden, svc)
-			} else {
-				excluded = append(excluded, svc)
-			}
-		}
-		services = filtered
+// triageApplyExclusions filters services by dev-mode exclusions, preserving critical overrides.
+func (a *ServerAgent) triageApplyExclusions(ctx context.Context, services []string) triageExclusionResult {
+	exclusions := a.ListExclusions()
+	if len(exclusions) == 0 {
+		return triageExclusionResult{services: services}
 	}
 
-	var b strings.Builder
-	now := time.Now()
-
-	// Dev mode banner
-	if a.IsDevMode() {
-		b.WriteString("=== DEV MODE ACTIVE — observation only ===\n\n")
+	var excludedNames []string
+	for _, svc := range services {
+		if _, ok := exclusions[svc]; ok {
+			excludedNames = append(excludedNames, svc)
+		}
 	}
 
-	if len(services) == 0 {
-		fmt.Fprintf(&b, "Server Triage Report\nHealth: unknown | Time: %s\n\n", now.Format("2006-01-02 15:04"))
-		if len(excluded) > 0 {
-			fmt.Fprintf(&b, "All services dev-excluded (%d): %s\n", len(excluded), strings.Join(excluded, ", "))
+	criticalExcluded := make(map[string]bool)
+	for _, s := range a.status.GetAllStatuses(ctx, excludedNames) {
+		if s.State == StateExited || s.State == StateDead || s.State == StateRestarting {
+			criticalExcluded[s.Name] = true
+		}
+	}
+
+	var result triageExclusionResult
+	for _, svc := range services {
+		if _, ok := exclusions[svc]; !ok {
+			result.services = append(result.services, svc)
+		} else if criticalExcluded[svc] {
+			result.services = append(result.services, svc)
+			result.overridden = append(result.overridden, svc)
 		} else {
-			b.WriteString("No Docker services found.\n")
+			result.excluded = append(result.excluded, svc)
 		}
-		a.appendDiskPressure(ctx, &b)
-		return b.String()
 	}
+	return result
+}
 
-	// Get statuses with resource usage
-	statuses := a.status.GetAllStatuses(ctx, services)
-	statuses = a.resources.GetResourceUsage(ctx, statuses)
-
-	// Extract dozor labels
-	for i, s := range statuses {
-		statuses[i].HealthcheckURL = s.DozorLabel("healthcheck.url")
-		statuses[i].AlertChannel = s.DozorLabel("alert.channel")
-	}
-
-	// Run healthcheck probes for services with a configured URL
+// triageRunHealthchecks runs HTTP probes for services with a configured healthcheck URL.
+func triageRunHealthchecks(ctx context.Context, statuses []ServiceStatus) []ServiceStatus {
 	for i, s := range statuses {
 		if s.State != StateRunning || s.HealthcheckURL == "" {
 			continue
 		}
-		results := ProbeURLs(ctx, []string{s.HealthcheckURL}, 5, false)
-		if len(results) > 0 {
-			ok := results[0].OK
-			statuses[i].HealthcheckOK = &ok
-			if !ok {
-				msg := fmt.Sprintf("status %d", results[0].Status)
-				if results[0].Error != "" {
-					msg = results[0].Error
-				}
-				statuses[i].HealthcheckMsg = msg
+		results := ProbeURLs(ctx, []string{s.HealthcheckURL}, triageProbeTimeout, false)
+		if len(results) == 0 {
+			continue
+		}
+		ok := results[0].OK
+		statuses[i].HealthcheckOK = &ok
+		if !ok {
+			msg := fmt.Sprintf("status %d", results[0].Status)
+			if results[0].Error != "" {
+				msg = results[0].Error
 			}
+			statuses[i].HealthcheckMsg = msg
 		}
 	}
+	return statuses
+}
 
-	// Enrich with error counts
+// startupGracePeriod is the window after container start during which errors are
+// considered startup noise (e.g. dependency not ready yet) and are filtered out.
+const startupGracePeriod = 90 * time.Second
+
+// errorStalenessWindow defines how old an error must be to be considered stale.
+// If ALL errors are older than this and the service is currently running,
+// they're likely a one-time occurrence that has self-resolved.
+const errorStalenessWindow = 5 * time.Minute
+
+// triageEnrichErrors attaches error counts and recent error lines to each running service.
+// It filters out startup noise (errors during the first 90s after container start)
+// and stale errors (all errors older than 5 min with no recent recurrence).
+func (a *ServerAgent) triageEnrichErrors(ctx context.Context, statuses []ServiceStatus) []ServiceStatus {
+	now := time.Now()
 	for i, s := range statuses {
-		if s.State == StateRunning {
-			errors := a.logs.GetErrorLogs(ctx, s.Name, a.cfg.LogLines)
-			statuses[i].ErrorCount = len(errors)
-			if len(errors) > 5 {
-				statuses[i].RecentErrors = errors[len(errors)-5:]
-			} else {
-				statuses[i].RecentErrors = errors
-			}
+		if s.State != StateRunning {
+			continue
+		}
+		errors := a.logs.GetErrorLogs(ctx, s.Name, a.cfg.LogLines)
+		errors = filterStartupErrors(errors, s.StartedAt)
+		errors = filterStaleErrors(errors, now)
+		statuses[i].ErrorCount = len(errors)
+		if len(errors) > triageRecentErrorsMax {
+			statuses[i].RecentErrors = errors[len(errors)-triageRecentErrorsMax:]
+		} else {
+			statuses[i].RecentErrors = errors
 		}
 	}
+	return statuses
+}
 
-	// Inhibit child alerts when a parent dependency is down.
-	allAlerts := a.alerts.GenerateAlerts(statuses)
+// filterStartupErrors removes errors that occurred within the startup grace period.
+func filterStartupErrors(errors []LogEntry, startedAt time.Time) []LogEntry {
+	if startedAt.IsZero() {
+		return errors
+	}
+	cutoff := startedAt.Add(startupGracePeriod)
+	filtered := make([]LogEntry, 0, len(errors))
+	for _, e := range errors {
+		if e.Timestamp != nil && e.Timestamp.Before(cutoff) {
+			continue // startup noise
+		}
+		filtered = append(filtered, e)
+	}
+	return filtered
+}
+
+// filterStaleErrors returns empty if ALL errors are older than the staleness window.
+// This handles the case where errors occurred once (e.g. transient network blip)
+// but the service has been healthy since then.
+func filterStaleErrors(errors []LogEntry, now time.Time) []LogEntry {
+	if len(errors) == 0 {
+		return errors
+	}
+	cutoff := now.Add(-errorStalenessWindow)
+	for _, e := range errors {
+		if e.Timestamp == nil || e.Timestamp.After(cutoff) {
+			return errors // at least one recent error — keep all
+		}
+	}
+	return nil // all errors are stale — discard
+}
+
+// triageOverallHealth computes the overall health string from problematic services.
+func triageOverallHealth(problematic []ServiceStatus) string {
+	overall := healthHealthy
+	for _, s := range problematic {
+		if s.State != StateRunning {
+			return string(AlertCritical)
+		}
+		level := s.GetAlertLevel()
+		switch {
+		case level == AlertCritical:
+			return string(AlertCritical)
+		case level == AlertError && overall != string(AlertCritical):
+			overall = healthDegraded
+		case level == AlertWarning && overall == healthHealthy:
+			overall = string(AlertWarning)
+		}
+	}
+	return overall
+}
+
+// triageClassifyStatuses categorizes statuses into problematic/healthy and builds inhibited-services set.
+func triageClassifyStatuses(alertGen *AlertGenerator, statuses []ServiceStatus) (problematic []ServiceStatus, healthy []string, inhibitedServices map[string]bool) {
+	allAlerts := alertGen.GenerateAlerts(statuses)
 	_, inhibitedAlerts := Inhibit(allAlerts, statuses)
-	inhibitedServices := make(map[string]bool)
+	inhibitedServices = make(map[string]bool)
 	for _, ia := range inhibitedAlerts {
 		inhibitedServices[ia.Service] = true
 	}
-
-	// Split into problematic vs healthy
-	var problematic []ServiceStatus
-	var healthy []string
 	for _, s := range statuses {
 		if !s.IsHealthy() {
 			problematic = append(problematic, s)
@@ -126,59 +179,87 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 			healthy = append(healthy, s.Name)
 		}
 	}
+	return problematic, healthy, inhibitedServices
+}
 
-	// Determine overall health
-	overallHealth := "healthy"
-	for _, s := range problematic {
-		if s.State != StateRunning {
-			overallHealth = "critical"
-			break
-		}
-		level := s.GetAlertLevel()
-		if level == AlertCritical {
-			overallHealth = "critical"
-			break
-		}
-		if level == AlertError && overallHealth != "critical" {
-			overallHealth = "degraded"
-		}
-		if level == AlertWarning && overallHealth == "healthy" {
-			overallHealth = "warning"
-		}
-	}
-
-	fmt.Fprintf(&b, "Server Triage Report\nHealth: %s | Time: %s\n", overallHealth, now.Format("2006-01-02 15:04"))
-
-	// Check if any service has a group label
-	hasGroups := false
+// triageHasGroups returns true if any status has a dozor.group label.
+func triageHasGroups(statuses []ServiceStatus) bool {
 	for _, s := range statuses {
 		if s.DozorLabel("group") != "" {
-			hasGroups = true
-			break
+			return true
 		}
 	}
+	return false
+}
 
-	if hasGroups {
+// triageWriteInhibited appends an inhibited-services line to the builder.
+func triageWriteInhibited(b *strings.Builder, inhibitedServices map[string]bool) {
+	if len(inhibitedServices) == 0 {
+		return
+	}
+	var inhibNames []string
+	for name := range inhibitedServices {
+		inhibNames = append(inhibNames, name)
+	}
+	fmt.Fprintf(b, "\nInhibited by dependency (%d): %s (parent service down)\n", len(inhibNames), strings.Join(inhibNames, ", "))
+}
+
+// Triage performs full auto-diagnosis: discovers services, checks health,
+// analyzes errors for problematic services, and includes disk pressure.
+func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
+	services = a.resolveServices(ctx, services)
+
+	excl := a.triageApplyExclusions(ctx, services)
+	services = excl.services
+
+	var b strings.Builder
+	now := time.Now()
+
+	if a.IsDevMode() {
+		b.WriteString("=== DEV MODE ACTIVE — observation only ===\n\n")
+	}
+
+	if len(services) == 0 {
+		fmt.Fprintf(&b, "Server Triage Report\nHealth: unknown | Time: %s\n\n", now.Format("2006-01-02 15:04"))
+		if len(excl.excluded) > 0 {
+			fmt.Fprintf(&b, "All services dev-excluded (%d): %s\n", len(excl.excluded), strings.Join(excl.excluded, ", "))
+		} else {
+			b.WriteString("No Docker services found.\n")
+		}
+		a.appendDiskPressure(ctx, &b)
+		return b.String()
+	}
+
+	statuses := a.status.GetAllStatuses(ctx, services)
+	statuses = a.resources.GetResourceUsage(ctx, statuses)
+
+	for i, s := range statuses {
+		statuses[i].HealthcheckURL = s.DozorLabel("healthcheck.url")
+		statuses[i].AlertChannel = s.DozorLabel("alert.channel")
+	}
+
+	statuses = triageRunHealthchecks(ctx, statuses)
+	statuses = a.triageEnrichErrors(ctx, statuses)
+
+	problematic, healthy, inhibitedServices := triageClassifyStatuses(a.alerts, statuses)
+
+	overallHealth := triageOverallHealth(problematic)
+	fmt.Fprintf(&b, "Server Triage Report\nHealth: %s | Time: %s\n", overallHealth, now.Format("2006-01-02 15:04"))
+
+	if triageHasGroups(statuses) {
 		a.writeGroupedTriage(ctx, &b, statuses)
 	} else {
 		a.writeFlatTriage(ctx, &b, problematic, healthy)
 	}
 
 	a.appendDiskPressure(ctx, &b)
+	triageWriteInhibited(&b, inhibitedServices)
 
-	if len(inhibitedServices) > 0 {
-		var inhibNames []string
-		for name := range inhibitedServices {
-			inhibNames = append(inhibNames, name)
-		}
-		fmt.Fprintf(&b, "\nInhibited by dependency (%d): %s (parent service down)\n", len(inhibNames), strings.Join(inhibNames, ", "))
+	if len(excl.overridden) > 0 {
+		fmt.Fprintf(&b, "\nP0 OVERRIDE — dev-excluded but DOWN: %s\n", strings.Join(excl.overridden, ", "))
 	}
-
-	if len(overridden) > 0 {
-		fmt.Fprintf(&b, "\nP0 OVERRIDE — dev-excluded but DOWN: %s\n", strings.Join(overridden, ", "))
-	}
-	if len(excluded) > 0 {
-		fmt.Fprintf(&b, "\nDev-excluded (%d): %s\n", len(excluded), strings.Join(excluded, ", "))
+	if len(excl.excluded) > 0 {
+		fmt.Fprintf(&b, "\nDev-excluded (%d): %s\n", len(excl.excluded), strings.Join(excl.excluded, ", "))
 	}
 
 	return b.String()
@@ -195,9 +276,6 @@ func ExtractIssues(report string) []TriageIssue {
 	var issues []TriageIssue
 	for _, line := range strings.Split(report, "\n") {
 		line = strings.TrimSpace(line)
-		// Match lines like "[CRITICAL] redis — exited, 3 restarts"
-		// or "[WARNING] api-service — running, 12 errors"
-		// or "[ERROR] postgres — running, 5 errors"
 		for _, prefix := range []string{"[CRITICAL] ", "[ERROR] ", "[WARNING] "} {
 			if !strings.HasPrefix(line, prefix) {
 				continue
@@ -254,12 +332,15 @@ func (a *ServerAgent) writeGroupedTriage(ctx context.Context, b *strings.Builder
 
 // writeServiceDetail renders a single problematic service with tag, details, and analysis.
 func (a *ServerAgent) writeServiceDetail(ctx context.Context, b *strings.Builder, s ServiceStatus) {
-	tag := "WARNING"
 	level := s.GetAlertLevel()
-	if level == AlertCritical {
-		tag = "CRITICAL"
-	} else if level == AlertError {
-		tag = "ERROR"
+	var tag string
+	switch level {
+	case AlertCritical:
+		tag = displayIconCritical
+	case AlertError:
+		tag = logLevelError
+	default:
+		tag = displayIconWarning
 	}
 
 	fmt.Fprintf(b, "[%s] %s", tag, s.Name)
@@ -279,33 +360,42 @@ func (a *ServerAgent) writeServiceDetail(ctx context.Context, b *strings.Builder
 		fmt.Fprintf(b, "  Alert channel: %s\n", s.AlertChannel)
 	}
 
-	// Run log analysis for this service
-	if s.State == StateRunning && s.ErrorCount > 0 {
-		entries := a.logs.GetLogs(ctx, s.Name, a.cfg.LogLines, false)
-		var extra []ErrorPattern
-		if p := s.DozorLabel("logs.pattern"); p != "" {
-			extra = append(extra, LabelPattern(p))
-		}
-		analysis := AnalyzeLogs(entries, s.Name, extra...)
-		for _, issue := range analysis.Issues {
-			fmt.Fprintf(b, "  Issue: %s (%d occurrences)\n", issue.Description, issue.Count)
-			fmt.Fprintf(b, "  Action: %s\n", issue.Action)
-		}
-	}
+	a.writeServiceAnalysis(ctx, b, s)
+	writeServiceRecentErrors(b, s.RecentErrors)
+}
 
-	// Recent error lines (max 5)
-	if len(s.RecentErrors) > 0 {
-		b.WriteString("  Recent errors:\n")
-		for _, e := range s.RecentErrors {
-			ts := ""
-			if e.Timestamp != nil {
-				ts = e.Timestamp.Format("15:04:05")
-			}
-			msg := e.Message
-			if len(msg) > 150 {
-				msg = msg[:150] + "..."
-			}
-			fmt.Fprintf(b, "    [%s] %s\n", ts, msg)
+// writeServiceAnalysis runs log analysis for a running service with errors and writes issues.
+func (a *ServerAgent) writeServiceAnalysis(ctx context.Context, b *strings.Builder, s ServiceStatus) {
+	if s.State != StateRunning || s.ErrorCount == 0 {
+		return
+	}
+	entries := a.logs.GetLogs(ctx, s.Name, a.cfg.LogLines, false)
+	var extra []ErrorPattern
+	if p := s.DozorLabel("logs.pattern"); p != "" {
+		extra = append(extra, LabelPattern(p))
+	}
+	analysis := AnalyzeLogs(entries, s.Name, extra...)
+	for _, issue := range analysis.Issues {
+		fmt.Fprintf(b, "  Issue: %s (%d occurrences)\n", issue.Description, issue.Count)
+		fmt.Fprintf(b, "  Action: %s\n", issue.Action)
+	}
+}
+
+// writeServiceRecentErrors writes recent error lines for a service.
+func writeServiceRecentErrors(b *strings.Builder, errors []LogEntry) {
+	if len(errors) == 0 {
+		return
+	}
+	b.WriteString("  Recent errors:\n")
+	for _, e := range errors {
+		ts := ""
+		if e.Timestamp != nil {
+			ts = e.Timestamp.Format("15:04:05")
 		}
+		msg := e.Message
+		if len(msg) > triageErrorMsgMaxLen {
+			msg = msg[:triageErrorMsgMaxLen] + "..."
+		}
+		fmt.Fprintf(b, "    [%s] %s\n", ts, msg)
 	}
 }

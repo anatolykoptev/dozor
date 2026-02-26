@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+const (
+	// minFlapWindowSize is the minimum number of samples required by the flap detector.
+	minFlapWindowSize = 3
+)
+
 // FailureTracker requires N consecutive failures before confirming an alert.
 // A single success resets the counter. Thread-safe.
 type FailureTracker struct {
@@ -70,8 +75,8 @@ type FlapDetector struct {
 
 // NewFlapDetector creates a detector with the given window size and thresholds.
 func NewFlapDetector(windowSize int, highPct, lowPct float64) *FlapDetector {
-	if windowSize < 3 {
-		windowSize = 3
+	if windowSize < minFlapWindowSize {
+		windowSize = minFlapWindowSize
 	}
 	return &FlapDetector{
 		history:  make(map[string][]bool),
@@ -95,8 +100,8 @@ func (fd *FlapDetector) Record(key string, ok bool) FlapStatus {
 	}
 	fd.history[key] = h
 
-	// Need at least 3 samples to detect flapping.
-	if len(h) < 3 {
+	// Need at least minFlapWindowSize samples to detect flapping.
+	if len(h) < minFlapWindowSize {
 		return FlapStatus{Flapping: fd.flapping[key]}
 	}
 

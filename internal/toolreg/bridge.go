@@ -7,6 +7,11 @@ import (
 	"github.com/anatolykoptev/dozor/internal/tools"
 )
 
+const (
+	// defaultLogLines is the default number of log lines for bridge tools.
+	defaultLogLines = 50
+)
+
 // RegisterAll registers all engine methods as tools in the registry.
 func RegisterAll(r *Registry, agent *engine.ServerAgent) {
 	r.Register(&inspectTool{agent: agent})
@@ -297,7 +302,7 @@ func (t *servicesTool) Execute(ctx context.Context, args map[string]any) (string
 	return tools.HandleServices(ctx, t.agent, engine.ServicesInput{
 		Action:  getString(args, "action"),
 		Service: getString(args, "service"),
-		Lines:   getInt(args, "lines", 50),
+		Lines:   getInt(args, "lines", defaultLogLines),
 	})
 }
 
@@ -349,6 +354,6 @@ func (t *remoteTool) Execute(ctx context.Context, args map[string]any) (string, 
 	return tools.HandleRemote(ctx, t.agent, engine.RemoteInput{
 		Action:  getString(args, "action"),
 		Service: getString(args, "service"),
-		Lines:   getInt(args, "lines", 50),
+		Lines:   getInt(args, "lines", defaultLogLines),
 	})
 }

@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+const (
+	// httpServerErrorMin is the minimum HTTP status code for a server error.
+	httpServerErrorMin = 500
+	// remoteSSLWarnHours is the number of hours before SSL expiry to warn.
+	remoteSSLWarnHours = 14 * 24
+)
+
 // CheckRemoteServer monitors a remote server via HTTP and SSH.
 func CheckRemoteServer(ctx context.Context, cfg Config) *RemoteServerStatus {
 	if cfg.RemoteHost == "" && cfg.RemoteURL == "" {
@@ -31,11 +38,11 @@ func CheckRemoteServer(ctx context.Context, cfg Config) *RemoteServerStatus {
 				Level:           AlertCritical,
 				Service:         cfg.RemoteURL,
 				Title:           "Site unreachable",
-				Description:     fmt.Sprintf("%s is not responding to HTTP requests", cfg.RemoteURL),
+				Description:     cfg.RemoteURL + " is not responding to HTTP requests",
 				SuggestedAction: "Check nginx and upstream services on the remote server",
 				Timestamp:       now,
 			})
-		} else if httpStatus >= 500 {
+		} else if httpStatus >= httpServerErrorMin {
 			status.Alerts = append(status.Alerts, Alert{
 				Level:           AlertError,
 				Service:         cfg.RemoteURL,
@@ -46,12 +53,12 @@ func CheckRemoteServer(ctx context.Context, cfg Config) *RemoteServerStatus {
 			})
 		}
 
-		if sslExpiry != nil && time.Until(*sslExpiry) < 14*24*time.Hour {
+		if sslExpiry != nil && time.Until(*sslExpiry) < remoteSSLWarnHours*time.Hour {
 			status.Alerts = append(status.Alerts, Alert{
 				Level:           AlertWarning,
 				Service:         cfg.RemoteURL,
 				Title:           "SSL certificate expiring soon",
-				Description:     fmt.Sprintf("SSL certificate expires on %s", sslExpiry.Format("2006-01-02")),
+				Description:     "SSL certificate expires on " + sslExpiry.Format("2006-01-02"),
 				SuggestedAction: "Renew SSL certificate",
 				Timestamp:       now,
 			})
@@ -67,11 +74,11 @@ func CheckRemoteServer(ctx context.Context, cfg Config) *RemoteServerStatus {
 			res := t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null", svc))
 			state := strings.TrimSpace(res.Stdout)
 			if state == "" {
-				state = "unknown"
+				state = string(StateUnknown)
 			}
 			status.Services[svc] = state
 
-			if state != "active" {
+			if state != stateActive {
 				status.Alerts = append(status.Alerts, Alert{
 					Level:           AlertError,
 					Service:         svc,
@@ -115,11 +122,11 @@ func RemoteServiceStatus(ctx context.Context, cfg Config) string {
 		res := t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null", svc))
 		state := strings.TrimSpace(res.Stdout)
 		if state == "" {
-			state = "unknown"
+			state = string(StateUnknown)
 		}
 
 		icon := "OK"
-		if state != "active" {
+		if state != stateActive {
 			icon = "!!"
 		}
 		fmt.Fprintf(&b, "[%s] %s: %s\n", icon, svc, state)
@@ -136,7 +143,7 @@ func RemoteServiceStatus(ctx context.Context, cfg Config) string {
 func RemoteRestart(ctx context.Context, cfg Config, service string) string {
 	t := newRemoteTransport(cfg)
 
-	res := t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo systemctl restart %s", service))
+	res := t.ExecuteUnsafe(ctx, "sudo systemctl restart "+service)
 	if !res.Success {
 		return fmt.Sprintf("Failed to restart %s: %s", service, res.Output())
 	}
@@ -144,7 +151,7 @@ func RemoteRestart(ctx context.Context, cfg Config, service string) string {
 	// Verify state after restart
 	res = t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null", service))
 	state := strings.TrimSpace(res.Stdout)
-	if state == "active" {
+	if state == stateActive {
 		return fmt.Sprintf("Service %s restarted successfully (active).", service)
 	}
 	return fmt.Sprintf("Service %s restarted but state is: %s", service, state)
@@ -160,7 +167,7 @@ func RemoteLogs(ctx context.Context, cfg Config, service string, lines int) stri
 	}
 	output := res.Output()
 	if output == "" {
-		return fmt.Sprintf("No logs found for %s", service)
+		return "No logs found for " + service
 	}
 	return fmt.Sprintf("Logs for %s on %s (last %d lines):\n\n%s", service, cfg.RemoteHost, lines, output)
 }
@@ -219,7 +226,7 @@ func FormatRemoteAlerts(status *RemoteServerStatus) string {
 func checkHTTP(ctx context.Context, url string) (int, *time.Time) {
 	client := newHTTPClient(10 * time.Second)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, nil
 	}

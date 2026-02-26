@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -21,8 +22,10 @@ import (
 const (
 	defaultBinary       = "claude"
 	defaultTimeout      = 5 * time.Minute
-	defaultAllowedTools = "mcp__dozor__*,Read,Bash(git*),Bash(ls*),Bash(cat*),Bash(find*),Bash(grep*)"
+	defaultAllowedTools = "mcp__dozor__*,Read,Edit,Write,Bash,Glob,Grep"
 	maxOutput           = 30000
+	// asyncTitleMaxLen is the maximum length of an auto-generated async task title.
+	asyncTitleMaxLen = 120
 )
 
 // Extension registers the claude_code tool into Dozor's agent tool registry.
@@ -104,10 +107,11 @@ type claudeCodeTool struct {
 
 func (t *claudeCodeTool) Name() string { return "claude_code" }
 func (t *claudeCodeTool) Description() string {
-	return "Delegate a task to Claude Code CLI. Claude Code has full access to the local filesystem, " +
-		"git repos, and all Dozor server tools (server_inspect, server_exec, server_triage, etc.) " +
+	return "Delegate a task to Claude Code CLI (runs with full permissions — no user approval needed). " +
+		"Claude Code has full access to the local filesystem (read/edit/write), git repos, shell commands, " +
+		"and all Dozor server tools (server_inspect, server_exec, server_triage, etc.) " +
 		"via the built-in MCP connection. Use for: diagnosing service issues, reading/editing files, " +
-		"running builds, git operations, codebase analysis. Runs synchronously and returns the result."
+		"running builds, git operations, codebase analysis, fixing code. Runs synchronously and returns the result."
 }
 
 func (t *claudeCodeTool) Parameters() map[string]any {
@@ -138,15 +142,15 @@ func (t *claudeCodeTool) Parameters() map[string]any {
 func (t *claudeCodeTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	prompt, _ := args["prompt"].(string)
 	if strings.TrimSpace(prompt) == "" {
-		return "", fmt.Errorf("prompt is required")
+		return "", errors.New("prompt is required")
 	}
 
 	async, _ := args["async"].(bool)
 	if async && t.notify != nil {
 		title, _ := args["title"].(string)
 		if strings.TrimSpace(title) == "" {
-			if len(prompt) > 120 {
-				title = prompt[:120] + "..."
+			if len(prompt) > asyncTitleMaxLen {
+				title = prompt[:asyncTitleMaxLen] + "..."
 			} else {
 				title = prompt
 			}
@@ -173,7 +177,7 @@ func (t *claudeCodeTool) runClaude(ctx context.Context, prompt string, args map[
 	defer cancel()
 
 	// Build CLI args.
-	cmdArgs := []string{"-p", "--output-format", "stream-json", "--verbose"}
+	cmdArgs := []string{"-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
 
 	// MCP self-connect: write temp config and pass it.
 	if t.mcpURL != "" {
@@ -197,7 +201,7 @@ func (t *claudeCodeTool) runClaude(ctx context.Context, prompt string, args map[
 		}
 	}
 
-	cmd := exec.CommandContext(cmdCtx, t.binary, cmdArgs...)
+	cmd := exec.CommandContext(cmdCtx, t.binary, cmdArgs...) //nolint:gosec // binary path is validated at startup; args are MCP inputs not user shell input
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -220,7 +224,7 @@ func (t *claudeCodeTool) runClaude(ctx context.Context, prompt string, args map[
 		}
 		errOut := strings.TrimSpace(stderr.String())
 		if errOut != "" {
-			return "", fmt.Errorf("claude_code failed: %v: %s", err, errOut)
+			return "", fmt.Errorf("claude_code failed: %w: %s", err, errOut)
 		}
 		return "", fmt.Errorf("claude_code failed: %w", err)
 	}

@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -61,7 +62,7 @@ func (m *ClientManager) Discover(ctx context.Context, agentID string) (string, e
 	}
 
 	url := strings.TrimRight(agent.URL, "/") + "/.well-known/agent-card.json"
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
 	}
@@ -76,7 +77,7 @@ func (m *ClientManager) Discover(ctx context.Context, agentID string) (string, e
 	if err != nil {
 		return "", err
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("discover %s: HTTP %d", agentID, resp.StatusCode)
 	}
 
@@ -116,7 +117,7 @@ func (m *ClientManager) Call(ctx context.Context, agentID, message string) (stri
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
 	if err != nil {
 		return "", err
 	}
@@ -139,7 +140,7 @@ func (m *ClientManager) Call(ctx context.Context, agentID, message string) (stri
 	if err != nil {
 		return "", err
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("call %s: HTTP %d: %s", agentID, resp.StatusCode, string(respBody))
 	}
 
@@ -179,7 +180,7 @@ func extractResponseText(data []byte) (string, error) {
 	}
 
 	if task.Status.State == "failed" {
-		return "", fmt.Errorf("remote task failed")
+		return "", errors.New("remote task failed")
 	}
 
 	var texts []string
@@ -189,7 +190,7 @@ func extractResponseText(data []byte) (string, error) {
 		}
 	}
 	if len(texts) == 0 {
-		return "", fmt.Errorf("empty response from agent")
+		return "", errors.New("empty response from agent")
 	}
 	return strings.Join(texts, ""), nil
 }

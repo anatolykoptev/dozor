@@ -6,6 +6,13 @@ import (
 	"strings"
 )
 
+const (
+	// codeBlockMatchGroups is the expected number of regex match groups for code block extraction.
+	codeBlockMatchGroups = 3
+	// htmlTagMinLen is the minimum length of an HTML tag (e.g. "<b>").
+	htmlTagMinLen = 3
+)
+
 // --- Compact LLM output for Telegram ---
 
 // Precompiled regexes for CompactForTelegram.
@@ -285,7 +292,7 @@ func extractCodeBlocks(text string) codeBlockMatch {
 		match := re.FindStringSubmatch(m)
 		lang := ""
 		code := m
-		if len(match) >= 3 {
+		if len(match) >= codeBlockMatchGroups {
 			lang = match[1]
 			code = match[2]
 		}
@@ -398,7 +405,7 @@ func unclosedTags(html string) []string {
 		tag := html[lt : gt+1]
 		i = gt + 1
 
-		if len(tag) < 3 {
+		if len(tag) < htmlTagMinLen {
 			continue
 		}
 

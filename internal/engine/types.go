@@ -12,6 +12,13 @@ const (
 	AlertInfo     AlertLevel = "info"
 )
 
+// Display icons used in formatted output across packages.
+const (
+	displayIconCritical = "CRITICAL"
+	displayIconWarning  = "WARNING"
+	displayIconExpired  = "EXPIRED"
+)
+
 // ContainerState represents docker container states.
 type ContainerState string
 
@@ -52,7 +59,7 @@ type LogEntry struct {
 
 // IsErrorLevel returns true if the log entry is ERROR, FATAL, or CRITICAL.
 func (e LogEntry) IsErrorLevel() bool {
-	return e.Level == "ERROR" || e.Level == "FATAL" || e.Level == "CRITICAL"
+	return e.Level == logLevelError || e.Level == logLevelFatal || e.Level == logLevelCritical
 }
 
 // ServiceStatus for a docker container.
@@ -61,6 +68,7 @@ type ServiceStatus struct {
 	State         ContainerState    `json:"state"`
 	Health        string            `json:"health,omitempty"`
 	Uptime        string            `json:"uptime,omitempty"`
+	StartedAt     time.Time         `json:"started_at,omitempty"`
 	RestartCount  int               `json:"restart_count"`
 	CPUPercent    *float64          `json:"cpu_percent,omitempty"`
 	MemoryMB      *float64          `json:"memory_mb,omitempty"`
@@ -139,34 +147,34 @@ type DiagnosticReport struct {
 func (r *DiagnosticReport) CalculateHealth() {
 	for _, s := range r.Services {
 		if s.State != StateRunning {
-			r.OverallHealth = "critical"
+			r.OverallHealth = string(AlertCritical)
 			return
 		}
 	}
 	for _, a := range r.Alerts {
 		if a.Level == AlertCritical {
-			r.OverallHealth = "critical"
+			r.OverallHealth = string(AlertCritical)
 			return
 		}
 	}
 	for _, a := range r.Alerts {
 		if a.Level == AlertError {
-			r.OverallHealth = "degraded"
+			r.OverallHealth = healthDegraded
 			return
 		}
 	}
 	for _, a := range r.Alerts {
 		if a.Level == AlertWarning {
-			r.OverallHealth = "warning"
+			r.OverallHealth = string(AlertWarning)
 			return
 		}
 	}
-	r.OverallHealth = "healthy"
+	r.OverallHealth = healthHealthy
 }
 
 // NeedsAttention returns true if health is critical or degraded.
 func (r DiagnosticReport) NeedsAttention() bool {
-	return r.OverallHealth == "critical" || r.OverallHealth == "degraded"
+	return r.OverallHealth == string(AlertCritical) || r.OverallHealth == healthDegraded
 }
 
 // DeployResult from starting a deploy.

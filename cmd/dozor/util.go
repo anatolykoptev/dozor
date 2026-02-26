@@ -3,13 +3,20 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+)
+
+const (
+	// hashTruncLen is the max characters of the hex hash returned by hashString.
+	hashTruncLen = 16
+	// webhookSuccessMaxStatus is the upper bound (exclusive) of successful HTTP status codes.
+	webhookSuccessMaxStatus = 300
 )
 
 // hasFlag checks if a flag exists in os.Args.
@@ -80,9 +87,9 @@ func loadDotenv(path string) {
 
 // hashString returns a short hex hash of a string (for change detection).
 func hashString(s string) string {
-	h := fmt.Sprintf("%x", []byte(s))
-	if len(h) > 16 {
-		return h[:16]
+	h := hex.EncodeToString([]byte(s))
+	if len(h) > hashTruncLen {
+		return h[:hashTruncLen]
 	}
 	return h
 }
@@ -90,7 +97,7 @@ func hashString(s string) string {
 // sendWebhook POSTs a JSON payload {message: ...} to the given URL.
 func sendWebhook(ctx context.Context, url, text string) {
 	body, _ := json.Marshal(map[string]string{"message": text})
-	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
 	if err != nil {
 		slog.Error("webhook request build failed", slog.Any("error", err))
 		return
@@ -102,7 +109,7 @@ func sendWebhook(ctx context.Context, url, text string) {
 		return
 	}
 	resp.Body.Close()
-	if resp.StatusCode >= 300 {
+	if resp.StatusCode >= webhookSuccessMaxStatus {
 		slog.Error("webhook returned error", slog.Int("status", resp.StatusCode))
 	}
 }

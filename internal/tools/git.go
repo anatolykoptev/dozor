@@ -2,7 +2,7 @@ package tools
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"strings"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
@@ -19,7 +19,7 @@ Defaults to the directory containing docker-compose.yml if no path is given.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.GitInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		if input.Path != "" {
 			if strings.Contains(input.Path, "..") {
-				return nil, engine.TextOutput{}, fmt.Errorf("path must not contain '..'")
+				return nil, engine.TextOutput{}, errors.New("path must not contain '..'")
 			}
 		}
 		status := agent.GetGitStatusAt(ctx, input.Path)

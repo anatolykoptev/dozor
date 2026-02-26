@@ -12,6 +12,11 @@ import (
 	"github.com/anatolykoptev/dozor/internal/toolreg"
 )
 
+const (
+	// maxToolResultLen is the maximum characters for a single tool result before truncation.
+	maxToolResultLen = 30000
+)
+
 // Loop is the core agent loop that processes messages through an LLM with tool calling.
 type Loop struct {
 	provider     provider.Provider
@@ -74,23 +79,9 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 			ToolCalls: resp.ToolCalls,
 		})
 
-		// Warn the agent when approaching the iteration limit so it can escalate proactively.
-		const iterWarnThreshold = 5
-		if iteration == l.maxIters-iterWarnThreshold {
-			slog.Warn("approaching iteration limit, injecting escalation prompt", slog.Int("iteration", iteration))
-			messages = append(messages, provider.Message{
-				Role: "user",
-				Content: fmt.Sprintf(
-					"⚠️ SYSTEM: %d/%d iterations used. You have %d iterations left. "+
-						"If the task is not progressing, IMMEDIATELY call claude_code(async=true) to escalate "+
-						"with: task description, what you tried, and the exact error. "+
-						"Read skill 'claude-escalation' for the prompt template.",
-					iteration, l.maxIters, iterWarnThreshold,
-				),
-			})
-		}
-
 		// Execute each tool call and append results.
+		// Tool responses MUST immediately follow the assistant message with tool_calls
+		// (OpenAI/Gemini API requirement — no other messages in between).
 		for _, tc := range resp.ToolCalls {
 			name := tc.Name
 			if name == "" && tc.Function != nil {
@@ -111,7 +102,7 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 			result, execErr := l.registry.Execute(ctx, name, args)
 			if execErr != nil {
 				errMsg := execErr.Error()
-				result = fmt.Sprintf("Error: %s", errMsg)
+				result = "Error: " + errMsg
 				slog.Warn("tool execution failed", slog.String("tool", name), slog.Any("error", execErr))
 
 				// Detect repeated identical failures — break loop early.
@@ -124,8 +115,8 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 			}
 
 			// Truncate very large results.
-			if len(result) > 30000 {
-				result = result[:30000] + "\n... (truncated)"
+			if len(result) > maxToolResultLen {
+				result = result[:maxToolResultLen] + "\n... (truncated)"
 			}
 
 			callID := tc.ID
@@ -137,6 +128,24 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 				Role:       "tool",
 				Content:    result,
 				ToolCallID: callID,
+			})
+		}
+
+		// Warn the agent when approaching the iteration limit so it can escalate proactively.
+		// Injected AFTER tool responses to preserve the required message ordering:
+		// assistant(tool_calls) → tool(response) → ... → user(warning).
+		const iterWarnThreshold = 5
+		if iteration == l.maxIters-iterWarnThreshold {
+			slog.Warn("approaching iteration limit, injecting escalation prompt", slog.Int("iteration", iteration))
+			messages = append(messages, provider.Message{
+				Role: "user",
+				Content: fmt.Sprintf(
+					"⚠️ SYSTEM: %d/%d iterations used. You have %d iterations left. "+
+						"If the task is not progressing, IMMEDIATELY call claude_code(async=true) to escalate "+
+						"with: task description, what you tried, and the exact error. "+
+						"Read skill 'claude-escalation' for the prompt template.",
+					iteration, l.maxIters, iterWarnThreshold,
+				),
 			})
 		}
 	}

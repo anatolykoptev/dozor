@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+const (
+	// systemdListFieldsMin is the minimum number of fields in a systemctl list-units line.
+	systemdListFieldsMin = 4
+)
+
 // FormatSystemctlProperties parses ActiveEnterTimestamp and MemoryCurrent
 // from "systemctl show" output and appends formatted lines to b.
 func FormatSystemctlProperties(output string, b *strings.Builder) {
@@ -75,7 +80,7 @@ func (a *ServerAgent) systemctlIsActive(ctx context.Context, svc string) string 
 	res = a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("systemctl is-active %s 2>/dev/null", svc))
 	state = strings.TrimSpace(res.Stdout)
 	if state == "" {
-		return "unknown"
+		return string(StateUnknown)
 	}
 	return state
 }
@@ -134,7 +139,7 @@ func (a *ServerAgent) DiscoverUserServices(ctx context.Context) []UserService {
 		}
 		// Format: "unit.service loaded active running Description..."
 		fields := strings.Fields(line)
-		if len(fields) < 4 {
+		if len(fields) < systemdListFieldsMin {
 			continue
 		}
 		unit := fields[0]
@@ -157,6 +162,31 @@ func (a *ServerAgent) DiscoverUserServices(ctx context.Context) []UserService {
 	return services
 }
 
+// portFromExecStart scans an ExecStart string for common --port/-p patterns and returns the port.
+func portFromExecStart(stdout string) int {
+	const maxPortDigits = 6
+	const maxPort = 65536
+	for _, pattern := range []string{"--port=", "--port ", "-p ", ":port="} {
+		idx := strings.Index(stdout, pattern)
+		if idx < 0 {
+			continue
+		}
+		numStart := idx + len(pattern)
+		var numStr strings.Builder
+		for i := numStart; i < len(stdout) && i < numStart+maxPortDigits; i++ {
+			if stdout[i] >= '0' && stdout[i] <= '9' {
+				numStr.WriteByte(stdout[i])
+			} else {
+				break
+			}
+		}
+		if port, err := strconv.Atoi(numStr.String()); err == nil && port > 0 && port < maxPort {
+			return port
+		}
+	}
+	return 0
+}
+
 // detectServicePort tries to find the listening port for a user service.
 func (a *ServerAgent) detectServicePort(ctx context.Context, name string) int {
 	// Check ListenStream from socket unit
@@ -164,13 +194,12 @@ func (a *ServerAgent) detectServicePort(ctx context.Context, name string) int {
 		fmt.Sprintf("systemctl --user show %s.socket --property=ListenStream 2>/dev/null", name))
 	if res.Success {
 		for _, line := range strings.Split(res.Stdout, "\n") {
-			if strings.HasPrefix(line, "ListenStream=") {
-				val := strings.TrimPrefix(line, "ListenStream=")
-				// Could be just a port number or host:port
-				val = strings.TrimSpace(val)
-				if port := extractPort(val); port > 0 {
-					return port
-				}
+			if !strings.HasPrefix(line, "ListenStream=") {
+				continue
+			}
+			val := strings.TrimSpace(strings.TrimPrefix(line, "ListenStream="))
+			if port := extractPort(val); port > 0 {
+				return port
 			}
 		}
 	}
@@ -179,23 +208,8 @@ func (a *ServerAgent) detectServicePort(ctx context.Context, name string) int {
 	res = a.transport.ExecuteUnsafe(ctx,
 		fmt.Sprintf("systemctl --user show %s --property=ExecStart 2>/dev/null", name))
 	if res.Success {
-		stdout := res.Stdout
-		// Look for --port=NNNN or -p NNNN patterns
-		for _, pattern := range []string{"--port=", "--port ", "-p ", ":port="} {
-			if idx := strings.Index(stdout, pattern); idx >= 0 {
-				numStart := idx + len(pattern)
-				numStr := ""
-				for i := numStart; i < len(stdout) && i < numStart+6; i++ {
-					if stdout[i] >= '0' && stdout[i] <= '9' {
-						numStr += string(stdout[i])
-					} else {
-						break
-					}
-				}
-				if port, err := strconv.Atoi(numStr); err == nil && port > 0 && port < 65536 {
-					return port
-				}
-			}
+		if port := portFromExecStart(res.Stdout); port > 0 {
+			return port
 		}
 	}
 	return 0
@@ -224,6 +238,7 @@ func isSystemService(name string) bool {
 	skip := []string{
 		"dbus", "at-spi", "pipewire", "pulseaudio", "xdg",
 		"gvfs", "gnome", "evolution", "tracker", "dconf",
+		"gpg-agent",
 	}
 	lower := strings.ToLower(name)
 	for _, s := range skip {

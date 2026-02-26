@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+const (
+	// certHoursPerDay converts hours to days for certificate expiry calculation.
+	certHoursPerDay = 24
+	// certCriticalDays is the days threshold for CRITICAL cert status.
+	certCriticalDays = 7
+)
+
 // CertInfo describes a single TLS certificate found on the server.
 type CertInfo struct {
 	Domain  string
@@ -101,7 +108,7 @@ func parseCertFile(path, domain string) *CertInfo {
 		return nil
 	}
 
-	days := int(time.Until(cert.NotAfter).Hours() / 24)
+	days := int(time.Until(cert.NotAfter).Hours() / certHoursPerDay)
 	d := domain
 	if len(cert.DNSNames) > 0 {
 		d = cert.DNSNames[0]
@@ -142,13 +149,16 @@ func FormatCerts(certs []CertInfo, warnDays int) string {
 	fmt.Fprintf(&b, "TLS Certificate Inventory (%d found)\n\n", len(certs))
 
 	for _, c := range certs {
-		icon := "OK"
-		if c.Days < 0 {
-			icon = "EXPIRED"
-		} else if c.Days < 7 {
-			icon = "CRITICAL"
-		} else if c.Days < warnDays {
-			icon = "WARNING"
+		var icon string
+		switch {
+		case c.Days < 0:
+			icon = displayIconExpired
+		case c.Days < certCriticalDays:
+			icon = displayIconCritical
+		case c.Days < warnDays:
+			icon = displayIconWarning
+		default:
+			icon = "OK"
 		}
 
 		fmt.Fprintf(&b, "[%s] %s\n", icon, c.Domain)

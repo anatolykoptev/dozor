@@ -33,7 +33,7 @@ func registerExecSecurity(server *mcp.Server, cfg *ExecConfig) {
 				return nil, engine.TextOutput{}, err
 			}
 			return nil, engine.TextOutput{
-				Text: fmt.Sprintf("Exec security mode set to: %s", cfg.Get()),
+				Text: "Exec security mode set to: " + cfg.Get(),
 			}, nil
 
 		default:

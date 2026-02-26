@@ -2,15 +2,12 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -21,9 +18,19 @@ import (
 	"github.com/anatolykoptev/dozor/internal/bus"
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
+	"github.com/anatolykoptev/dozor/internal/session"
 	"github.com/anatolykoptev/dozor/internal/telegram"
 	"github.com/anatolykoptev/dozor/internal/tools"
 	mcpclientExt "github.com/anatolykoptev/dozor/pkg/extensions/mcpclient"
+)
+
+const (
+	// webhookBodyLimit is the maximum bytes read from a webhook POST body.
+	webhookBodyLimit = 32000
+	// kbSearchTimeoutSec is the timeout for KB search during watch triage (seconds).
+	kbSearchTimeoutSec = 30
+	// remoteCheckTimeoutSec is the timeout for checking remote server status (seconds).
+	remoteCheckTimeoutSec = 30
 )
 
 // runGateway starts the full agent: MCP + A2A + Telegram + LLM.
@@ -85,7 +92,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 
 	// 5. A2A protocol.
 	a2aSecret := os.Getenv("DOZOR_A2A_SECRET")
-	a2a.Register(mx, stack.loop, stack.registry, fmt.Sprintf("http://127.0.0.1:%s", port), version, a2aSecret)
+	a2a.Register(mx, stack.loop, stack.registry, "http://127.0.0.1:"+port, version, a2aSecret)
 
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -101,25 +108,39 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		}
 	}
 
-	// 7. Message handler: inbound → agent → outbound.
-	go runMessageLoop(sigCtx, msgBus, stack, adminChatID, approvalsMgr, notifyFn, kbSearcher)
+	// 7. Interactive session manager.
+	sessionMgr := session.NewManager()
+	defer sessionMgr.CloseAll()
+	sessionCfg := session.ConfigFromEnv()
 
-	// 8. Periodic watch (if configured).
+	// 8. Message handler: inbound → agent → outbound.
+	go runMessageLoop(sigCtx, messageLoopDeps{
+		msgBus:       msgBus,
+		stack:        stack,
+		adminChatID:  adminChatID,
+		approvalsMgr: approvalsMgr,
+		notifyFn:     notifyFn,
+		kbSearcher:   kbSearcher,
+		sessionMgr:   sessionMgr,
+		sessionCfg:   sessionCfg,
+	})
+
+	// 9. Periodic watch (if configured).
 	if interval := os.Getenv("DOZOR_WATCH_INTERVAL"); interval != "" {
 		dur, err := time.ParseDuration(interval)
 		if err != nil {
 			slog.Error("invalid DOZOR_WATCH_INTERVAL", slog.String("value", interval))
 		} else {
-			go runGatewayWatch(sigCtx, eng, msgBus, dur, cfg, kbSearcher)
+			go runGatewayWatch(sigCtx, eng, msgBus, dur, cfg, kbSearcher, notifyFn)
 		}
 	}
 
-	// 8b. Fast remote server checks (independent of LLM pipeline).
+	// 9b. Fast remote server checks (independent of LLM pipeline).
 	if cfg.HasRemote() {
 		go runRemoteWatch(sigCtx, cfg, notifyFn)
 	}
 
-	// 9. HTTP server (blocks until shutdown).
+	// 10. HTTP server (blocks until shutdown).
 	startHTTPServer(sigCtx, &http.Server{
 		Addr:         ":" + port,
 		Handler:      mx,
@@ -131,7 +152,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 // registerWebhookHandler adds POST /webhook and POST /webhook/ to the mux.
 func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, 32000))
+		body, err := io.ReadAll(io.LimitReader(r.Body, webhookBodyLimit))
 		if err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
@@ -179,326 +200,4 @@ func resolveAdminChatID() string {
 		return strings.TrimSpace(strings.Split(ids, ",")[0])
 	}
 	return ""
-}
-
-// runMessageLoop processes inbound messages through the agent loop and routes responses.
-func runMessageLoop(ctx context.Context, msgBus *bus.Bus, stack *agentStack, adminChatID string, approvalsMgr *approvals.Manager, notifyFn func(string), kbSearcher *mcpclient.KBSearcher) {
-	for {
-		msg, ok := msgBus.ConsumeInbound(ctx)
-		if !ok {
-			return
-		}
-		slog.Info("processing message",
-			slog.String("channel", msg.Channel),
-			slog.String("sender", msg.SenderID))
-
-		// Check if this is a command approval response ("yes exec-XXXXXXXX" / "no exec-XXXXXXXX").
-		if approvalsMgr != nil {
-			if id, approved, ok := approvals.ParseResponse(msg.Text); ok {
-				if approvalsMgr.Resolve(id, approved) {
-					verdict := "✅ Command approved"
-					if !approved {
-						verdict = "❌ Command rejected"
-					}
-					msgBus.PublishOutbound(bus.Message{
-						ID:        msg.ID + "-approval-ack",
-						Channel:   "telegram",
-						SenderID:  "dozor",
-						ChatID:    msg.ChatID,
-						Text:      verdict,
-						Timestamp: time.Now(),
-					})
-					continue
-				}
-			}
-		}
-
-		if msg.Channel == "telegram" && msg.ChatID != "" {
-			msgBus.PublishOutbound(bus.Message{
-				ID:        msg.ID + "-ack",
-				Channel:   "telegram",
-				SenderID:  "dozor",
-				ChatID:    msg.ChatID,
-				Text:      "⏳ Processing...",
-				Timestamp: time.Now(),
-			})
-		}
-
-		response, err := stack.loop.Process(ctx, msg.Text)
-		if err != nil {
-			slog.Error("agent processing failed", slog.Any("error", err))
-			if strings.Contains(err.Error(), "max tool iterations reached") {
-				response = "⚠️ Max iterations reached. Escalating to Claude Code for deep analysis..."
-				go autoEscalateToClaudeCode(ctx, stack, msg.Text, notifyFn)
-			} else {
-				response = fmt.Sprintf("Error: %s", err.Error())
-			}
-		}
-
-		// Auto-save resolved watch incidents to knowledge base.
-		if kbSearcher != nil && msg.SenderID == "watch" && err == nil && response != "" {
-			content := "Auto-resolved incident:\n\nTriage:\n" + msg.Text + "\n\nResolution:\n" + response
-			go func() {
-				saveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				if saveErr := kbSearcher.Save(saveCtx, content); saveErr != nil {
-					slog.Warn("kb auto-save failed", slog.Any("error", saveErr))
-				} else {
-					slog.Info("kb auto-save: incident resolution saved")
-				}
-			}()
-		}
-
-		msgBus.PublishOutbound(bus.Message{
-			ID:        msg.ID + "-reply",
-			Channel:   msg.Channel,
-			SenderID:  "dozor",
-			ChatID:    msg.ChatID,
-			Text:      response,
-			Timestamp: time.Now(),
-		})
-
-		if msg.Channel == "internal" && adminChatID != "" {
-			msgBus.PublishOutbound(bus.Message{
-				ID:        msg.ID + "-tg-notify",
-				Channel:   "telegram",
-				SenderID:  "dozor",
-				ChatID:    adminChatID,
-				Text:      response,
-				Timestamp: time.Now(),
-			})
-		}
-	}
-}
-
-// autoEscalateToClaudeCode collects recent logs and delegates the task to Claude Code.
-// Called in a goroutine when the agent loop hits max iterations.
-func autoEscalateToClaudeCode(ctx context.Context, stack *agentStack, originalTask string, notify func(string)) {
-	// Collect last 60 lines of dozor logs for context.
-	out, err := exec.CommandContext(ctx,
-		"journalctl", "--user", "-u", "dozor", "-n", "60", "--no-pager", "--output=short").Output()
-	logSnippet := string(out)
-	if err != nil || len(logSnippet) == 0 {
-		logSnippet = "(logs unavailable)"
-	}
-
-	prompt := fmt.Sprintf(
-		"## Task\n%s\n\n"+
-		"## What happened\n"+
-		"Dozor agent was executing a task and exhausted the tool iteration limit.\n"+
-		"The task was not completed. Deep analysis and resolution required.\n\n"+
-		"## Recent Dozor logs\n%s\n\n"+
-		"## Instructions\n"+
-		"1. Analyze the logs and identify where the agent got stuck\n"+
-		"2. Determine the root cause\n"+
-		"3. Fix the problem or propose a concrete action plan\n"+
-		"4. Execute any necessary commands",
-		originalTask, logSnippet)
-
-	slog.Info("escalating to claude_code after max iterations")
-	shortTask := originalTask
-	if len(shortTask) > 100 {
-		shortTask = shortTask[:100] + "..."
-	}
-	result, execErr := stack.registry.Execute(ctx, "claude_code", map[string]any{
-		"prompt": prompt,
-		"async":  true,
-		"title":  "⚠️ Auto-escalation: max iterations exceeded\n" + shortTask,
-	})
-	if execErr != nil {
-		slog.Error("claude_code escalation failed", slog.Any("error", execErr))
-		if notify != nil {
-			notify(fmt.Sprintf("❌ Claude Code escalation failed: %s", execErr.Error()))
-		}
-		return
-	}
-	slog.Info("claude_code escalation result", slog.String("result", result))
-}
-
-// runGatewayWatch runs periodic triage and feeds results through the message bus.
-func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, interval time.Duration, cfg engine.Config, kbSearcher *mcpclient.KBSearcher) {
-	slog.Info("gateway watch started", slog.String("interval", interval.String()))
-	time.Sleep(30 * time.Second) // let everything boot
-	gatewayWatchTick(ctx, eng, msgBus, cfg, kbSearcher)
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("gateway watch stopped")
-			return
-		case <-ticker.C:
-			gatewayWatchTick(ctx, eng, msgBus, cfg, kbSearcher)
-		}
-	}
-}
-
-func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, cfg engine.Config, kbSearcher *mcpclient.KBSearcher) {
-	slog.Info("gateway watch: running triage", slog.Bool("dev_mode", eng.IsDevMode()))
-	result := eng.Triage(ctx, nil)
-
-	// Append remote server status to triage results.
-	if cfg.HasRemote() {
-		remoteCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		remoteStatus := engine.CheckRemoteServer(remoteCtx, cfg)
-		cancel()
-		if remoteStatus != nil && len(remoteStatus.Alerts) > 0 {
-			remoteText := engine.FormatRemoteAlerts(remoteStatus)
-			if remoteText != "" {
-				if result == "" {
-					result = remoteText
-				} else {
-					result += "\n\n" + remoteText
-				}
-			}
-		}
-	}
-
-	if result == "" {
-		slog.Info("gateway watch: all healthy")
-		return
-	}
-
-	var prompt string
-	if eng.IsDevMode() {
-		prompt = "Periodic health check (DEV MODE — observe only, do NOT take any corrective action):\n\n"
-	} else if _, hasKB := cfg.MCPServers[cfg.KBServer]; hasKB && cfg.KBServer != "" {
-		prompt = "Periodic health check detected issues. First use kb_search to check for similar past incidents and proven solutions, then analyze and take corrective action if safe:\n\n"
-	} else {
-		prompt = "Periodic health check detected issues. Analyze and take corrective action if safe:\n\n"
-	}
-
-	// Enrich prompt with KB context: search for similar past incidents.
-	if kbSearcher != nil {
-		issues := engine.ExtractIssues(result)
-		if len(issues) > 0 {
-			// Build a focused search query from issue descriptions.
-			var queries []string
-			for _, issue := range issues {
-				queries = append(queries, issue.Description)
-			}
-			query := strings.Join(queries, "; ")
-			if len(query) > 500 {
-				query = query[:500]
-			}
-
-			searchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			kbResult, err := kbSearcher.Search(searchCtx, query, 3)
-			cancel()
-
-			if err != nil {
-				slog.Warn("kb search during triage failed", slog.Any("error", err))
-			} else if !strings.Contains(kbResult, "No relevant knowledge found") {
-				prompt += "Relevant past incidents from knowledge base:\n" + kbResult + "\n\n"
-				slog.Info("gateway watch: enriched triage with KB context", slog.Int("issues", len(issues)))
-			}
-		}
-	}
-
-	slog.Info("gateway watch: issues detected, routing to agent")
-	msgBus.PublishInbound(bus.Message{
-		ID:        fmt.Sprintf("watch-%d", time.Now().UnixMilli()),
-		Channel:   "internal",
-		SenderID:  "watch",
-		ChatID:    "watch",
-		Text:      prompt + result,
-		Timestamp: time.Now(),
-	})
-}
-
-// runRemoteWatch runs fast, independent remote server checks on a short interval.
-// Sends CRITICAL/ERROR alerts directly to Telegram, bypassing the LLM pipeline.
-func runRemoteWatch(ctx context.Context, cfg engine.Config, notify func(string)) {
-	interval := cfg.RemoteCheckInterval
-	slog.Info("remote watch started",
-		slog.String("interval", interval.String()),
-		slog.String("url", cfg.RemoteURL),
-		slog.String("host", cfg.RemoteHost))
-
-	const repeatInterval = 30 * time.Minute
-
-	// Track last alert hash and when it was last sent.
-	var lastAlertHash string
-	var lastAlertTime time.Time
-
-	// Consecutive failure confirmation + flap detection.
-	ft := engine.NewFailureTracker(cfg.AlertConfirmCount)
-	fd := engine.NewFlapDetector(cfg.FlapWindow, cfg.FlapHigh, cfg.FlapLow)
-
-	time.Sleep(15 * time.Second) // let services boot
-
-	remoteCheckTick(ctx, cfg, notify, &lastAlertHash, &lastAlertTime, repeatInterval, ft, fd)
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("remote watch stopped")
-			return
-		case <-ticker.C:
-			remoteCheckTick(ctx, cfg, notify, &lastAlertHash, &lastAlertTime, repeatInterval, ft, fd)
-		}
-	}
-}
-
-func remoteCheckTick(ctx context.Context, cfg engine.Config, notify func(string), lastHash *string, lastTime *time.Time, repeatAfter time.Duration, ft *engine.FailureTracker, fd *engine.FlapDetector) {
-	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	status := engine.CheckRemoteServer(checkCtx, cfg)
-	if status == nil {
-		return
-	}
-
-	if len(status.Alerts) == 0 {
-		// Healthy — reset confirmation and flap state.
-		if *lastHash != "" {
-			slog.Info("remote watch: recovered, clearing alert state")
-			*lastHash = ""
-		}
-		// Record success for all previously tracked keys.
-		ft.RecordSuccess("remote")
-		fd.Record("remote", true)
-		slog.Info("remote watch: healthy")
-		return
-	}
-
-	// Run alerts through confirmation + flap detection.
-	flapStatus := fd.Record("remote", false)
-	if flapStatus.Flapping {
-		slog.Info("remote watch: alert suppressed (flapping)",
-			slog.Float64("change_rate", flapStatus.ChangeRate))
-		return
-	}
-
-	confirmed, count := ft.RecordFailure("remote")
-	if !confirmed {
-		slog.Info("remote watch: alert suppressed (awaiting confirmation)",
-			slog.Int("failures", count),
-			slog.Int("threshold", cfg.AlertConfirmCount))
-		return
-	}
-
-	msg := engine.FormatRemoteAlerts(status)
-	if msg == "" {
-		return
-	}
-
-	h := sha256.Sum256([]byte(msg))
-	hash := hex.EncodeToString(h[:8])
-
-	now := time.Now()
-	if hash == *lastHash && now.Sub(*lastTime) < repeatAfter {
-		slog.Info("remote watch: same alert, suppressed (dedup)")
-		return
-	}
-
-	// New alert or repeat interval elapsed.
-	*lastHash = hash
-	*lastTime = now
-
-	slog.Warn("remote watch: alerting", slog.String("hash", hash))
-	notify(msg)
 }

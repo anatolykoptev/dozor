@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+const (
+	// maxRecentErrors is the maximum number of recent errors to keep per service.
+	maxRecentErrors = 5
+)
+
 // ServerAgent orchestrates all collectors for server diagnostics.
 type ServerAgent struct {
 	cfg       Config
@@ -84,6 +89,24 @@ func (a *ServerAgent) resolveServices(ctx context.Context, services []string) []
 	return a.status.DiscoverServices(ctx)
 }
 
+// enrichDiagnoseStatuses runs healthcheck probes and error enrichment on statuses.
+func (a *ServerAgent) enrichDiagnoseStatuses(ctx context.Context, statuses []ServiceStatus) []ServiceStatus {
+	statuses = triageRunHealthchecks(ctx, statuses)
+	for i, s := range statuses {
+		if s.State != StateRunning {
+			continue
+		}
+		errors := a.logs.GetErrorLogs(ctx, s.Name, a.cfg.LogLines)
+		statuses[i].ErrorCount = len(errors)
+		if len(errors) > maxRecentErrors {
+			statuses[i].RecentErrors = errors[len(errors)-maxRecentErrors:]
+		} else {
+			statuses[i].RecentErrors = errors
+		}
+	}
+	return statuses
+}
+
 // Diagnose runs full diagnostics on the server.
 func (a *ServerAgent) Diagnose(ctx context.Context, services []string) DiagnosticReport {
 	services = a.resolveServices(ctx, services)
@@ -92,7 +115,7 @@ func (a *ServerAgent) Diagnose(ctx context.Context, services []string) Diagnosti
 		return DiagnosticReport{
 			Timestamp:     time.Now(),
 			Server:        a.cfg.Host,
-			OverallHealth: "unknown",
+			OverallHealth: string(StateUnknown),
 			Alerts: []Alert{{
 				Level:       AlertWarning,
 				Title:       "No services discovered",
@@ -104,43 +127,12 @@ func (a *ServerAgent) Diagnose(ctx context.Context, services []string) Diagnosti
 	statuses := a.status.GetAllStatuses(ctx, services)
 	statuses = a.resources.GetResourceUsage(ctx, statuses)
 
-	// Extract dozor labels
 	for i, s := range statuses {
 		statuses[i].HealthcheckURL = s.DozorLabel("healthcheck.url")
 		statuses[i].AlertChannel = s.DozorLabel("alert.channel")
 	}
 
-	// Run healthcheck probes
-	for i, s := range statuses {
-		if s.State != StateRunning || s.HealthcheckURL == "" {
-			continue
-		}
-		results := ProbeURLs(ctx, []string{s.HealthcheckURL}, 5, false)
-		if len(results) > 0 {
-			ok := results[0].OK
-			statuses[i].HealthcheckOK = &ok
-			if !ok {
-				msg := fmt.Sprintf("status %d", results[0].Status)
-				if results[0].Error != "" {
-					msg = results[0].Error
-				}
-				statuses[i].HealthcheckMsg = msg
-			}
-		}
-	}
-
-	for i, s := range statuses {
-		if s.State == StateRunning {
-			errors := a.logs.GetErrorLogs(ctx, s.Name, a.cfg.LogLines)
-			statuses[i].ErrorCount = len(errors)
-			if len(errors) > 5 {
-				statuses[i].RecentErrors = errors[len(errors)-5:]
-			} else {
-				statuses[i].RecentErrors = errors
-			}
-		}
-	}
-
+	statuses = a.enrichDiagnoseStatuses(ctx, statuses)
 	alerts := a.alerts.GenerateAlerts(statuses)
 
 	// Inhibit child alerts when a parent dependency is down.
@@ -334,4 +326,3 @@ func (a *ServerAgent) ListExclusions() map[string]time.Time {
 	})
 	return result
 }
-

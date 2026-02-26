@@ -12,6 +12,11 @@ import (
 	"github.com/docker/docker/client"
 )
 
+const (
+	// dockerPingTimeoutSec is the timeout for Docker daemon ping (seconds).
+	dockerPingTimeoutSec = 3
+)
+
 // ServiceCache caches discovered service names with TTL.
 type ServiceCache struct {
 	services  []string
@@ -89,7 +94,7 @@ func NewDockerDiscovery() *DockerDiscovery {
 		log.Printf("[discovery] Docker SDK init failed: %v", err)
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), dockerPingTimeoutSec*time.Second)
 	defer cancel()
 	if _, err := cli.Ping(ctx); err != nil {
 		log.Printf("[discovery] Docker not reachable: %v", err)
@@ -217,6 +222,9 @@ func (d *DockerDiscovery) InspectContainer(ctx context.Context, nameOrID string)
 	}
 	if inspect.State.Health != nil {
 		status.Health = inspect.State.Health.Status
+	}
+	if t, err := time.Parse(time.RFC3339Nano, inspect.State.StartedAt); err == nil {
+		status.StartedAt = t
 	}
 
 	return status, true

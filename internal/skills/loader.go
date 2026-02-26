@@ -10,6 +10,15 @@ import (
 	"strings"
 )
 
+const (
+	// dirPermissions is the permission mode for created workspace directories.
+	dirPermissions = 0750
+	// filePermissions is the permission mode for created skill files.
+	filePermissions = 0600
+	// yamlFieldMinParts is the minimum number of parts in a YAML field match.
+	yamlFieldMinParts = 3
+)
+
 // SkillInfo holds metadata about a discovered skill.
 type SkillInfo struct {
 	Name        string
@@ -146,13 +155,13 @@ func (l *Loader) readSkill(dir, name string) (string, bool) {
 // parseFrontmatter extracts name and description from YAML frontmatter.
 func parseFrontmatter(content string) (name, description string) {
 	match := reFrontmatter.FindStringSubmatch(content)
-	if len(match) < 2 {
+	if len(match) < yamlFieldMinParts-1 {
 		return "", ""
 	}
 
 	fields := reYAMLField.FindAllStringSubmatch(match[1], -1)
 	for _, f := range fields {
-		if len(f) < 3 {
+		if len(f) < yamlFieldMinParts {
 			continue
 		}
 		switch f[1] {
@@ -177,7 +186,7 @@ func stripFrontmatter(content string) string {
 
 // InitWorkspace creates the workspace directory with default files if it doesn't exist.
 func InitWorkspace(workspacePath, defaultsPath string) {
-	if err := os.MkdirAll(workspacePath, 0750); err != nil {
+	if err := os.MkdirAll(workspacePath, dirPermissions); err != nil {
 		slog.Warn("cannot create workspace", slog.Any("error", err))
 		return
 	}
@@ -197,7 +206,7 @@ func InitWorkspace(workspacePath, defaultsPath string) {
 			continue
 		}
 
-		if err := os.WriteFile(dest, data, 0640); err != nil {
+		if err := os.WriteFile(dest, data, filePermissions); err != nil {
 			slog.Warn("cannot write bootstrap file", slog.String("file", dest), slog.Any("error", err))
 		} else {
 			slog.Info("initialized bootstrap file", slog.String("file", dest))
@@ -206,5 +215,7 @@ func InitWorkspace(workspacePath, defaultsPath string) {
 
 	// Create user skills directory.
 	skillsDir := filepath.Join(workspacePath, "skills")
-	os.MkdirAll(skillsDir, 0750)
+	if err := os.MkdirAll(skillsDir, dirPermissions); err != nil {
+		slog.Warn("cannot create skills directory", slog.String("dir", skillsDir), slog.Any("error", err))
+	}
 }

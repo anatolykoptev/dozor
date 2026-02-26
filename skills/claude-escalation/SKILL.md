@@ -15,6 +15,18 @@ When you cannot complete a task within the iteration budget, escalate to Claude 
 - Build or deploy failures with cryptic errors
 - Configuration issues requiring code-level analysis
 
+## When NOT to Escalate
+
+- Container just needs a restart (auto-fix handles this)
+- Rate limits / quota errors (self-healing)
+- Benign warnings (qdrant telemetry, searxng CAPTCHA, go-hully pool)
+- Transient network errors that resolve within minutes
+
+## Escalation Budget
+
+You have MAX 5 tool calls before you MUST escalate or give up.
+Do not spend iterations on repeated diagnostics.
+
 ## How to Escalate
 
 Call `claude_code` with **async=true** and a structured prompt:
