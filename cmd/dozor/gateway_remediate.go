@@ -75,11 +75,14 @@ func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, triageResult
 		return false
 	}
 
-	if len(verified)+len(suppressed) > 0 {
+	if len(verified) > 0 {
+		// Only notify when actual restarts happened — suppressed-only events are silent.
 		msg := buildAutoRemediateMessage(verified, suppressed)
 		if notify != nil {
 			notify(msg)
 		}
+	}
+	if len(verified)+len(suppressed) > 0 {
 		slog.Info("gateway watch: auto-remediated all issues",
 			slog.Int("restarted", len(verified)),
 			slog.Int("suppressed", len(suppressed)))
