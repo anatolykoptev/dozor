@@ -14,19 +14,11 @@ const (
 	postRestartVerifyDelay = 10 * time.Second
 )
 
-// watchSuppressWarnings maps service names to a reason string for benign warnings
-// that should be suppressed without LLM involvement. Only WARNING/ERROR level
-// issues are suppressed — CRITICAL (exited/dead) always goes through restart or LLM.
-var watchSuppressWarnings = map[string]string{
-	"qdrant":   "telemetry errors (benign)",
-	"searxng":  "rate limits (self-heals)",
-	"go-hully": "pool exhaustion (resets hourly)",
-}
-
 // tryAutoRemediate attempts to handle all triage issues without LLM involvement.
 // It restarts exited/dead/restarting containers, suppresses known benign warnings,
 // and returns true only if ALL issues were handled. Unhandled issues fall through to LLM.
-func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, triageResult string, notify func(string)) bool {
+// Benign service warnings are read from cfg.SuppressWarnings (configured via DOZOR_SUPPRESS_WARNINGS).
+func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, cfg engine.Config, triageResult string, notify func(string)) bool {
 	issues := engine.ExtractIssues(triageResult)
 	if len(issues) == 0 {
 		return false
@@ -51,7 +43,7 @@ func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, triageResult
 		}
 
 		// Known benign WARNING/ERROR → suppress.
-		if reason, ok := watchSuppressWarnings[issue.Service]; ok {
+		if reason, ok := cfg.SuppressWarnings[issue.Service]; ok {
 			suppressed = append(suppressed, issue.Service+" ("+reason+")")
 			slog.Info("gateway watch: suppressed benign warning",
 				slog.String("service", issue.Service),

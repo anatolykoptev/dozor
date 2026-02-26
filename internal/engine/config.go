@@ -134,6 +134,20 @@ type Config struct {
 	LLMCheckURL    string   // proxy URL for channel tests (reuses DOZOR_LLM_URL)
 	LLMCheckAPIKey string   // proxy auth key (reuses DOZOR_LLM_API_KEY)
 	LLMCheckModels []string // DOZOR_LLM_CHECK_MODELS (models to test through proxy)
+
+	// SuppressWarnings maps service names to a reason string for benign warnings
+	// that should be suppressed without LLM involvement during gateway watch.
+	// Configured via DOZOR_SUPPRESS_WARNINGS="service:reason,service:reason".
+	// Only WARNING/ERROR level issues are suppressed — CRITICAL always triggers restart or LLM.
+	SuppressWarnings map[string]string
+
+	// Security policy — configurable via env vars; defaults match the original hardcoded values.
+	// DOZOR_INTERNAL_PORTS=5432:PostgreSQL,6379:Redis — ports that must not be exposed to 0.0.0.0.
+	// DOZOR_ROOT_ALLOWED=postgres,redis,traefik,caddy — container name prefixes allowed to run as root.
+	// DOZOR_DANGEROUS_MOUNTS=/.claude,/.ssh,/.aws — host paths that must not be mounted into containers.
+	InternalPorts         map[string]string
+	RootAllowedContainers map[string]bool
+	DangerousHostMounts   []string
 }
 
 // MCPServerConfig holds config for a remote MCP server.
@@ -217,6 +231,14 @@ func Init() Config {
 		LLMCheckURL:    env("DOZOR_LLM_URL", ""),
 		LLMCheckAPIKey: env("DOZOR_LLM_API_KEY", ""),
 		LLMCheckModels: envList("DOZOR_LLM_CHECK_MODELS", ""),
+
+		// Suppress warnings — parsed below.
+		SuppressWarnings: parseSuppressWarnings(env("DOZOR_SUPPRESS_WARNINGS", "")),
+
+		// Security policy — env vars replace defaults when set.
+		InternalPorts:         parseInternalPorts(env("DOZOR_INTERNAL_PORTS", "")),
+		RootAllowedContainers: parseRootAllowed(env("DOZOR_ROOT_ALLOWED", "")),
+		DangerousHostMounts:   parseDangerousMounts(env("DOZOR_DANGEROUS_MOUNTS", "")),
 	}
 
 	// Parse CLIProxyAPI config — fills GeminiAPIKeys and overrides LLMCheckAPIKey if available.
@@ -433,6 +455,137 @@ func expandHome(path string) string {
 		}
 	}
 	return path
+}
+
+// defaultInternalPorts are the built-in ports that should not be exposed to 0.0.0.0.
+var defaultInternalPorts = map[string]string{
+	"5432":  "PostgreSQL",
+	"3306":  "MySQL",
+	"6379":  "Redis",
+	"27017": "MongoDB",
+	"9200":  "Elasticsearch",
+	"2379":  "etcd",
+	"5672":  "RabbitMQ",
+	"15672": "RabbitMQ Management",
+	"6333":  "Qdrant",
+}
+
+// parseInternalPorts parses "port:name,port:name" format.
+// Returns defaultInternalPorts when raw is empty.
+func parseInternalPorts(raw string) map[string]string {
+	if raw == "" {
+		out := make(map[string]string, len(defaultInternalPorts))
+		for k, v := range defaultInternalPorts {
+			out[k] = v
+		}
+		return out
+	}
+	parts := strings.Split(raw, ",")
+	out := make(map[string]string, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		idx := strings.Index(p, ":")
+		if idx <= 0 {
+			continue
+		}
+		port := strings.TrimSpace(p[:idx])
+		name := strings.TrimSpace(p[idx+1:])
+		if port != "" {
+			out[port] = name
+		}
+	}
+	return out
+}
+
+// defaultRootAllowed are container name prefixes allowed to run as root by default.
+var defaultRootAllowed = []string{"postgres", "redis", "traefik", "caddy"}
+
+// parseRootAllowed parses "name,name" format into a lookup map.
+// Returns defaults when raw is empty.
+func parseRootAllowed(raw string) map[string]bool {
+	if raw == "" {
+		out := make(map[string]bool, len(defaultRootAllowed))
+		for _, v := range defaultRootAllowed {
+			out[v] = true
+		}
+		return out
+	}
+	parts := strings.Split(raw, ",")
+	out := make(map[string]bool, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out[p] = true
+		}
+	}
+	return out
+}
+
+// defaultDangerousMounts are host paths that must not be mounted into containers by default.
+var defaultDangerousMounts = []string{
+	"/.claude", "/.ssh", "/.aws", "/.kube", "/.gnupg",
+	"/etc/shadow", "/etc/passwd", "/var/run/docker.sock",
+}
+
+// parseDangerousMounts parses "path,path" format.
+// Returns defaults when raw is empty.
+func parseDangerousMounts(raw string) []string {
+	if raw == "" {
+		out := make([]string, len(defaultDangerousMounts))
+		copy(out, defaultDangerousMounts)
+		return out
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// defaultSuppressWarnings are the built-in benign service warnings suppressed by default.
+// These can be overridden entirely by setting DOZOR_SUPPRESS_WARNINGS.
+var defaultSuppressWarnings = map[string]string{
+	"qdrant":   "telemetry errors (benign)",
+	"searxng":  "rate limits (self-heals)",
+	"go-hully": "pool exhaustion (resets hourly)",
+}
+
+// parseSuppressWarnings parses "service:reason,service:reason" format.
+// Returns defaultSuppressWarnings when raw is empty.
+func parseSuppressWarnings(raw string) map[string]string {
+	if raw == "" {
+		// Copy the default map so callers cannot mutate the package-level var.
+		out := make(map[string]string, len(defaultSuppressWarnings))
+		for k, v := range defaultSuppressWarnings {
+			out[k] = v
+		}
+		return out
+	}
+	parts := strings.Split(raw, ",")
+	out := make(map[string]string, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		idx := strings.Index(p, ":")
+		if idx <= 0 {
+			continue
+		}
+		svc := strings.TrimSpace(p[:idx])
+		reason := strings.TrimSpace(p[idx+1:])
+		if svc != "" {
+			out[svc] = reason
+		}
+	}
+	return out
 }
 
 // parseMCPServers parses "id=url,id=url" format.

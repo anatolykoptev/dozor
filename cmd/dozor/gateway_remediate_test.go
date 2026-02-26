@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/anatolykoptev/dozor/internal/engine"
 )
 
 func TestExtractIssueLevel(t *testing.T) {
@@ -93,6 +95,10 @@ func TestBuildAutoRemediateMessage_Both(t *testing.T) {
 }
 
 func TestWatchSuppressWarnings_KnownServices(t *testing.T) {
+	// Use the default config (no DOZOR_SUPPRESS_WARNINGS env var set) to verify defaults.
+	cfg := engine.Init()
+	suppressWarnings := cfg.SuppressWarnings
+
 	expected := map[string]bool{
 		"qdrant":   true,
 		"searxng":  true,
@@ -100,15 +106,15 @@ func TestWatchSuppressWarnings_KnownServices(t *testing.T) {
 	}
 
 	for svc := range expected {
-		if _, ok := watchSuppressWarnings[svc]; !ok {
-			t.Errorf("service %q should be in watchSuppressWarnings", svc)
+		if _, ok := suppressWarnings[svc]; !ok {
+			t.Errorf("service %q should be in SuppressWarnings by default", svc)
 		}
 	}
 
 	// Make sure critical services are NOT in the suppress list
 	for _, svc := range []string{"postgres", "redis", "memdb-api", "memdb-go"} {
-		if _, ok := watchSuppressWarnings[svc]; ok {
-			t.Errorf("critical service %q should NOT be in watchSuppressWarnings", svc)
+		if _, ok := suppressWarnings[svc]; ok {
+			t.Errorf("critical service %q should NOT be in SuppressWarnings", svc)
 		}
 	}
 }

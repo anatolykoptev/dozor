@@ -25,28 +25,6 @@ type SecurityCollector struct {
 	discovery *DockerDiscovery
 }
 
-// internalOnlyPorts that should not be exposed to 0.0.0.0.
-var internalOnlyPorts = map[string]string{
-	"5432":  "PostgreSQL",
-	"3306":  "MySQL",
-	"6379":  "Redis",
-	"27017": "MongoDB",
-	"9200":  "Elasticsearch",
-	"2379":  "etcd",
-	"5672":  "RabbitMQ",
-	"15672": "RabbitMQ Management",
-	"6333":  "Qdrant",
-}
-
-var rootAllowedContainers = map[string]bool{
-	"postgres": true, "redis": true, "traefik": true, "caddy": true,
-}
-
-var dangerousHostMounts = []string{
-	"/.claude", "/.ssh", "/.aws", "/.kube", "/.gnupg",
-	"/etc/shadow", "/etc/passwd", "/var/run/docker.sock",
-}
-
 var stackTracePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`Traceback \(most recent call last\)`),
 	regexp.MustCompile(`at .+\(.+:\d+:\d+\)`),
@@ -97,7 +75,7 @@ func (c *SecurityCollector) checkNetworkExposure(ctx context.Context) []Security
 	}
 
 	for _, line := range strings.Split(res.Stdout, "\n") {
-		for port, svcName := range internalOnlyPorts {
+		for port, svcName := range c.cfg.InternalPorts {
 			// Check if port is bound to 0.0.0.0 (all interfaces)
 			if strings.Contains(line, "0.0.0.0:"+port) || strings.Contains(line, ":::"+port) {
 				issues = append(issues, SecurityIssue{
@@ -127,12 +105,12 @@ func (c *SecurityCollector) checkNetworkExposure(ctx context.Context) []Security
 	return issues
 }
 
-// containerRootAllowed returns true if name matches any key in rootAllowedContainers.
-func containerRootAllowed(name string) bool {
-	if rootAllowedContainers[name] {
+// containerRootAllowed returns true if name matches any key in cfg.RootAllowedContainers.
+func (c *SecurityCollector) containerRootAllowed(name string) bool {
+	if c.cfg.RootAllowedContainers[name] {
 		return true
 	}
-	for container := range rootAllowedContainers {
+	for container := range c.cfg.RootAllowedContainers {
 		if strings.Contains(name, container) {
 			return true
 		}
@@ -156,7 +134,7 @@ func (c *SecurityCollector) checkContainerSecurity(ctx context.Context) []Securi
 		}
 
 		userRes := c.transport.DockerCommand(ctx, fmt.Sprintf("exec %s whoami 2>/dev/null", name))
-		if userRes.Success && strings.TrimSpace(userRes.Stdout) == "root" && !containerRootAllowed(name) {
+		if userRes.Success && strings.TrimSpace(userRes.Stdout) == "root" && !c.containerRootAllowed(name) {
 			issues = append(issues, SecurityIssue{
 				Level:       AlertWarning,
 				Category:    "container",
@@ -170,7 +148,7 @@ func (c *SecurityCollector) checkContainerSecurity(ctx context.Context) []Securi
 	// Check for dangerous host mounts
 	res = c.transport.DockerCommand(ctx, "inspect --format '{{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}' $(docker ps -q) 2>/dev/null")
 	if res.Success {
-		for _, mount := range dangerousHostMounts {
+		for _, mount := range c.cfg.DangerousHostMounts {
 			if strings.Contains(res.Stdout, mount) {
 				issues = append(issues, SecurityIssue{
 					Level:       AlertCritical,

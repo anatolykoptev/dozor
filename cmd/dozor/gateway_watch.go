@@ -68,7 +68,7 @@ func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.
 	}
 	*lastHash = hash
 
-	if !eng.IsDevMode() && tryAutoRemediate(ctx, eng, result, notify) {
+	if !eng.IsDevMode() && tryAutoRemediate(ctx, eng, cfg, result, notify) {
 		return
 	}
 

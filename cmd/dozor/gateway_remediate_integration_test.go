@@ -60,7 +60,7 @@ func TestAutoRemediateIntegration(t *testing.T) {
 		t.Logf("Notification sent:\n%s", text)
 	}
 
-	handled := tryAutoRemediate(ctx, eng, result, notify)
+	handled := tryAutoRemediate(ctx, eng, cfg, result, notify)
 	t.Logf("tryAutoRemediate returned: %v", handled)
 
 	// 5. Verify moonshine is running
