@@ -204,35 +204,44 @@ func (u *UpdatesCollector) discoverBinaries(ctx context.Context) []TrackedBinary
 	}
 
 	// 2. Auto-detect from ~/.local/bin/
+	binaries = append(binaries, u.autoDetectFromLocalBin(ctx, seenName, seenRepo)...)
+
+	return binaries
+}
+
+// autoDetectFromLocalBin scans ~/.local/bin/ for known binaries not already tracked.
+func (u *UpdatesCollector) autoDetectFromLocalBin(ctx context.Context, seenName, seenRepo map[string]bool) []TrackedBinary {
 	res := u.transport.ExecuteUnsafe(ctx, "ls -1 $HOME/.local/bin/ 2>/dev/null")
-	if res.Success {
-		for _, name := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
-			name = strings.TrimSpace(name)
-			if name == "" || seenName[name] {
-				continue
-			}
-			ownerRepo, ok := knownBinaries[name]
-			if !ok {
-				continue
-			}
-			if seenRepo[ownerRepo] {
-				continue
-			}
-			parts := strings.SplitN(ownerRepo, "/", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			seenName[name] = true
-			seenRepo[ownerRepo] = true
-			binaries = append(binaries, TrackedBinary{
-				Name:  name,
-				Path:  "$HOME/.local/bin/" + name,
-				Owner: parts[0],
-				Repo:  parts[1],
-			})
-		}
+	if !res.Success {
+		return nil
 	}
 
+	var binaries []TrackedBinary
+	for _, name := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+		name = strings.TrimSpace(name)
+		if name == "" || seenName[name] {
+			continue
+		}
+		ownerRepo, ok := knownBinaries[name]
+		if !ok {
+			continue
+		}
+		if seenRepo[ownerRepo] {
+			continue
+		}
+		parts := strings.SplitN(ownerRepo, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		seenName[name] = true
+		seenRepo[ownerRepo] = true
+		binaries = append(binaries, TrackedBinary{
+			Name:  name,
+			Path:  "$HOME/.local/bin/" + name,
+			Owner: parts[0],
+			Repo:  parts[1],
+		})
+	}
 	return binaries
 }
 
@@ -483,12 +492,8 @@ func (u *UpdatesCollector) findExtractedBinary(ctx context.Context, tmpDir, bina
 
 // pickAsset selects the best matching release asset for the current platform.
 func (u *UpdatesCollector) pickAsset(assets []githubAsset, binaryName string) *githubAsset {
-	goOS := u.detectOS()
-	goArch := u.detectArch()
-
-	// Build platform patterns
-	osPatterns := platformOSPatterns(goOS)
-	archPatterns := platformArchPatterns(goArch)
+	osPatterns := platformOSPatterns(u.detectOS())
+	archPatterns := platformArchPatterns(u.detectArch())
 
 	type scored struct {
 		asset *githubAsset
@@ -500,72 +505,17 @@ func (u *UpdatesCollector) pickAsset(assets []githubAsset, binaryName string) *g
 		a := &assets[i]
 		name := strings.ToLower(a.Name)
 
-		// Skip checksums and signatures
-		if strings.HasSuffix(name, ".sha256") ||
-			strings.HasSuffix(name, ".sha512") ||
-			strings.HasSuffix(name, ".sig") ||
-			strings.HasSuffix(name, ".asc") ||
-			strings.HasSuffix(name, ".sbom") ||
-			strings.HasSuffix(name, ".txt") ||
-			strings.HasSuffix(name, ".json") {
+		if isSkippableAsset(name) {
+			continue
+		}
+		if !matchesPlatform(name, osPatterns, archPatterns) {
 			continue
 		}
 
-		// Must match OS
-		osMatch := false
-		for _, p := range osPatterns {
-			if strings.Contains(name, p) {
-				osMatch = true
-				break
-			}
-		}
-		if !osMatch {
+		score, skip := scoreAssetFormat(name, binaryName)
+		if skip {
 			continue
 		}
-
-		// Must match arch
-		archMatch := false
-		for _, p := range archPatterns {
-			if strings.Contains(name, p) {
-				archMatch = true
-				break
-			}
-		}
-		if !archMatch {
-			continue
-		}
-
-		// Score by format preference
-		score := 0
-		switch {
-		case strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz"):
-			score = 10
-		case strings.HasSuffix(name, ".tar.xz"):
-			score = 9
-		case strings.HasSuffix(name, ".gz") && !strings.HasSuffix(name, ".tar.gz"):
-			score = 8
-		case strings.HasSuffix(name, ".zip"):
-			score = 7
-		default:
-			// Raw binary or .deb/.rpm — raw binary is fine, skip packages
-			if strings.HasSuffix(name, ".deb") || strings.HasSuffix(name, ".rpm") ||
-				strings.HasSuffix(name, ".apk") || strings.HasSuffix(name, ".msi") ||
-				strings.HasSuffix(name, ".dmg") || strings.HasSuffix(name, ".pkg") {
-				continue
-			}
-			score = 6
-		}
-
-		// Bonus for containing binary name
-		if strings.Contains(name, strings.ToLower(binaryName)) {
-			score += 2
-		}
-
-		// Penalty for "musl" if we're not on Alpine
-		if strings.Contains(name, "musl") {
-			score -= 1
-		}
-
 		candidates = append(candidates, scored{asset: a, score: score})
 	}
 
@@ -573,7 +523,6 @@ func (u *UpdatesCollector) pickAsset(assets []githubAsset, binaryName string) *g
 		return nil
 	}
 
-	// Pick highest score
 	best := candidates[0]
 	for _, c := range candidates[1:] {
 		if c.score > best.score {
@@ -581,6 +530,73 @@ func (u *UpdatesCollector) pickAsset(assets []githubAsset, binaryName string) *g
 		}
 	}
 	return best.asset
+}
+
+// isSkippableAsset returns true for checksums, signatures, and non-binary file types.
+func isSkippableAsset(name string) bool {
+	skipSuffixes := []string{
+		".sha256", ".sha512", ".sig", ".asc", ".sbom", ".txt", ".json",
+	}
+	for _, s := range skipSuffixes {
+		if strings.HasSuffix(name, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesPlatform returns true when name contains at least one OS pattern and one arch pattern.
+func matchesPlatform(name string, osPatterns, archPatterns []string) bool {
+	osMatch := false
+	for _, p := range osPatterns {
+		if strings.Contains(name, p) {
+			osMatch = true
+			break
+		}
+	}
+	if !osMatch {
+		return false
+	}
+	for _, p := range archPatterns {
+		if strings.Contains(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// scoreAssetFormat returns a preference score for a matching asset and whether it should be skipped.
+// Higher scores are preferred. skip=true means the asset is a package format we cannot install.
+func scoreAssetFormat(name, binaryName string) (score int, skip bool) {
+	switch {
+	case strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz"):
+		score = 10
+	case strings.HasSuffix(name, ".tar.xz"):
+		score = 9
+	case strings.HasSuffix(name, ".gz") && !strings.HasSuffix(name, ".tar.gz"):
+		score = 8
+	case strings.HasSuffix(name, ".zip"):
+		score = 7
+	default:
+		// Skip OS-native package formats; raw binaries score 6.
+		pkgSuffixes := []string{".deb", ".rpm", ".apk", ".msi", ".dmg", ".pkg"}
+		for _, s := range pkgSuffixes {
+			if strings.HasSuffix(name, s) {
+				return 0, true
+			}
+		}
+		score = 6
+	}
+
+	// Bonus for containing binary name
+	if strings.Contains(name, strings.ToLower(binaryName)) {
+		score += 2
+	}
+	// Penalty for musl (prefer glibc unless on Alpine)
+	if strings.Contains(name, "musl") {
+		score--
+	}
+	return score, false
 }
 
 // detectOS returns the OS of the target machine.

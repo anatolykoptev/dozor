@@ -34,24 +34,7 @@ func isSensitive(name string) bool {
 
 // CheckContainerEnv inspects a container's environment variables.
 func (a *ServerAgent) CheckContainerEnv(ctx context.Context, service string, required []string) string {
-	// Get container name from docker compose
-	res := a.transport.DockerComposeCommand(ctx, fmt.Sprintf("ps -q %s 2>/dev/null", service))
-	containerID := ""
-	if res.Success {
-		containerID = strings.TrimSpace(res.Stdout)
-	}
-
-	if containerID == "" {
-		// Try to find by service name directly
-		res = a.transport.DockerCommand(ctx, fmt.Sprintf("ps --filter name=%s --format {{.ID}} 2>/dev/null", service))
-		if res.Success {
-			lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
-			if len(lines) > 0 {
-				containerID = strings.TrimSpace(lines[0])
-			}
-		}
-	}
-
+	containerID := a.findContainerByService(ctx, service)
 	if containerID == "" {
 		return fmt.Sprintf("Container for service %q not found or not running.\n", service)
 	}
@@ -101,7 +84,33 @@ func (a *ServerAgent) CheckContainerEnv(ctx context.Context, service string, req
 		b.WriteString("\n")
 	}
 
-	// Sensitive vars check (default values / empty)
+	b.WriteString(formatSensitiveVars(envMap))
+	return b.String()
+}
+
+// findContainerByService finds the container ID for service, first via docker-compose ps,
+// then falling back to docker ps --filter.
+func (a *ServerAgent) findContainerByService(ctx context.Context, service string) string {
+	res := a.transport.DockerComposeCommand(ctx, fmt.Sprintf("ps -q %s 2>/dev/null", service))
+	if res.Success {
+		if id := strings.TrimSpace(res.Stdout); id != "" {
+			return id
+		}
+	}
+
+	res = a.transport.DockerCommand(ctx, fmt.Sprintf("ps --filter name=%s --format {{.ID}} 2>/dev/null", service))
+	if res.Success {
+		lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
+		if len(lines) > 0 {
+			return strings.TrimSpace(lines[0])
+		}
+	}
+	return ""
+}
+
+// formatSensitiveVars formats the sensitive variables section of the env report.
+func formatSensitiveVars(envMap map[string]string) string {
+	var b strings.Builder
 	b.WriteString("Sensitive variables (auto-detected):\n")
 	found := false
 	for name, val := range envMap {
@@ -121,7 +130,6 @@ func (a *ServerAgent) CheckContainerEnv(ctx context.Context, service string, req
 	if !found {
 		b.WriteString("  (none detected)\n")
 	}
-
 	return b.String()
 }
 

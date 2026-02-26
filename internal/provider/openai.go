@@ -82,41 +82,48 @@ func (o *OpenAI) chatWithRetry(ctx context.Context, messages []Message, tools []
 		}
 		lastErr = err
 
-		var pe *ProviderError
-		if !errors.As(err, &pe) {
-			// Network error — retry with backoff.
-			if attempt >= chatMaxRetries {
-				break
-			}
-			delay := chatBackoff(attempt)
-			slog.Warn("LLM network error, retrying", slog.Int("attempt", attempt+1), slog.Duration("delay", delay))
-			if sleepCtx(ctx, delay) != nil {
-				return nil, lastErr
-			}
-			continue
-		}
-		// Auth errors — fail immediately.
-		if pe.IsAuth() {
+		retry, delay := shouldRetry(err, attempt)
+		if !retry {
 			break
 		}
-		// Transient (429, 5xx) — retry with backoff.
-		if pe.IsTransient() && attempt < chatMaxRetries {
-			delay := chatBackoff(attempt)
-			if pe.IsRateLimit() && pe.RetryAfter > delay && pe.RetryAfter <= chatMaxDelay {
-				delay = pe.RetryAfter
-			}
-			slog.Warn("LLM transient error, retrying",
-				slog.Int("status", pe.StatusCode),
-				slog.Int("attempt", attempt+1),
-				slog.Duration("delay", delay))
-			if sleepCtx(ctx, delay) != nil {
-				return nil, lastErr
-			}
-			continue
+		if sleepCtx(ctx, delay) != nil {
+			return nil, lastErr
 		}
-		break
 	}
 	return nil, lastErr
+}
+
+// shouldRetry classifies err and returns whether to retry and the delay to wait.
+// Returns false when the error is an auth failure, a non-transient provider error,
+// or when attempt has reached chatMaxRetries.
+func shouldRetry(err error, attempt int) (bool, time.Duration) {
+	var pe *ProviderError
+	if !errors.As(err, &pe) {
+		// Network error — retry with backoff.
+		if attempt >= chatMaxRetries {
+			return false, 0
+		}
+		delay := chatBackoff(attempt)
+		slog.Warn("LLM network error, retrying", slog.Int("attempt", attempt+1), slog.Duration("delay", delay))
+		return true, delay
+	}
+	// Auth errors — fail immediately.
+	if pe.IsAuth() {
+		return false, 0
+	}
+	// Transient (429, 5xx) — retry with backoff.
+	if pe.IsTransient() && attempt < chatMaxRetries {
+		delay := chatBackoff(attempt)
+		if pe.IsRateLimit() && pe.RetryAfter > delay && pe.RetryAfter <= chatMaxDelay {
+			delay = pe.RetryAfter
+		}
+		slog.Warn("LLM transient error, retrying",
+			slog.Int("status", pe.StatusCode),
+			slog.Int("attempt", attempt+1),
+			slog.Duration("delay", delay))
+		return true, delay
+	}
+	return false, 0
 }
 
 func chatBackoff(attempt int) time.Duration {

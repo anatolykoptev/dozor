@@ -111,7 +111,7 @@ func (a *ServerAgent) ContainerExec(ctx context.Context, containerName, command,
 	}
 
 	if inspectResp.ExitCode != 0 {
-		result.WriteString(fmt.Sprintf("\n\nExit code: %d", inspectResp.ExitCode))
+		fmt.Fprintf(&result, "\n\nExit code: %d", inspectResp.ExitCode)
 	}
 
 	return result.String(), nil

@@ -196,13 +196,62 @@ func convertBlockquotes(text string) string {
 	})
 }
 
-// repairHTMLNesting fixes malformed HTML tag nesting from regex-based conversion.
-func repairHTMLNesting(html string) string {
-	type tagPos struct {
-		tag   string
-		start int
+// tagPos records an open HTML tag and its position in the output buffer.
+type tagPos struct {
+	tag   string
+	start int
+}
+
+// handleCloseTag processes a closing HTML tag: finds the matching opener in the
+// stack, emits closing tags for any intervening openers, emits the matched close
+// tag, then reopens the intervening tags and returns the updated stack.
+func handleCloseTag(tag string, stack []tagPos, result *strings.Builder) []tagPos {
+	closeTag := tag[2 : len(tag)-1]
+
+	matchIdx := -1
+	for k := len(stack) - 1; k >= 0; k-- {
+		if stack[k].tag == closeTag {
+			matchIdx = k
+			break
+		}
 	}
 
+	if matchIdx < 0 {
+		return stack // unmatched closer — discard
+	}
+
+	for k := len(stack) - 1; k > matchIdx; k-- {
+		result.WriteString("</" + stack[k].tag + ">")
+	}
+	result.WriteString(tag)
+
+	reopened := make([]tagPos, 0, len(stack)-matchIdx-1)
+	for k := matchIdx + 1; k < len(stack); k++ {
+		reopenTag := "<" + stack[k].tag + ">"
+		result.WriteString(reopenTag)
+		reopened = append(reopened, tagPos{tag: stack[k].tag, start: result.Len()})
+	}
+	return append(stack[:matchIdx], reopened...)
+}
+
+// handleOpenTag writes the opening tag to result and, for tracked Telegram tags,
+// pushes an entry onto the stack. Returns the updated stack.
+func handleOpenTag(tag string, stack []tagPos, result *strings.Builder) []tagPos {
+	tagContent := tag[1 : len(tag)-1]
+	tagContent = strings.TrimSuffix(tagContent, "/")
+	parts := strings.Fields(tagContent)
+	result.WriteString(tag)
+	if len(parts) > 0 {
+		switch parts[0] {
+		case "b", "i", "s", "u", "a", "code", "pre", "blockquote":
+			stack = append(stack, tagPos{tag: parts[0], start: result.Len()})
+		}
+	}
+	return stack
+}
+
+// repairHTMLNesting fixes malformed HTML tag nesting from regex-based conversion.
+func repairHTMLNesting(html string) string {
 	var result strings.Builder
 	result.Grow(len(html))
 	var stack []tagPos
@@ -223,48 +272,10 @@ func repairHTMLNesting(html string) string {
 		j += i
 		tag := html[i : j+1]
 
-		if len(tag) >= 3 && tag[1] == '/' {
-			closeTag := tag[2 : len(tag)-1]
-
-			matchIdx := -1
-			for k := len(stack) - 1; k >= 0; k-- {
-				if stack[k].tag == closeTag {
-					matchIdx = k
-					break
-				}
-			}
-
-			if matchIdx < 0 {
-				i = j + 1
-				continue
-			}
-
-			for k := len(stack) - 1; k > matchIdx; k-- {
-				result.WriteString("</" + stack[k].tag + ">")
-			}
-			result.WriteString(tag)
-
-			reopened := make([]tagPos, 0, len(stack)-matchIdx-1)
-			for k := matchIdx + 1; k < len(stack); k++ {
-				reopenTag := "<" + stack[k].tag + ">"
-				result.WriteString(reopenTag)
-				reopened = append(reopened, tagPos{tag: stack[k].tag, start: result.Len()})
-			}
-			stack = append(stack[:matchIdx], reopened...)
+		if len(tag) >= htmlTagMinLen && tag[1] == '/' {
+			stack = handleCloseTag(tag, stack, &result)
 		} else {
-			tagContent := tag[1 : len(tag)-1]
-			tagContent = strings.TrimSuffix(tagContent, "/")
-			parts := strings.Fields(tagContent)
-			if len(parts) > 0 {
-				tagName := parts[0]
-				result.WriteString(tag)
-				switch tagName {
-				case "b", "i", "s", "u", "a", "code", "pre", "blockquote":
-					stack = append(stack, tagPos{tag: tagName, start: result.Len()})
-				}
-			} else {
-				result.WriteString(tag)
-			}
+			stack = handleOpenTag(tag, stack, &result)
 		}
 		i = j + 1
 	}
@@ -386,6 +397,27 @@ func splitMessage(text string, maxLen int) []string {
 	return result
 }
 
+// parseTagName extracts the tag name from an opening tag string.
+// E.g. `<a href="...">` → `a`, `<b>` → `b`.
+func parseTagName(openTag string) string {
+	inner := openTag[1 : len(openTag)-1]
+	if sp := strings.IndexByte(inner, ' '); sp > 0 {
+		return inner[:sp]
+	}
+	return inner
+}
+
+// popMatchingTag removes the rightmost opener whose tag name matches closeTag
+// from stack, returning the updated slice.
+func popMatchingTag(stack []string, closeTag string) []string {
+	for k := len(stack) - 1; k >= 0; k-- {
+		if parseTagName(stack[k]) == closeTag {
+			return append(stack[:k], stack[k+1:]...)
+		}
+	}
+	return stack
+}
+
 // unclosedTags returns opening tags (e.g. "<b>", "<code>") that remain
 // unclosed at the end of the HTML fragment.
 func unclosedTags(html string) []string {
@@ -410,22 +442,10 @@ func unclosedTags(html string) []string {
 		}
 
 		if tag[1] == '/' {
-			// Closing tag — pop matching opener.
-			closeTag := tag[2 : len(tag)-1]
-			for k := len(stack) - 1; k >= 0; k-- {
-				openName := stack[k][1 : len(stack[k])-1]
-				if sp := strings.IndexByte(openName, ' '); sp > 0 {
-					openName = openName[:sp]
-				}
-				if openName == closeTag {
-					stack = append(stack[:k], stack[k+1:]...)
-					break
-				}
-			}
+			stack = popMatchingTag(stack, tag[2:len(tag)-1])
 		} else {
 			// Opening tag — only track Telegram-supported formatting tags.
-			tagContent := tag[1 : len(tag)-1]
-			tagContent = strings.TrimSuffix(tagContent, "/")
+			tagContent := strings.TrimSuffix(tag[1:len(tag)-1], "/")
 			parts := strings.Fields(tagContent)
 			if len(parts) > 0 {
 				switch parts[0] {

@@ -15,7 +15,11 @@ import (
 const (
 	// maxToolResultLen is the maximum characters for a single tool result before truncation.
 	maxToolResultLen = 30000
+	maxRepeatFails   = 2
+	iterWarnThreshold = 5
 )
+
+type failKey struct{ tool, err string }
 
 // Loop is the core agent loop that processes messages through an LLM with tool calling.
 type Loop struct {
@@ -43,9 +47,7 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 	}
 
 	// Track repeated identical tool failures to break infinite loops.
-	type failKey struct{ tool, err string }
 	failCounts := make(map[failKey]int)
-	const maxRepeatFails = 2
 
 	for iteration := 1; iteration <= l.maxIters; iteration++ {
 		select {
@@ -82,59 +84,15 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 		// Execute each tool call and append results.
 		// Tool responses MUST immediately follow the assistant message with tool_calls
 		// (OpenAI/Gemini API requirement — no other messages in between).
-		for _, tc := range resp.ToolCalls {
-			name := tc.Name
-			if name == "" && tc.Function != nil {
-				name = tc.Function.Name
-			}
-
-			// Parse arguments if not already parsed.
-			args := tc.Args
-			if args == nil && tc.Function != nil && tc.Function.Arguments != "" {
-				var parsed map[string]any
-				if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err == nil {
-					args = parsed
-				}
-			}
-
-			slog.Info("executing tool", slog.String("tool", name), slog.Int("iteration", iteration))
-
-			result, execErr := l.registry.Execute(ctx, name, args)
-			if execErr != nil {
-				errMsg := execErr.Error()
-				result = "Error: " + errMsg
-				slog.Warn("tool execution failed", slog.String("tool", name), slog.Any("error", execErr))
-
-				// Detect repeated identical failures — break loop early.
-				fk := failKey{tool: name, err: errMsg}
-				failCounts[fk]++
-				if failCounts[fk] > maxRepeatFails {
-					return "", fmt.Errorf("tool %q keeps failing with the same error (%q) after %d attempts — stopping to avoid infinite loop",
-						name, errMsg, failCounts[fk])
-				}
-			}
-
-			// Truncate very large results.
-			if len(result) > maxToolResultLen {
-				result = result[:maxToolResultLen] + "\n... (truncated)"
-			}
-
-			callID := tc.ID
-			if callID == "" {
-				callID = fmt.Sprintf("call_%d_%s", iteration, name)
-			}
-
-			messages = append(messages, provider.Message{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: callID,
-			})
+		var execErr error
+		messages, execErr = l.executeToolCalls(ctx, messages, resp.ToolCalls, iteration, failCounts)
+		if execErr != nil {
+			return "", execErr
 		}
 
 		// Warn the agent when approaching the iteration limit so it can escalate proactively.
 		// Injected AFTER tool responses to preserve the required message ordering:
 		// assistant(tool_calls) → tool(response) → ... → user(warning).
-		const iterWarnThreshold = 5
 		if iteration == l.maxIters-iterWarnThreshold {
 			slog.Warn("approaching iteration limit, injecting escalation prompt", slog.Int("iteration", iteration))
 			messages = append(messages, provider.Message{
@@ -151,4 +109,63 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 	}
 
 	return "", fmt.Errorf("max tool iterations reached (%d)", l.maxIters)
+}
+
+func (l *Loop) executeToolCalls(ctx context.Context, messages []provider.Message, toolCalls []provider.ToolCall, iteration int, failCounts map[failKey]int) ([]provider.Message, error) {
+	for _, tc := range toolCalls {
+		name, args := parseToolCall(tc)
+
+		slog.Info("executing tool", slog.String("tool", name), slog.Int("iteration", iteration))
+
+		result, execErr := l.registry.Execute(ctx, name, args)
+		if execErr != nil {
+			errMsg := execErr.Error()
+			result = "Error: " + errMsg
+			slog.Warn("tool execution failed", slog.String("tool", name), slog.Any("error", execErr))
+
+			// Detect repeated identical failures — break loop early.
+			fk := failKey{tool: name, err: errMsg}
+			failCounts[fk]++
+			if failCounts[fk] > maxRepeatFails {
+				return messages, fmt.Errorf("tool %q keeps failing with the same error (%q) after %d attempts — stopping to avoid infinite loop",
+					name, errMsg, failCounts[fk])
+			}
+		}
+
+		// Truncate very large results.
+		if len(result) > maxToolResultLen {
+			result = result[:maxToolResultLen] + "\n... (truncated)"
+		}
+
+		callID := tc.ID
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d_%s", iteration, name)
+		}
+
+		messages = append(messages, provider.Message{
+			Role:       "tool",
+			Content:    result,
+			ToolCallID: callID,
+		})
+	}
+
+	return messages, nil
+}
+
+func parseToolCall(tc provider.ToolCall) (name string, args map[string]any) {
+	name = tc.Name
+	if name == "" && tc.Function != nil {
+		name = tc.Function.Name
+	}
+
+	// Parse arguments if not already parsed.
+	args = tc.Args
+	if args == nil && tc.Function != nil && tc.Function.Arguments != "" {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err == nil {
+			args = parsed
+		}
+	}
+
+	return name, args
 }

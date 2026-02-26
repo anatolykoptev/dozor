@@ -290,29 +290,14 @@ func parseStreamJSON(raw string) string {
 
 		switch event["type"] {
 		case "assistant":
-			// Extract text blocks from message.content array.
-			msg, _ := event["message"].(map[string]any)
-			if msg == nil {
-				continue
+			if text := extractAssistantText(event); text != "" {
+				parts = append(parts, text)
 			}
-			content, _ := msg["content"].([]any)
-			for _, block := range content {
-				b, _ := block.(map[string]any)
-				if b == nil {
-					continue
-				}
-				if b["type"] == "text" {
-					if text, ok := b["text"].(string); ok && strings.TrimSpace(text) != "" {
-						parts = append(parts, strings.TrimSpace(text))
-					}
-				}
-			}
-
 		case "result":
 			// Final result message — use result field if no assistant text collected.
 			if len(parts) == 0 {
-				if result, ok := event["result"].(string); ok && strings.TrimSpace(result) != "" {
-					parts = append(parts, strings.TrimSpace(result))
+				if text := extractResultText(event); text != "" {
+					parts = append(parts, text)
 				}
 			}
 		}
@@ -323,6 +308,37 @@ func parseStreamJSON(raw string) string {
 		return strings.TrimSpace(raw)
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// extractAssistantText extracts concatenated text blocks from an "assistant" stream event.
+func extractAssistantText(event map[string]any) string {
+	msg, _ := event["message"].(map[string]any)
+	if msg == nil {
+		return ""
+	}
+	content, _ := msg["content"].([]any)
+	var texts []string
+	for _, block := range content {
+		b, _ := block.(map[string]any)
+		if b == nil {
+			continue
+		}
+		if b["type"] == "text" {
+			if text, ok := b["text"].(string); ok && strings.TrimSpace(text) != "" {
+				texts = append(texts, strings.TrimSpace(text))
+			}
+		}
+	}
+	return strings.Join(texts, "\n\n")
+}
+
+// extractResultText extracts the result field from a "result" stream event.
+func extractResultText(event map[string]any) string {
+	result, ok := event["result"].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(result)
 }
 
 // Ensure interfaces are satisfied.

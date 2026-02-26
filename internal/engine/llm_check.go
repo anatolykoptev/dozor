@@ -66,7 +66,7 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 		}
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // request directly to Gemini API
 	if err != nil {
 		return &Alert{
 			Level:           AlertError,
@@ -153,7 +153,7 @@ func checkProxyModel(ctx context.Context, client *http.Client, baseURL, apiKey, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // proxied request
 	if err != nil {
 		return &Alert{
 			Level:           AlertError,
@@ -212,7 +212,7 @@ func FormatLLMAlerts(alerts []Alert) string {
 	var b strings.Builder
 	b.WriteString("LLM Health Issues:\n")
 	for _, a := range alerts {
-		b.WriteString(fmt.Sprintf("- [%s] %s: %s\n", a.Level, a.Title, a.Description))
+		fmt.Fprintf(&b, "- [%s] %s: %s\n", a.Level, a.Title, a.Description)
 	}
 	return b.String()
 }

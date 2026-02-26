@@ -70,41 +70,46 @@ func (c *Channel) Start(ctx context.Context) {
 		slog.String("username", c.bot.Self.UserName),
 		slog.Int("allowed_users", len(c.allowed)))
 
-	// Inbound: poll for updates.
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 30
 	updates := c.bot.GetUpdatesChan(u)
 
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				c.bot.StopReceivingUpdates()
-				return
-			case update, ok := <-updates:
-				if !ok {
-					return
-				}
-				if update.Message != nil {
-					c.handleMessage(update.Message)
-				}
-			}
-		}
-	}()
+	go c.pollUpdates(ctx, updates)
+	go c.dispatchOutbound(ctx)
+}
 
-	// Outbound: send replies matching "telegram" channel.
-	go func() {
-		for {
-			msg, ok := c.bus.SubscribeOutbound(ctx)
+// pollUpdates receives Telegram updates from the channel and dispatches inbound
+// messages until ctx is cancelled or the updates channel is closed.
+func (c *Channel) pollUpdates(ctx context.Context, updates tgbotapi.UpdatesChannel) {
+	for {
+		select {
+		case <-ctx.Done():
+			c.bot.StopReceivingUpdates()
+			return
+		case update, ok := <-updates:
 			if !ok {
 				return
 			}
-			if msg.Channel != "telegram" {
-				continue
+			if update.Message != nil {
+				c.handleMessage(update.Message)
 			}
-			c.sendReply(msg)
 		}
-	}()
+	}
+}
+
+// dispatchOutbound reads outbound messages from the bus and sends those
+// addressed to the "telegram" channel until ctx is cancelled.
+func (c *Channel) dispatchOutbound(ctx context.Context) {
+	for {
+		msg, ok := c.bus.SubscribeOutbound(ctx)
+		if !ok {
+			return
+		}
+		if msg.Channel != "telegram" {
+			continue
+		}
+		c.sendReply(msg)
+	}
 }
 
 func (c *Channel) handleMessage(msg *tgbotapi.Message) {
