@@ -174,7 +174,7 @@ func (o *OpenAI) doChatCtx(ctx context.Context, messages []Message, tools []Tool
 		req.Header.Set("Authorization", "Bearer "+o.apiKey)
 	}
 
-	resp, err := o.client.Do(req)
+	resp, err := o.client.Do(req) //nolint:gosec // configured API address
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)
 	}

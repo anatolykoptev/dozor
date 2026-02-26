@@ -66,8 +66,7 @@ func (m *ClientManager) Discover(ctx context.Context, agentID string) (string, e
 	if err != nil {
 		return "", err
 	}
-
-	resp, err := m.client.Do(req)
+	resp, err := m.client.Do(req) //nolint:gosec // agent URL is configured
 	if err != nil {
 		return "", fmt.Errorf("discover %s: %w", agentID, err)
 	}
@@ -129,8 +128,7 @@ func (m *ClientManager) Call(ctx context.Context, agentID, message string) (stri
 	slog.Info("calling remote agent",
 		slog.String("agent_id", agentID),
 		slog.Int("message_len", len(message)))
-
-	resp, err := m.client.Do(req)
+	resp, err := m.client.Do(req) //nolint:gosec // agent URL is configured
 	if err != nil {
 		return "", fmt.Errorf("call %s: %w", agentID, err)
 	}

@@ -159,7 +159,7 @@ func sendWebhook(ctx context.Context, url, text string) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // webhook URL
 	if err != nil {
 		return err
 	}

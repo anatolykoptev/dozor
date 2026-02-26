@@ -307,7 +307,7 @@ func FormatAnalysis(r AnalyzeResult) string {
 
 	s += fmt.Sprintf("\nDetected %d issue type(s):\n", len(r.Issues))
 	for _, issue := range r.Issues {
-		s += fmt.Sprintf("\n[%s] %s (%d occurrences)\n", issue.Level, issue.Description, issue.Count)
+		s += fmt.Sprintf("\n[%s] %s (%d occurrences)\n", issue.Level, issue.Description, issue.Count) //nolint:perfsprint
 		s += fmt.Sprintf("  Category: %s\n", issue.Category)
 		s += fmt.Sprintf("  Action: %s\n", issue.Action)
 		if issue.Example != "" {

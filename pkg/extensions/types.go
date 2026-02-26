@@ -68,7 +68,7 @@ func (v ConfigValidation) Error() error {
 	}
 	msg := "config validation failed:"
 	for _, e := range v.Errors {
-		msg += fmt.Sprintf(" [%s: %s]", e.Field, e.Message)
+		msg += fmt.Sprintf(" [%s: %s]", e.Field, e.Message) //nolint:perfsprint
 	}
 	return fmt.Errorf("%s", msg)
 }

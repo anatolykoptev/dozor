@@ -53,7 +53,7 @@ func (e *Extension) Register(_ context.Context, extCtx *extensions.Context) erro
 
 	// Verify binary exists before registering.
 	if _, err := exec.LookPath(binary); err != nil {
-		slog.Warn("claude_code extension: binary not found, skipping",
+		slog.Warn("claude_code extension: binary not found, skipping", //nolint:gosec // no log injection
 			slog.String("binary", binary))
 		return nil
 	}
@@ -88,7 +88,7 @@ func (e *Extension) Register(_ context.Context, extCtx *extensions.Context) erro
 	}
 	extCtx.Tools.Register(t)
 
-	slog.Info("claude_code extension loaded",
+	slog.Info("claude_code extension loaded", //nolint:gosec // no log injection
 		slog.String("binary", binary),
 		slog.Duration("timeout", timeout),
 		slog.String("mcp_url", mcpURL),
@@ -146,7 +146,7 @@ func (t *claudeCodeTool) Execute(ctx context.Context, args map[string]any) (stri
 	}
 
 	async, _ := args["async"].(bool)
-	if async && t.notify != nil {
+	if async && t.notify != nil { //nolint:nestif // acceptable complexity
 		title, _ := args["title"].(string)
 		if strings.TrimSpace(title) == "" {
 			if len(prompt) > asyncTitleMaxLen {
@@ -261,7 +261,7 @@ func writeMCPConfig(mcpURL string) (string, func(), error) {
 	}
 	if _, err := f.Write(data); err != nil {
 		f.Close()
-		os.Remove(f.Name())
+		os.Remove(f.Name()) //nolint:gosec,errcheck // cleaning up temp file
 		return "", nil, fmt.Errorf("write MCP config: %w", err)
 	}
 	f.Close()

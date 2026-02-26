@@ -109,7 +109,7 @@ func (t *Transport) executeLocal(ctx context.Context, command string) CommandRes
 	cmdCtx, cancel := context.WithTimeout(ctx, t.cfg.Timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, "bash", "-c", command)
+	cmd := exec.CommandContext(cmdCtx, "bash", "-c", command) //nolint:gosec // intentionally runs arbitrary command
 	return t.runCommand(cmdCtx, cmd, "command timed out after %v", command)
 }
 

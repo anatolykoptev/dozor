@@ -23,7 +23,7 @@ const (
 
 // runGatewayWatch runs periodic triage and feeds results through the message bus.
 func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, interval time.Duration, cfg engine.Config, kbSearcher *mcpclient.KBSearcher, notify func(string)) {
-	slog.Info("gateway watch started", slog.String("interval", interval.String()))
+	slog.Info("gateway watch started", slog.String("interval", interval.String())) //nolint:gosec // derived from duration
 	time.Sleep(30 * time.Second) // let everything boot
 
 	var lastWatchHash string

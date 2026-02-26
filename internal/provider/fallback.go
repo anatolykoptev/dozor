@@ -54,7 +54,7 @@ func NewFromEnv() *withFallback {
 		client:   primaryOpenAI.client,
 	}
 
-	slog.Info("LLM fallback provider configured",
+	slog.Info("LLM fallback provider configured", //nolint:gosec // no log injection
 		slog.String("url", fallbackURL),
 		slog.String("model", fallbackModel))
 

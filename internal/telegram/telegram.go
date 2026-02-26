@@ -135,7 +135,9 @@ func (c *Channel) handleMessage(msg *tgbotapi.Message) {
 	chatID := strconv.FormatInt(msg.Chat.ID, 10)
 
 	// Start typing indicator.
-	_, _ = c.bot.Send(tgbotapi.NewChatAction(msg.Chat.ID, tgbotapi.ChatTyping))
+	if _, err := c.bot.Send(tgbotapi.NewChatAction(msg.Chat.ID, tgbotapi.ChatTyping)); err != nil {
+		slog.Debug("telegram: failed to send typing indicator", slog.Any("error", err))
+	}
 	stopChan := make(chan struct{})
 	c.stopTyping.Store(chatID, stopChan)
 	go c.typingLoop(msg.Chat.ID, stopChan)

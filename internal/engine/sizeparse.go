@@ -17,7 +17,7 @@ func ParseSizeMB(s string) float64 {
 	var unit string
 	for i, c := range s {
 		if (c >= '0' && c <= '9') || c == '.' {
-			numStr += string(c)
+			numStr += string(c) //nolint:perfsprint
 		} else {
 			unit = strings.TrimSpace(s[i:])
 			break

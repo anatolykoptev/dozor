@@ -86,7 +86,7 @@ func probeOne(ctx context.Context, rawURL string, timeoutSec int, checkHeaders b
 	}
 
 	start := time.Now()
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // probe URL
 	r.LatencyMs = time.Since(start).Milliseconds()
 
 	if err != nil {

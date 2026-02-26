@@ -59,7 +59,7 @@ func (p *BraveSearchProvider) Search(ctx context.Context, query string, count in
 	req.Header.Set("X-Subscription-Token", p.apiKey)
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // brave API
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -122,7 +122,7 @@ func (p *DuckDuckGoSearchProvider) Search(ctx context.Context, query string, cou
 	req.Header.Set("User-Agent", userAgent)
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // DuckDuckGo API
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -215,7 +215,7 @@ func (p *PerplexitySearchProvider) Search(ctx context.Context, query string, cou
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // Perplexity API
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -308,7 +308,7 @@ func WebFetch(ctx context.Context, fetchURL string, maxLength int) (string, erro
 		},
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // requested URL to fetch content
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -334,10 +334,10 @@ func WebFetch(ctx context.Context, fetchURL string, maxLength int) (string, erro
 	content := extractTextContent(string(body))
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("URL: %s\n", fetchURL))
-	sb.WriteString(fmt.Sprintf("Title: %s\n", extractTitle(string(body))))
+	fmt.Fprintf(&sb, "URL: %s\n", fetchURL)
+	fmt.Fprintf(&sb, "Title: %s\n", extractTitle(string(body)))
 	if truncated {
-		sb.WriteString(fmt.Sprintf("Content (truncated to %d chars):\n\n", maxLength))
+		fmt.Fprintf(&sb, "Content (truncated to %d chars):\n\n", maxLength)
 	} else {
 		sb.WriteString("Content:\n\n")
 	}

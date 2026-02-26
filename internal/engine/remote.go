@@ -231,7 +231,7 @@ func checkHTTP(ctx context.Context, url string) (int, *time.Time) {
 		return 0, nil
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // request via external configured URL
 	if err != nil {
 		return 0, nil
 	}

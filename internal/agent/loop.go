@@ -162,7 +162,9 @@ func parseToolCall(tc provider.ToolCall) (name string, args map[string]any) {
 	args = tc.Args
 	if args == nil && tc.Function != nil && tc.Function.Arguments != "" {
 		var parsed map[string]any
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err == nil {
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err != nil {
+			slog.Warn("failed to parse tool call arguments", slog.String("tool", name), slog.Any("error", err))
+		} else {
 			args = parsed
 		}
 	}

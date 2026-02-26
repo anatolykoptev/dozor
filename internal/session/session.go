@@ -325,7 +325,9 @@ func writeMCPConfig(mcpURL string) (string, func(), error) {
 	}
 	if _, err := f.Write(data); err != nil {
 		f.Close()
-		os.Remove(f.Name())
+		if removeErr := os.Remove(f.Name()); removeErr != nil {
+			slog.Warn("failed to remove temp MCP config", slog.String("path", f.Name()), slog.Any("error", removeErr))
+		}
 		return "", nil, fmt.Errorf("write MCP config: %w", err)
 	}
 	f.Close()

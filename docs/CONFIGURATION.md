@@ -129,6 +129,7 @@ Optional integration with Claude Code CLI for deep analysis.
 | `DOZOR_CLAUDE_TIMEOUT_SECONDS` | `300` | Timeout for Claude Code sessions (max 900) |
 | `DOZOR_CLAUDE_MCP_ENABLED` | `true` | Enable MCP self-connect (passes Dozor tools to Claude) |
 | `DOZOR_CLAUDE_ALLOWED_TOOLS` | `mcp__dozor__*,Read,Bash(git*),Bash(ls*),Bash(cat*),Bash(find*),Bash(grep*)` | Tools Claude Code is allowed to use |
+| `DOZOR_SESSION_IDLE_TIMEOUT` | `900` | Idle timeout for interactive Claude Code sessions (seconds). Session is terminated if no input arrives within this window. |
 
 ## Web Search
 

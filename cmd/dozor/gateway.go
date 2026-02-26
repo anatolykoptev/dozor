@@ -129,7 +129,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	if interval := os.Getenv("DOZOR_WATCH_INTERVAL"); interval != "" {
 		dur, err := time.ParseDuration(interval)
 		if err != nil {
-			slog.Error("invalid DOZOR_WATCH_INTERVAL", slog.String("value", interval))
+			slog.Error("invalid DOZOR_WATCH_INTERVAL", slog.String("value", interval)) //nolint:gosec // interval is from own env
 		} else {
 			go runGatewayWatch(sigCtx, eng, msgBus, dur, cfg, kbSearcher, notifyFn)
 		}
@@ -172,7 +172,7 @@ func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus) {
 		}
 
 		source := r.URL.Path
-		slog.Info("webhook received", slog.String("path", source), slog.Int("len", len(text)))
+		slog.Info("webhook received", slog.String("path", source), slog.Int("len", len(text))) //nolint:gosec // path is safe to log
 
 		msgBus.PublishInbound(bus.Message{
 			ID:        fmt.Sprintf("webhook-%d", time.Now().UnixMilli()),

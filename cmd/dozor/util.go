@@ -103,13 +103,13 @@ func sendWebhook(ctx context.Context, url, text string) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // webhook URL is configured
 	if err != nil {
 		slog.Error("webhook send failed", slog.Any("error", err))
 		return
 	}
 	resp.Body.Close()
 	if resp.StatusCode >= webhookSuccessMaxStatus {
-		slog.Error("webhook returned error", slog.Int("status", resp.StatusCode))
+		slog.Error("webhook returned error", slog.Int("status", resp.StatusCode)) //nolint:gosec // not log injection
 	}
 }

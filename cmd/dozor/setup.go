@@ -142,6 +142,8 @@ func startHTTPServer(ctx context.Context, srv *http.Server, label string) {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	srv.Shutdown(shutdownCtx) //nolint:errcheck
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("HTTP server shutdown error", slog.String("server", label), slog.Any("error", err))
+	}
 	slog.Info(label + " stopped")
 }

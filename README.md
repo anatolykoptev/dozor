@@ -172,8 +172,18 @@ Defense-in-depth command validation:
 
 ```
 dozor/
-├── main.go                     # Entry point: serve/check/watch
+├── cmd/dozor/                  # Entry points: serve, gateway (Telegram), check, watch
 ├── internal/
+│   ├── agent/                  # LLM agent loop + system prompt builder
+│   ├── session/                # Interactive Claude Code session lifecycle (Manager, Session)
+│   ├── a2a/                    # A2A protocol: agent card, /a2a JSON-RPC endpoint, executor
+│   ├── bus/                    # In-process event bus for alert fan-out
+│   ├── skills/                 # Skill loader (workspace + builtin, YAML front-matter)
+│   ├── approvals/              # Telegram approval flow for exec_security=ask
+│   ├── provider/               # LLM provider abstraction + withFallback chain
+│   ├── mcpclient/              # MCP client manager, KB tools (kb_search, kb_save)
+│   ├── toolreg/                # Unified tool registry (local + remote MCP tools)
+│   ├── telegram/               # Telegram bot transport
 │   ├── tools/                  # MCP tool handlers (dependency-injected)
 │   │   ├── register.go         # RegisterAll(server, agent)
 │   │   ├── inspect.go          # server_inspect (10 modes)
@@ -188,32 +198,27 @@ dozor/
 │   │   ├── remote.go           # server_remote
 │   │   ├── remote_exec.go      # server_remote_exec
 │   │   └── dev_mode.go         # server_dev_mode
-│   └── engine/
-    ├── agent.go                # Orchestrator
-    ├── config.go               # Environment config
-    ├── types.go                # Data structures
-    ├── inputs.go               # Input parsing & validation helpers
-    ├── format.go               # Output formatting utilities
-    ├── sizeparse.go            # Human-readable size parsing
-    ├── transport.go            # Local/SSH execution + compose auto-detect
-    ├── docker.go               # Docker container operations
-    ├── status.go               # Docker status + auto-discovery
-    ├── systemd.go              # Systemd service operations
-    ├── overview.go             # System overview (memory, disk, load)
-    ├── resources.go            # CPU/memory/disk
-    ├── logs.go                 # Log collection & parsing
-    ├── log_analyzer.go         # Error pattern analysis
-    ├── analysis.go             # Advanced error analysis
-    ├── triage.go               # Auto-triage orchestration
-    ├── alerts.go               # Alert generation
-    ├── cleanup.go              # System cleanup orchestrator
-    ├── cleanup_targets.go      # Cleanup target definitions
-    ├── security.go             # Security audit
-    ├── remote.go               # Remote server monitoring
-    ├── watch.go                # Periodic monitoring + webhooks
-    ├── deploy.go               # Background deployments
-    ├── updates.go              # Binary update checking + install
-    └── validation.go           # Command validation
+│   └── engine/                 # Core monitoring engine
+│       ├── config.go           # Environment config
+│       ├── circuitbreaker.go   # Circuit breaker (Closed/Open/HalfOpen)
+│       ├── transport.go        # Local/SSH execution + compose auto-detect
+│       ├── docker.go           # Docker container operations
+│       ├── status.go           # Docker status + auto-discovery
+│       ├── systemd.go          # Systemd service operations
+│       ├── overview.go         # System overview (memory, disk, load)
+│       ├── resources.go        # CPU/memory/disk
+│       ├── logs.go             # Log collection & parsing
+│       ├── log_analyzer.go     # Error pattern analysis
+│       ├── triage.go           # Auto-triage orchestration
+│       ├── alerts.go           # Alert generation
+│       ├── cleanup.go          # System cleanup orchestrator
+│       ├── security.go         # Security audit
+│       ├── remote.go           # Remote server monitoring
+│       ├── watch.go            # Periodic monitoring + webhooks
+│       ├── deploy.go           # Background deployments
+│       ├── updates.go          # Binary update checking + install
+│       └── validation.go       # Command validation
+└── pkg/extensions/             # Optional extensions (claudecode, a2aclient, websearch)
 ```
 
 ## Contributing

@@ -86,7 +86,7 @@ func (c *StatusCollector) getContainerStatusCLI(ctx context.Context, service str
 
 	// Get detailed info from docker inspect
 	res = c.transport.DockerCommand(ctx, "inspect "+service+" 2>/dev/null")
-	if res.Success && res.Stdout != "" {
+	if res.Success && res.Stdout != "" { //nolint:nestif // complexity 5 is fine
 		var entries []dockerInspectEntry
 		if err := json.Unmarshal([]byte(res.Stdout), &entries); err == nil && len(entries) > 0 {
 			entry := entries[0]

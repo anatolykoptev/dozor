@@ -380,9 +380,9 @@ func envDurationStr(key string, def time.Duration) time.Duration {
 
 // cliProxyConfig is a partial representation of CLIProxyAPI config.yaml.
 type cliProxyConfig struct {
-	APIKeys      []string `yaml:"api-keys"`
+	APIKeys      []string `yaml:"api-keys"` //nolint:gosec // Not a hardcoded credential
 	GeminiAPIKey []struct {
-		APIKey string `yaml:"api-key"`
+		APIKey string `yaml:"api-key"` //nolint:gosec // Not a hardcoded credential
 	} `yaml:"gemini-api-key"`
 }
 
