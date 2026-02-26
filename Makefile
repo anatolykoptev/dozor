@@ -1,4 +1,4 @@
-.PHONY: build install clean check serve lint
+.PHONY: build install clean check serve lint dev
 
 BINARY=dozor
 INSTALL_PATH=$(HOME)/.local/bin
@@ -23,3 +23,6 @@ check: build
 
 serve: build
 	./$(BINARY) serve
+
+dev:
+	air

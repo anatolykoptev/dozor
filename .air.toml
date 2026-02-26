@@ -1,0 +1,23 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "make build && systemctl --user stop dozor && cp dozor ~/.local/bin/dozor && systemctl --user start dozor"
+  entrypoint = ""
+  full_bin = "echo '>>> dozor reloaded via systemd'"
+  delay = 1500
+  exclude_dir = ["tmp", "vendor", ".git"]
+  exclude_file = [".air.toml"]
+  exclude_regex = ["_test\\.go$"]
+  include_ext = ["go"]
+  kill_delay = 0
+  send_interrupt = false
+  stop_on_error = true
+  rerun = false
+
+[log]
+  time = true
+  main_only = true
+
+[misc]
+  clean_on_exit = true
