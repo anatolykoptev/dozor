@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	// defaultSSHPort is the standard SSH port.
-	defaultSSHPort = 22
+	// defaultSSHPort is the SSH port used by this server.
+	defaultSSHPort = 1987
+	// sshStandardPort is the well-known SSH port (used to decide whether -p flag is needed).
+	sshStandardPort = 22
 	// defaultTimeoutSec is the default command execution timeout in seconds.
 	defaultTimeoutSec = 30
 	// defaultErrorThreshold is the default number of errors before alerting.

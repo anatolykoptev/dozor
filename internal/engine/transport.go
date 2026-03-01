@@ -122,7 +122,7 @@ func (t *Transport) executeSSH(ctx context.Context, command string) CommandResul
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=accept-new",
 	}
-	if t.cfg.SSHPort != defaultSSHPort {
+	if t.cfg.SSHPort != sshStandardPort {
 		args = append(args, "-p", strconv.Itoa(t.cfg.SSHPort))
 	}
 	args = append(args, t.cfg.Host, command)
