@@ -26,6 +26,8 @@ type Channel struct {
 	bus     *bus.Bus
 	allowed map[int64]bool // whitelisted user IDs
 	ctx     context.Context
+	sttURL  string // STT service base URL
+	sttLang string // STT transcription language
 
 	// typing indicator cancellation per chat
 	stopTyping sync.Map // chatID string → chan struct{}
@@ -55,10 +57,21 @@ func New(msgBus *bus.Bus) (*Channel, error) {
 		}
 	}
 
+	sttURL := os.Getenv("STT_URL")
+	if sttURL == "" {
+		sttURL = "http://127.0.0.1:8092"
+	}
+	sttLang := os.Getenv("STT_LANGUAGE")
+	if sttLang == "" {
+		sttLang = "ru"
+	}
+
 	return &Channel{
 		bot:     bot,
 		bus:     msgBus,
 		allowed: allowed,
+		sttURL:  sttURL,
+		sttLang: sttLang,
 	}, nil
 }
 
@@ -127,6 +140,15 @@ func (c *Channel) handleMessage(msg *tgbotapi.Message) {
 	text := msg.Text
 	if text == "" {
 		text = msg.Caption
+	}
+	// Transcribe voice messages.
+	if text == "" && msg.Voice != nil {
+		transcribed, err := c.transcribeVoice(context.Background(), msg.Voice)
+		if err != nil {
+			slog.Error("telegram: voice transcription failed", slog.Any("error", err))
+			return
+		}
+		text = transcribed
 	}
 	if text == "" {
 		return // ignore non-text messages
