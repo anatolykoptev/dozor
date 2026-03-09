@@ -67,6 +67,9 @@ func (ss *SessionStore) Add(key string, msg provider.Message) {
 // Get returns the session history as provider messages.
 func (ss *SessionStore) Get(key string) []provider.Message {
 	msgs := ss.store.GetHistory(key)
+	if msgs == nil {
+		return nil
+	}
 	out := make([]provider.Message, len(msgs))
 	for i, m := range msgs {
 		out[i] = toProviderMsg(m)
