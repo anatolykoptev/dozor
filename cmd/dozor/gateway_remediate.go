@@ -60,7 +60,13 @@ func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, cfg engine.C
 	unhandled = append(unhandled, failedRestarts...)
 
 	if len(unhandled) > 0 {
-		slog.Info("gateway watch: auto-remediation partial, routing remaining to agent",
+		for _, u := range unhandled {
+			slog.Warn("gateway watch: unhandled issue",
+				slog.String("service", u.Service),
+				slog.String("description", u.Description),
+			)
+		}
+		slog.Info("gateway watch: auto-remediation partial",
 			slog.Int("restarted", len(verified)),
 			slog.Int("suppressed", len(suppressed)),
 			slog.Int("unhandled", len(unhandled)))

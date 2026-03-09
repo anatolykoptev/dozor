@@ -36,7 +36,7 @@ const (
 // runGateway starts the full agent: MCP + A2A + Telegram + LLM.
 func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	defer eng.Close()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	port := cfg.MCPPort
 	if p := getFlagValue("--port"); p != "" {

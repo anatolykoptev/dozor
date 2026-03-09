@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,12 +18,32 @@ import (
 )
 
 const (
-	kbSearchTopK      = 3
-	kbSearchTimeout   = 10 * time.Second
-	kbSaveTimeout     = 15 * time.Second
-	kbMaxContentLen   = 500
-	minWorthySaveLen  = 200
+	defaultKBSearchTopK     = 3
+	defaultKBSearchTimeout  = 10 * time.Second
+	defaultKBSaveTimeout    = 15 * time.Second
+	defaultKBMaxContentLen  = 500
+	defaultMinWorthySaveLen = 200
 )
+
+// kbConfig returns KB integration parameters, respecting env overrides.
+func kbConfig() (topK int, searchTimeout, saveTimeout time.Duration, maxContentLen, minSaveLen int) {
+	topK = defaultKBSearchTopK
+	searchTimeout = defaultKBSearchTimeout
+	saveTimeout = defaultKBSaveTimeout
+	maxContentLen = defaultKBMaxContentLen
+	minSaveLen = defaultMinWorthySaveLen
+
+	if v, err := strconv.Atoi(os.Getenv("DOZOR_KB_SEARCH_TOP_K")); err == nil && v > 0 {
+		topK = v
+	}
+	if v, err := time.ParseDuration(os.Getenv("DOZOR_KB_SEARCH_TIMEOUT")); err == nil && v > 0 {
+		searchTimeout = v
+	}
+	if v, err := time.ParseDuration(os.Getenv("DOZOR_KB_SAVE_TIMEOUT")); err == nil && v > 0 {
+		saveTimeout = v
+	}
+	return topK, searchTimeout, saveTimeout, maxContentLen, minSaveLen
+}
 
 // messageLoopDeps groups dependencies for the message loop to reduce parameter count.
 type messageLoopDeps struct {
@@ -100,10 +122,11 @@ func processAgentMessage(ctx context.Context, deps messageLoopDeps, msg bus.Mess
 	}
 
 	// Enrich message with KB context (long-term memory).
+	topK, searchTimeout, _, _, _ := kbConfig()
 	enrichedText := msg.Text
 	if deps.kbSearcher != nil && agent.NeedsMemoryContext(msg.Text) {
-		kbCtx, kbCancel := context.WithTimeout(ctx, kbSearchTimeout)
-		kbResult, err := deps.kbSearcher.Search(kbCtx, msg.Text, kbSearchTopK)
+		kbCtx, kbCancel := context.WithTimeout(ctx, searchTimeout)
+		kbResult, err := deps.kbSearcher.Search(kbCtx, msg.Text, topK)
 		kbCancel()
 		if err == nil && kbResult != "" && !strings.Contains(kbResult, "No relevant") {
 			enrichedText = msg.Text + "\n\n<memory_context>\n" + kbResult + "\n</memory_context>"
@@ -122,11 +145,12 @@ func processAgentMessage(ctx context.Context, deps messageLoopDeps, msg bus.Mess
 	}
 
 	// Auto-save important interactions to KB.
+	_, _, saveTimeout, maxContentLen, _ := kbConfig()
 	if deps.kbSearcher != nil && isWorthSaving(msg.Text, response) {
 		go func(q, r string) {
-			saveCtx, cancel := context.WithTimeout(context.Background(), kbSaveTimeout)
+			saveCtx, cancel := context.WithTimeout(context.Background(), saveTimeout)
 			defer cancel()
-			content := fmt.Sprintf("user: %s\nassistant: %s", q, truncateForKB(r, kbMaxContentLen))
+			content := fmt.Sprintf("user: %s\nassistant: %s", q, truncateForKB(r, maxContentLen))
 			if err := deps.kbSearcher.Save(saveCtx, content); err != nil {
 				slog.Warn("KB auto-save failed", slog.Any("error", err))
 			}
@@ -306,7 +330,8 @@ func isWorthSaving(question, answer string) bool {
 			return true
 		}
 	}
-	return len(answer) > minWorthySaveLen
+	_, _, _, _, minSaveLen := kbConfig()
+	return len(answer) > minSaveLen
 }
 
 // truncateForKB shortens a string to maxLen, appending "..." if truncated.

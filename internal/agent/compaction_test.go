@@ -28,7 +28,8 @@ func TestCompactSession_UnderThreshold(t *testing.T) {
 
 func TestCompactSession_OverThreshold(t *testing.T) {
 	store := NewSessionStore("")
-	for i := 0; i < compactionThreshold+5; i++ {
+	threshold, _ := compactionConfig()
+	for i := 0; i < threshold+5; i++ {
 		store.Add("chat1", provider.Message{
 			Role:    "user",
 			Content: "message " + strings.Repeat("x", 10),
@@ -52,7 +53,8 @@ func TestCompactSession_OverThreshold(t *testing.T) {
 		t.Error("summary should be set after compaction")
 	}
 
-	if store.Len("chat1") != compactionKeep {
-		t.Errorf("history should have %d messages, got %d", compactionKeep, store.Len("chat1"))
+	_, keep := compactionConfig()
+	if store.Len("chat1") != keep {
+		t.Errorf("history should have %d messages, got %d", keep, store.Len("chat1"))
 	}
 }

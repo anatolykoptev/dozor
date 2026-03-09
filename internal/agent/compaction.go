@@ -4,24 +4,40 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/anatolykoptev/dozor/internal/provider"
 )
 
 const (
-	compactionThreshold = 24
-	compactionKeep      = 8
+	defaultCompactionThreshold = 24
+	defaultCompactionKeep      = 8
 )
+
+// compactionConfig returns threshold and keep values, respecting env overrides.
+func compactionConfig() (threshold, keep int) {
+	threshold = defaultCompactionThreshold
+	keep = defaultCompactionKeep
+	if v, err := strconv.Atoi(os.Getenv("DOZOR_SESSION_COMPACTION_THRESHOLD")); err == nil && v > 0 {
+		threshold = v
+	}
+	if v, err := strconv.Atoi(os.Getenv("DOZOR_SESSION_COMPACTION_KEEP")); err == nil && v > 0 {
+		keep = v
+	}
+	return threshold, keep
+}
 
 // CompactSession summarizes old messages via LLM and truncates history.
 // No-op if session has fewer than compactionThreshold messages.
 func (l *Loop) CompactSession(ctx context.Context, sessionKey string) {
-	if l.sessions == nil || l.sessions.Len(sessionKey) < compactionThreshold {
+	threshold, keep := compactionConfig()
+	if l.sessions == nil || l.sessions.Len(sessionKey) < threshold {
 		return
 	}
 
-	removed := l.sessions.Truncate(sessionKey, compactionKeep)
+	removed := l.sessions.Truncate(sessionKey, keep)
 	if len(removed) == 0 {
 		return
 	}

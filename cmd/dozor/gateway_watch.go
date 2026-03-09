@@ -21,13 +21,29 @@ const (
 	kbTopKResults = 3
 )
 
+// watchDeps groups dependencies for the gateway watch loop.
+type watchDeps struct {
+	eng        *engine.ServerAgent
+	msgBus     *bus.Bus
+	cfg        engine.Config
+	kbSearcher *mcpclient.KBSearcher
+	notify     func(string)
+	lastHash   string
+}
+
 // runGatewayWatch runs periodic triage and feeds results through the message bus.
 func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, interval time.Duration, cfg engine.Config, kbSearcher *mcpclient.KBSearcher, notify func(string)) {
 	slog.Info("gateway watch started", slog.String("interval", interval.String())) //nolint:gosec // derived from duration
 	time.Sleep(30 * time.Second) // let everything boot
 
-	var lastWatchHash string
-	gatewayWatchTick(ctx, eng, msgBus, cfg, kbSearcher, &lastWatchHash, notify)
+	w := &watchDeps{
+		eng:        eng,
+		msgBus:     msgBus,
+		cfg:        cfg,
+		kbSearcher: kbSearcher,
+		notify:     notify,
+	}
+	w.tick(ctx)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -37,47 +53,74 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 			slog.Info("gateway watch stopped")
 			return
 		case <-ticker.C:
-			gatewayWatchTick(ctx, eng, msgBus, cfg, kbSearcher, &lastWatchHash, notify)
+			w.tick(ctx)
 		}
 	}
 }
 
-func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, cfg engine.Config, kbSearcher *mcpclient.KBSearcher, lastHash *string, notify func(string)) {
-	slog.Info("gateway watch: running triage", slog.Bool("dev_mode", eng.IsDevMode()))
-	result := eng.Triage(ctx, nil)
+func (w *watchDeps) tick(ctx context.Context) {
+	slog.Info("gateway watch: running triage", slog.Bool("dev_mode", w.eng.IsDevMode()))
 
-	if systemdAlerts := checkSystemdServices(ctx, eng); systemdAlerts != "" {
-		result += "\n\n" + systemdAlerts
-	}
-
-	triageLen := len(result)
-	result += collectExtraAlerts(ctx, cfg)
-
-	triageHealthy := strings.Contains(result[:triageLen], "\nHealth: healthy |")
-	if triageHealthy && len(result) == triageLen {
+	result := w.collectReport(ctx)
+	if w.isHealthy(result) {
 		slog.Info("gateway watch: all healthy")
-		*lastHash = ""
+		w.lastHash = ""
 		return
 	}
 
-	h := sha256.Sum256([]byte(result))
-	hash := hex.EncodeToString(h[:8])
-	if hash == *lastHash {
+	hash := hashResult(result)
+	if hash == w.lastHash {
 		slog.Info("gateway watch: same issues, suppressed (dedup)", slog.String("hash", hash))
 		return
 	}
-	*lastHash = hash
+	w.lastHash = hash
 
-	if !eng.IsDevMode() && tryAutoRemediate(ctx, eng, cfg, result, notify) {
+	if !w.eng.IsDevMode() && tryAutoRemediate(ctx, w.eng, w.cfg, result, w.notify) {
 		return
 	}
 
-	result = stripHealthyLine(result)
-	prompt := buildWatchPrompt(eng.IsDevMode())
-	prompt += enrichWithKB(ctx, kbSearcher, result)
+	w.routeToAgent(ctx, result, hash)
+}
 
-	slog.Info("gateway watch: issues detected, routing to agent", slog.String("hash", hash))
-	msgBus.PublishInbound(bus.Message{
+// collectReport runs triage, systemd checks, and extra alerts into a single report.
+func (w *watchDeps) collectReport(ctx context.Context) string {
+	result := w.eng.Triage(ctx, nil)
+
+	if alerts := checkSystemdServices(ctx, w.eng); alerts != "" {
+		result += "\n\n" + alerts
+	}
+
+	result += collectExtraAlerts(ctx, w.cfg)
+	return result
+}
+
+// isHealthy returns true when the report contains no actionable issues.
+func (w *watchDeps) isHealthy(result string) bool {
+	return strings.Contains(result, "\nHealth: healthy |") &&
+		!strings.Contains(result, "[CRITICAL]") &&
+		!strings.Contains(result, "[ERROR]") &&
+		!strings.Contains(result, "[WARNING]")
+}
+
+// routeToAgent logs detected issues and sends the triage to the LLM agent.
+func (w *watchDeps) routeToAgent(ctx context.Context, result, hash string) {
+	issues := engine.ExtractIssues(result)
+	for _, issue := range issues {
+		slog.Warn("gateway watch: issue detected",
+			slog.String("service", issue.Service),
+			slog.String("description", issue.Description),
+		)
+	}
+
+	result = stripHealthyLine(result)
+	prompt := buildWatchPrompt(w.eng.IsDevMode())
+	prompt += enrichWithKB(ctx, w.kbSearcher, result)
+
+	slog.Info("gateway watch: routing to agent",
+		slog.String("hash", hash),
+		slog.Int("issues", len(issues)),
+	)
+	w.msgBus.PublishInbound(bus.Message{
 		ID:        fmt.Sprintf("watch-%d", time.Now().UnixMilli()),
 		Channel:   "internal",
 		SenderID:  "watch",
@@ -85,6 +128,11 @@ func gatewayWatchTick(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.
 		Text:      prompt + result,
 		Timestamp: time.Now(),
 	})
+}
+
+func hashResult(result string) string {
+	h := sha256.Sum256([]byte(result))
+	return hex.EncodeToString(h[:8])
 }
 
 // collectExtraAlerts gathers alerts from remote server and LLM health checks.
@@ -138,14 +186,7 @@ func enrichWithKB(ctx context.Context, kbSearcher *mcpclient.KBSearcher, result 
 		return ""
 	}
 
-	var queries []string
-	for _, issue := range issues {
-		queries = append(queries, issue.Description)
-	}
-	query := strings.Join(queries, "; ")
-	if len(query) > kbQueryMaxLen {
-		query = query[:kbQueryMaxLen]
-	}
+	query := buildKBQuery(issues)
 
 	searchCtx, cancel := context.WithTimeout(ctx, kbSearchTimeoutSec*time.Second)
 	kbResult, err := kbSearcher.Search(searchCtx, query, kbTopKResults)
@@ -163,6 +204,19 @@ func enrichWithKB(ctx context.Context, kbSearcher *mcpclient.KBSearcher, result 
 	return "HISTORICAL CONTEXT (past resolved incidents — for reference ONLY, do NOT report these as current problems):\n" + kbResult + "\n\n"
 }
 
+// buildKBQuery joins issue descriptions into a truncated search query.
+func buildKBQuery(issues []engine.TriageIssue) string {
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		parts = append(parts, issue.Description)
+	}
+	query := strings.Join(parts, "; ")
+	if len(query) > kbQueryMaxLen {
+		query = query[:kbQueryMaxLen]
+	}
+	return query
+}
+
 // checkSystemdServices discovers user systemd services and reports any that are not active.
 func checkSystemdServices(ctx context.Context, eng *engine.ServerAgent) string {
 	services := eng.ResolveUserServices(ctx)
@@ -170,15 +224,12 @@ func checkSystemdServices(ctx context.Context, eng *engine.ServerAgent) string {
 		return ""
 	}
 
-	// Batch check: get all statuses via single GetSystemdStatus call.
 	names := engine.UserServiceNamesFrom(services)
 	status := eng.GetSystemdStatus(ctx, names)
 
-	// Parse "!!" markers from formatted output.
 	var down []string
 	for _, line := range strings.Split(status, "\n") {
 		if strings.HasPrefix(line, "[!!] ") {
-			// Format: "[!!] name: state"
 			rest := strings.TrimPrefix(line, "[!!] ")
 			if idx := strings.Index(rest, ":"); idx > 0 {
 				down = append(down, strings.TrimSpace(rest[:idx]))
