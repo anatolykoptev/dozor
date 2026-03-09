@@ -2,7 +2,7 @@ package engine
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
@@ -32,28 +32,31 @@ func (w *ContainerWatcher) Start(ctx context.Context) {
 	f.Add("type", string(events.ContainerEventType))
 
 	go func() {
-		log.Printf("[watcher] Docker events listener started")
+		slog.Info("[watcher] Docker events listener started")
 		for {
 			msgCh, errCh := w.client.Events(ctx, events.ListOptions{Filters: f})
 		inner:
 			for {
 				select {
 				case <-ctx.Done():
-					log.Printf("[watcher] Docker events listener stopped")
+					slog.Info("[watcher] Docker events listener stopped")
 					return
 				case msg := <-msgCh:
 					switch msg.Action {
 					case events.ActionStart, events.ActionStop, events.ActionDie,
 						events.ActionDestroy, events.ActionCreate:
 						name := msg.Actor.Attributes["name"]
-						log.Printf("[watcher] Container %s: %s → cache invalidated", name, msg.Action)
+						slog.Info("[watcher] container event, cache invalidated",
+							slog.String("container", name),
+							slog.String("action", string(msg.Action)))
 						w.discovery.InvalidateCache()
 					}
 				case err := <-errCh:
 					if ctx.Err() != nil {
 						return
 					}
-					log.Printf("[watcher] Docker events error: %v, reconnecting...", err)
+					slog.Info("[watcher] Docker events error, reconnecting",
+						slog.String("error", err.Error()))
 					break inner
 				}
 			}

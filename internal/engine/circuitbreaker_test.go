@@ -12,6 +12,7 @@ func TestCircuitBreaker_ClosedToOpen(t *testing.T) {
 	if !cb.Allow() {
 		t.Fatal("closed breaker should allow calls")
 	}
+	cb.RecordSuccess() // release permit
 
 	cb.RecordFailure()
 	cb.RecordFailure()
@@ -77,7 +78,7 @@ func TestCircuitBreaker_ResetOnSuccess(t *testing.T) {
 		t.Fatal("success should reset to closed")
 	}
 
-	// Failures should start from 0 again.
+	// Failures should start from 0 again (consecutive count reset).
 	cb.RecordFailure()
 	cb.RecordFailure()
 	if cb.State() != CBClosed {
@@ -122,4 +123,6 @@ func TestCircuitBreaker_HalfOpenRejectsConcurrent(t *testing.T) {
 	if cb.Allow() {
 		t.Fatal("concurrent call during half-open probe should be rejected")
 	}
+
+	cb.RecordSuccess() // release permit
 }

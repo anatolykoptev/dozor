@@ -11,7 +11,7 @@ const (
 	// triageProbeTimeout is the timeout in seconds for healthcheck probes during triage.
 	triageProbeTimeout = 5
 	// triageRecentErrorsMax is the max number of recent errors to attach to a service.
-	triageRecentErrorsMax = 5
+	triageRecentErrorsMax = 3
 	// triageErrorMsgMaxLen is the maximum length of an error message shown in triage.
 	triageErrorMsgMaxLen = 150
 )
@@ -246,6 +246,12 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 	overallHealth := triageOverallHealth(problematic)
 	fmt.Fprintf(&b, "Server Triage Report\nHealth: %s | Time: %s\n", overallHealth, now.Format("2006-01-02 15:04"))
 
+	if len(problematic) > 0 {
+		b.WriteString("Issues: ")
+		b.WriteString(triageIssueSummary(problematic))
+		b.WriteString("\n")
+	}
+
 	if triageHasGroups(statuses) {
 		a.writeGroupedTriage(ctx, &b, statuses)
 	} else {
@@ -294,14 +300,35 @@ func ExtractIssues(report string) []TriageIssue {
 	return issues
 }
 
+// triageIssueSummary builds a compact one-line summary of all problematic services.
+// Example: "postgres(WARNING, 5 errors), go-code(ERROR, 1 restart)"
+func triageIssueSummary(problematic []ServiceStatus) string {
+	parts := make([]string, 0, len(problematic))
+	for _, s := range problematic {
+		level := s.GetAlertLevel()
+		var details []string
+		if s.State != StateRunning {
+			details = append(details, string(s.State))
+		}
+		if s.RestartCount > 0 {
+			details = append(details, fmt.Sprintf("%d restarts", s.RestartCount))
+		}
+		if s.ErrorCount > 0 {
+			details = append(details, fmt.Sprintf("%d errors", s.ErrorCount))
+		}
+		if len(details) == 0 {
+			details = append(details, "unhealthy")
+		}
+		parts = append(parts, fmt.Sprintf("%s(%s, %s)", s.Name, level, strings.Join(details, ", ")))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // writeFlatTriage renders the original flat problematic/healthy output.
 func (a *ServerAgent) writeFlatTriage(ctx context.Context, b *strings.Builder, problematic []ServiceStatus, healthy []string) {
-	if len(problematic) > 0 {
-		fmt.Fprintf(b, "\nServices needing attention (%d):\n", len(problematic))
-		for _, s := range problematic {
-			b.WriteString("\n")
-			a.writeServiceDetail(ctx, b, s)
-		}
+	for _, s := range problematic {
+		b.WriteString("\n")
+		a.writeServiceDetail(ctx, b, s)
 	}
 
 	if len(healthy) > 0 {

@@ -6,46 +6,49 @@ import (
 	"testing"
 
 	"github.com/anatolykoptev/dozor/internal/provider"
-	"github.com/anatolykoptev/dozor/internal/toolreg"
 )
 
-func TestCompactSession_UnderThreshold(t *testing.T) {
+func TestCompact_UnderThreshold(t *testing.T) {
 	store := NewSessionStore("")
-	for i := 0; i < 5; i++ {
+
+	called := false
+	store.WithCompactor(func(_ context.Context, _ string) (string, error) {
+		called = true
+		return "summary", nil
+	})
+
+	for range 5 {
 		store.Add("chat1", provider.Message{Role: "user", Content: "msg"})
 	}
 
-	p := &mockProvider{}
-	l := newTestLoop(p, toolreg.NewRegistry(), 10)
-	l.sessions = store
+	store.Compact(context.Background(), "chat1")
 
-	l.CompactSession(context.Background(), "chat1")
-
-	if p.callCount != 0 {
-		t.Errorf("provider should not be called, got %d", p.callCount)
+	if called {
+		t.Error("summarize should not be called when under threshold")
 	}
 }
 
-func TestCompactSession_OverThreshold(t *testing.T) {
+func TestCompact_OverThreshold(t *testing.T) {
 	store := NewSessionStore("")
-	threshold, _ := compactionConfig()
-	for i := 0; i < threshold+5; i++ {
+
+	var gotPrompt string
+	store.WithCompactor(func(_ context.Context, prompt string) (string, error) {
+		gotPrompt = prompt
+		return "Summary: user sent many test messages", nil
+	})
+
+	threshold, keep := compactionConfig()
+	for range threshold + 5 {
 		store.Add("chat1", provider.Message{
 			Role:    "user",
 			Content: "message " + strings.Repeat("x", 10),
 		})
 	}
 
-	p := &mockProvider{responses: []mockResponse{
-		textResp("Summary: user sent many test messages"),
-	}}
-	l := newTestLoop(p, toolreg.NewRegistry(), 10)
-	l.sessions = store
+	store.Compact(context.Background(), "chat1")
 
-	l.CompactSession(context.Background(), "chat1")
-
-	if p.callCount != 1 {
-		t.Errorf("provider should be called once, got %d", p.callCount)
+	if gotPrompt == "" {
+		t.Error("summarize should be called when over threshold")
 	}
 
 	summary := store.GetSummary("chat1")
@@ -53,8 +56,18 @@ func TestCompactSession_OverThreshold(t *testing.T) {
 		t.Error("summary should be set after compaction")
 	}
 
-	_, keep := compactionConfig()
 	if store.Len("chat1") != keep {
 		t.Errorf("history should have %d messages, got %d", keep, store.Len("chat1"))
 	}
+}
+
+func TestCompact_NoCompactor(t *testing.T) {
+	store := NewSessionStore("")
+	threshold, _ := compactionConfig()
+	for range threshold + 5 {
+		store.Add("chat1", provider.Message{Role: "user", Content: "msg"})
+	}
+
+	// Must not panic when no compactor attached.
+	store.Compact(context.Background(), "chat1")
 }

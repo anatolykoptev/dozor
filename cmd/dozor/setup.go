@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
+	session "github.com/anatolykoptev/go-session"
 	"github.com/anatolykoptev/dozor/internal/agent"
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/provider"
@@ -57,6 +59,7 @@ func buildAgentStack(eng *engine.ServerAgent) *agentStack {
 
 	sessionsDir := workspacePath + "/sessions"
 	sessions := agent.NewSessionStore(sessionsDir)
+	sessions.WithCompactor(buildSummarizeFn(llm))
 	loop.WithSessions(sessions)
 
 	return &agentStack{
@@ -152,4 +155,21 @@ func startHTTPServer(ctx context.Context, srv *http.Server, label string) {
 		slog.Warn("HTTP server shutdown error", slog.String("server", label), slog.Any("error", err))
 	}
 	slog.Info(label + " stopped")
+}
+
+// buildSummarizeFn creates a session.SummarizeFn backed by the LLM provider.
+func buildSummarizeFn(p provider.Provider) session.SummarizeFn {
+	return func(_ context.Context, prompt string) (string, error) {
+		resp, err := p.Chat(
+			[]provider.Message{
+				{Role: "system", Content: "You are a concise conversation summarizer. Output only the summary, no preamble."},
+				{Role: "user", Content: prompt},
+			},
+			nil,
+		)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(resp.Content), nil
+	}
 }

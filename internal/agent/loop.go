@@ -153,7 +153,7 @@ func (l *Loop) persistExchange(sessionKey, userMsg, assistantMsg string) {
 	// Auto-compact when session grows beyond threshold.
 	threshold, _ := compactionConfig()
 	if l.sessions.Len(sessionKey) >= threshold {
-		go l.CompactSession(context.Background(), sessionKey)
+		go l.sessions.Compact(context.Background(), sessionKey)
 	}
 }
 

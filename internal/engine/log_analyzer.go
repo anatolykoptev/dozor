@@ -122,11 +122,25 @@ type compiledErrorPattern struct {
 
 var compiledPatterns []compiledErrorPattern
 
+// suppressedPatterns matches benign log noise that should be excluded from triage.
+var suppressedPatterns = []string{
+	`canceling statement due to user request`,
+	`connection to client lost`,
+	`context canceled`,
+	`graph .* does not exist`,
+}
+
+var compiledSuppressed []*regexp.Regexp
+
 func init() {
 	compiledPatterns = make([]compiledErrorPattern, len(errorPatterns))
 	for i, p := range errorPatterns {
 		compiledPatterns[i].re = regexp.MustCompile(p.Pattern)
 		compiledPatterns[i].pattern = p
+	}
+	compiledSuppressed = make([]*regexp.Regexp, len(suppressedPatterns))
+	for i, p := range suppressedPatterns {
+		compiledSuppressed[i] = regexp.MustCompile(`(?i)` + p)
 	}
 }
 
@@ -141,13 +155,24 @@ func LabelPattern(pattern string) ErrorPattern {
 	}
 }
 
+// isSuppressed returns true if the entry matches a known benign log pattern.
+func isSuppressed(entry LogEntry) bool {
+	for _, re := range compiledSuppressed {
+		if re.MatchString(entry.Message) || re.MatchString(entry.Raw) {
+			return true
+		}
+	}
+	return false
+}
+
 // AnalyzeResult from log analysis.
 type AnalyzeResult struct {
-	Service      string  `json:"service"`
-	TotalLines   int     `json:"total_lines"`
-	ErrorCount   int     `json:"error_count"`
-	WarningCount int     `json:"warning_count"`
-	Issues       []Issue `json:"issues"`
+	Service         string  `json:"service"`
+	TotalLines      int     `json:"total_lines"`
+	ErrorCount      int     `json:"error_count"`
+	WarningCount    int     `json:"warning_count"`
+	SuppressedCount int     `json:"suppressed_count"`
+	Issues          []Issue `json:"issues"`
 }
 
 // Issue found during log analysis.
@@ -235,6 +260,10 @@ func AnalyzeLogs(entries []LogEntry, service string, extraPatterns ...ErrorPatte
 	issueExamples := make(map[string]string)
 
 	for _, entry := range entries {
+		if isSuppressed(entry) {
+			result.SuppressedCount++
+			continue
+		}
 		countLogLevels(&result, entry)
 		matchEntryToPatterns(entry, service, allPatterns, issueCounts, issueExamples)
 	}

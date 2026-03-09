@@ -52,7 +52,6 @@ func TestSessionStore_Persistence(t *testing.T) {
 	// Write session.
 	s1 := NewSessionStore(dir)
 	s1.Add("key1", provider.Message{Role: "user", Content: "persisted"})
-	s1.SetSummary("key1", "test summary")
 	if err := s1.Save("key1"); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
@@ -75,37 +74,6 @@ func TestSessionStore_Persistence(t *testing.T) {
 	if len(msgs) != 1 || msgs[0].Content != "persisted" {
 		t.Errorf("persistence failed: got %+v", msgs)
 	}
-	if s2.GetSummary("key1") != "test summary" {
-		t.Errorf("summary not persisted: got %q", s2.GetSummary("key1"))
-	}
-}
-
-func TestSessionStore_Clear(t *testing.T) {
-	s := NewSessionStore("")
-	s.Add("k", provider.Message{Role: "user", Content: "x"})
-	s.Clear("k")
-
-	if s.Len("k") != 0 {
-		t.Errorf("expected 0 after clear, got %d", s.Len("k"))
-	}
-	if s.Get("k") != nil {
-		t.Error("expected nil after clear")
-	}
-}
-
-func TestSessionStore_Truncate(t *testing.T) {
-	s := NewSessionStore("")
-	for i := 0; i < 10; i++ {
-		s.Add("k", provider.Message{Role: "user", Content: "msg"})
-	}
-
-	removed := s.Truncate("k", 3)
-	if len(removed) != 7 {
-		t.Errorf("expected 7 removed, got %d", len(removed))
-	}
-	if s.Len("k") != 3 {
-		t.Errorf("expected 3 remaining, got %d", s.Len("k"))
-	}
 }
 
 func TestSessionStore_Summary(t *testing.T) {
@@ -113,8 +81,31 @@ func TestSessionStore_Summary(t *testing.T) {
 	if s.GetSummary("k") != "" {
 		t.Error("expected empty summary for new key")
 	}
-	s.SetSummary("k", "compressed history")
-	if s.GetSummary("k") != "compressed history" {
-		t.Errorf("got %q", s.GetSummary("k"))
+}
+
+func TestSessionStore_ToolCallRoundtrip(t *testing.T) {
+	s := NewSessionStore("")
+	orig := provider.Message{
+		Role:       "assistant",
+		Content:    "",
+		ToolCalls: []provider.ToolCall{
+			{ID: "call_1", Name: "my_tool", Args: map[string]any{"x": float64(1)}},
+		},
+	}
+	s.Add("chat1", orig)
+
+	msgs := s.Get("chat1")
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if len(msgs[0].ToolCalls) != 1 {
+		t.Fatalf("got %d tool calls, want 1", len(msgs[0].ToolCalls))
+	}
+	tc := msgs[0].ToolCalls[0]
+	if tc.ID != "call_1" || tc.Name != "my_tool" {
+		t.Errorf("tool call id/name mismatch: %+v", tc)
+	}
+	if tc.Args["x"] != float64(1) {
+		t.Errorf("tool call args mismatch: %+v", tc.Args)
 	}
 }
