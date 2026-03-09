@@ -149,6 +149,11 @@ func (l *Loop) persistExchange(sessionKey, userMsg, assistantMsg string) {
 	if err := l.sessions.Save(sessionKey); err != nil {
 		slog.Warn("session save failed", slog.String("key", sessionKey), slog.Any("error", err))
 	}
+
+	// Auto-compact when session grows beyond threshold.
+	if l.sessions.Len(sessionKey) >= compactionThreshold {
+		go l.CompactSession(context.Background(), sessionKey)
+	}
 }
 
 func (l *Loop) executeToolCalls(ctx context.Context, messages []provider.Message, toolCalls []provider.ToolCall, iteration int, failCounts map[failKey]int) ([]provider.Message, error) {

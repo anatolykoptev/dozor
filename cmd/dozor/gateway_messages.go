@@ -8,10 +8,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anatolykoptev/dozor/internal/agent"
 	"github.com/anatolykoptev/dozor/internal/approvals"
 	"github.com/anatolykoptev/dozor/internal/bus"
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/session"
+)
+
+const (
+	kbSearchTopK      = 3
+	kbSearchTimeout   = 10 * time.Second
+	kbSaveTimeout     = 15 * time.Second
+	kbMaxContentLen   = 500
+	minWorthySaveLen  = 200
 )
 
 // messageLoopDeps groups dependencies for the message loop to reduce parameter count.
@@ -90,7 +99,18 @@ func processAgentMessage(ctx context.Context, deps messageLoopDeps, msg bus.Mess
 		})
 	}
 
-	response, err := deps.stack.loop.Process(ctx, msg.ChatID, msg.Text)
+	// Enrich message with KB context (long-term memory).
+	enrichedText := msg.Text
+	if deps.kbSearcher != nil && agent.NeedsMemoryContext(msg.Text) {
+		kbCtx, kbCancel := context.WithTimeout(ctx, kbSearchTimeout)
+		kbResult, err := deps.kbSearcher.Search(kbCtx, msg.Text, kbSearchTopK)
+		kbCancel()
+		if err == nil && kbResult != "" && !strings.Contains(kbResult, "No relevant") {
+			enrichedText = msg.Text + "\n\n<memory_context>\n" + kbResult + "\n</memory_context>"
+		}
+	}
+
+	response, err := deps.stack.loop.Process(ctx, msg.ChatID, enrichedText)
 	if err != nil {
 		slog.Error("agent processing failed", slog.Any("error", err))
 		if strings.Contains(err.Error(), "max tool iterations reached") {
@@ -99,6 +119,18 @@ func processAgentMessage(ctx context.Context, deps messageLoopDeps, msg bus.Mess
 		} else {
 			response = "Error: " + err.Error()
 		}
+	}
+
+	// Auto-save important interactions to KB.
+	if deps.kbSearcher != nil && isWorthSaving(msg.Text, response) {
+		go func(q, r string) {
+			saveCtx, cancel := context.WithTimeout(context.Background(), kbSaveTimeout)
+			defer cancel()
+			content := fmt.Sprintf("user: %s\nassistant: %s", q, truncateForKB(r, kbMaxContentLen))
+			if err := deps.kbSearcher.Save(saveCtx, content); err != nil {
+				slog.Warn("KB auto-save failed", slog.Any("error", err))
+			}
+		}(msg.Text, response)
 	}
 
 	deps.msgBus.PublishOutbound(bus.Message{
@@ -261,4 +293,26 @@ func handleExitSession(msgBus *bus.Bus, mgr *session.Manager, msg bus.Message) {
 		Timestamp: time.Now(),
 	})
 	slog.Info("session ended by user", slog.String("chat_id", msg.ChatID))
+}
+
+// isWorthSaving determines if an interaction should be persisted to the knowledge base.
+func isWorthSaving(question, answer string) bool {
+	if !agent.NeedsMemoryContext(question) {
+		return false
+	}
+	indicators := []string{"✅", "Fixed", "Restarted", "Deployed", "Error:", "Root cause", "docker", "systemctl"}
+	for _, ind := range indicators {
+		if strings.Contains(answer, ind) {
+			return true
+		}
+	}
+	return len(answer) > minWorthySaveLen
+}
+
+// truncateForKB shortens a string to maxLen, appending "..." if truncated.
+func truncateForKB(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
