@@ -111,7 +111,7 @@ func TestProcess_SimpleTextResponse(t *testing.T) {
 	}}
 	l := newTestLoop(p, toolreg.NewRegistry(), 10)
 
-	got, err := l.Process(context.Background(), "ping")
+	got, err := l.Process(context.Background(), "", "ping")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestProcess_SingleToolCall(t *testing.T) {
 	}}
 	l := newTestLoop(p, registryWith(tool), 10)
 
-	got, err := l.Process(context.Background(), "call the tool")
+	got, err := l.Process(context.Background(), "", "call the tool")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestProcess_EmptyResponseRetry(t *testing.T) {
 	}}
 	l := newTestLoop(p, toolreg.NewRegistry(), 10)
 
-	got, err := l.Process(context.Background(), "ask")
+	got, err := l.Process(context.Background(), "", "ask")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestProcess_EmptyResponseExhaustsIterations(t *testing.T) {
 	p := &mockProvider{responses: responses}
 	l := newTestLoop(p, toolreg.NewRegistry(), maxIters)
 
-	_, err := l.Process(context.Background(), "ask")
+	_, err := l.Process(context.Background(), "", "ask")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -202,7 +202,7 @@ func TestProcess_ToolExecutionError(t *testing.T) {
 	}}
 	l := newTestLoop(p, registryWith(tool), 10)
 
-	got, err := l.Process(context.Background(), "do it")
+	got, err := l.Process(context.Background(), "", "do it")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestProcess_RepeatedToolFailure(t *testing.T) {
 	p := &mockProvider{responses: responses}
 	l := newTestLoop(p, registryWith(tool), 20)
 
-	_, err := l.Process(context.Background(), "go")
+	_, err := l.Process(context.Background(), "", "go")
 	if err == nil {
 		t.Fatal("expected error due to repeated tool failure, got nil")
 	}
@@ -274,7 +274,7 @@ func TestProcess_ContextCancelled(t *testing.T) {
 	}}
 
 	l := newTestLoop(p, registryWith(cancellingTool), 10)
-	_, err := l.Process(ctx, "work")
+	_, err := l.Process(ctx, "", "work")
 
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
@@ -300,7 +300,7 @@ func TestProcess_LLMError(t *testing.T) {
 	p := &mockProvider{responses: []mockResponse{errResp(provErr)}}
 	l := newTestLoop(p, toolreg.NewRegistry(), 10)
 
-	_, err := l.Process(context.Background(), "ask")
+	_, err := l.Process(context.Background(), "", "ask")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -329,7 +329,7 @@ func TestProcess_MaxIterationsReached(t *testing.T) {
 	p := &mockProvider{responses: responses}
 	l := newTestLoop(p, registryWith(tool), maxIters)
 
-	_, err := l.Process(context.Background(), "loop")
+	_, err := l.Process(context.Background(), "", "loop")
 	if err == nil {
 		t.Fatal("expected max iterations error, got nil")
 	}
@@ -366,7 +366,7 @@ func TestProcess_ToolResultTruncation(t *testing.T) {
 	}
 
 	l := newTestLoop(capturingProvider, registryWith(tool), 10)
-	_, err := l.Process(context.Background(), "fetch big data")
+	_, err := l.Process(context.Background(), "", "fetch big data")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -401,4 +401,59 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// TestProcess_HistoryInjected verifies that session history is injected into the
+// LLM messages and that new exchanges are persisted.
+func TestProcess_HistoryInjected(t *testing.T) {
+	store := NewSessionStore("")
+	store.Add("chat1", provider.Message{Role: "user", Content: "old question"})
+	store.Add("chat1", provider.Message{Role: "assistant", Content: "old answer"})
+
+	var capturedMsgs []provider.Message
+	cp := &capturingProvider{
+		onChat: func(msgs []provider.Message) {
+			capturedMsgs = msgs
+		},
+		inner: &mockProvider{responses: []mockResponse{
+			textResp("new answer"),
+		}},
+	}
+
+	l := newTestLoop(cp, toolreg.NewRegistry(), 10)
+	l.WithSessions(store)
+
+	got, err := l.Process(context.Background(), "chat1", "new question")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "new answer" {
+		t.Errorf("got %q, want %q", got, "new answer")
+	}
+
+	// Verify history was injected: system + old_user + old_assistant + new_user = 4 messages.
+	if len(capturedMsgs) != 4 {
+		t.Fatalf("expected 4 messages sent to LLM, got %d", len(capturedMsgs))
+	}
+	if capturedMsgs[0].Role != "system" {
+		t.Error("first message should be system")
+	}
+	if capturedMsgs[1].Content != "old question" {
+		t.Errorf("expected old question, got %q", capturedMsgs[1].Content)
+	}
+	if capturedMsgs[2].Content != "old answer" {
+		t.Errorf("expected old answer, got %q", capturedMsgs[2].Content)
+	}
+	if capturedMsgs[3].Content != "new question" {
+		t.Errorf("expected new question, got %q", capturedMsgs[3].Content)
+	}
+
+	// Verify new exchange was persisted.
+	all := store.Get("chat1")
+	if len(all) != 4 {
+		t.Fatalf("expected 4 stored messages, got %d", len(all))
+	}
+	if all[2].Content != "new question" || all[3].Content != "new answer" {
+		t.Errorf("new exchange not persisted: %+v", all[2:])
+	}
 }

@@ -90,7 +90,7 @@ func processAgentMessage(ctx context.Context, deps messageLoopDeps, msg bus.Mess
 		})
 	}
 
-	response, err := deps.stack.loop.Process(ctx, msg.Text)
+	response, err := deps.stack.loop.Process(ctx, msg.ChatID, msg.Text)
 	if err != nil {
 		slog.Error("agent processing failed", slog.Any("error", err))
 		if strings.Contains(err.Error(), "max tool iterations reached") {

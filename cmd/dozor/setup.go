@@ -28,6 +28,7 @@ type agentStack struct {
 	skillsLoader  *skills.Loader
 	llm           provider.Provider
 	loop          *agent.Loop
+	sessions      *agent.SessionStore
 	workspacePath string
 }
 
@@ -54,11 +55,16 @@ func buildAgentStack(eng *engine.ServerAgent) *agentStack {
 	llm := provider.NewFromEnv()
 	loop := agent.NewLoop(llm, registry, llm.MaxIterations(), workspacePath, skillsLoader)
 
+	sessionsDir := workspacePath + "/sessions"
+	sessions := agent.NewSessionStore(sessionsDir)
+	loop.WithSessions(sessions)
+
 	return &agentStack{
 		registry:      registry,
 		skillsLoader:  skillsLoader,
 		llm:           llm,
 		loop:          loop,
+		sessions:      sessions,
 		workspacePath: workspacePath,
 	}
 }

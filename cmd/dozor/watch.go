@@ -100,7 +100,7 @@ func runSmartCheck(ctx context.Context, cfg engine.Config, eng *engine.ServerAge
 
 	prompt := "The following is a server triage report. Analyze the issues and take corrective action if safe to do so. After taking any actions, verify the fixes.\n\nTriage Report:\n" + triageResult
 
-	response, err := loop.Process(ctx, prompt)
+	response, err := loop.Process(ctx, "watch", prompt)
 	if err != nil {
 		slog.Error("LLM analysis failed", slog.Any("error", err))
 		if cfg.WebhookURL != "" {

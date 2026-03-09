@@ -12,7 +12,7 @@ import (
 
 // MessageProcessor processes a text message and returns a text response.
 type MessageProcessor interface {
-	Process(ctx context.Context, message string) (string, error)
+	Process(ctx context.Context, sessionKey, message string) (string, error)
 }
 
 // Executor implements a2asrv.AgentExecutor by bridging to the agent loop.
@@ -44,7 +44,7 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	}
 
 	// Process through agent loop (no streaming for now).
-	response, err := e.proc.Process(ctx, content)
+	response, err := e.proc.Process(ctx, "a2a", content)
 	if err != nil {
 		failEvent := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateFailed,
 			a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx, a2a.TextPart{Text: err.Error()}))

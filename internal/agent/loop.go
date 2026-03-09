@@ -14,8 +14,8 @@ import (
 
 const (
 	// maxToolResultLen is the maximum characters for a single tool result before truncation.
-	maxToolResultLen = 30000
-	maxRepeatFails   = 2
+	maxToolResultLen  = 30000
+	maxRepeatFails    = 2
 	iterWarnThreshold = 5
 )
 
@@ -27,6 +27,13 @@ type Loop struct {
 	registry     *toolreg.Registry
 	maxIters     int
 	systemPrompt string // built from workspace + skills
+	sessions     *SessionStore
+}
+
+// WithSessions attaches a SessionStore for conversation history.
+func (l *Loop) WithSessions(s *SessionStore) *Loop {
+	l.sessions = s
+	return l
 }
 
 // NewLoop creates a new agent loop with dynamic system prompt.
@@ -40,11 +47,10 @@ func NewLoop(p provider.Provider, r *toolreg.Registry, maxIters int, workspacePa
 }
 
 // Process takes a user message and runs the LLM tool-calling loop to produce a response.
-func (l *Loop) Process(ctx context.Context, message string) (string, error) {
-	messages := []provider.Message{
-		{Role: "system", Content: l.systemPrompt},
-		{Role: "user", Content: message},
-	}
+// When sessionKey is non-empty and a SessionStore is attached, conversation history
+// is injected before the current message and persisted after the response.
+func (l *Loop) Process(ctx context.Context, sessionKey, message string) (string, error) {
+	messages := l.buildMessages(sessionKey, message)
 
 	// Track repeated identical tool failures to break infinite loops.
 	failCounts := make(map[failKey]int)
@@ -71,6 +77,7 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 				}
 				return "", fmt.Errorf("empty model response after %d iterations", iteration)
 			}
+			l.persistExchange(sessionKey, message, content)
 			return content, nil
 		}
 
@@ -109,6 +116,39 @@ func (l *Loop) Process(ctx context.Context, message string) (string, error) {
 	}
 
 	return "", fmt.Errorf("max tool iterations reached (%d)", l.maxIters)
+}
+
+// buildMessages constructs the initial message list with system prompt, optional
+// session history, and the current user message.
+func (l *Loop) buildMessages(sessionKey, message string) []provider.Message {
+	messages := []provider.Message{
+		{Role: "system", Content: l.systemPrompt},
+	}
+
+	if l.sessions != nil && sessionKey != "" {
+		if summary := l.sessions.GetSummary(sessionKey); summary != "" {
+			messages = append(messages,
+				provider.Message{Role: "user", Content: "[Previous conversation summary]\n" + summary},
+				provider.Message{Role: "assistant", Content: "Understood, I have the context from our previous conversation."},
+			)
+		}
+		messages = append(messages, l.sessions.Get(sessionKey)...)
+	}
+
+	messages = append(messages, provider.Message{Role: "user", Content: message})
+	return messages
+}
+
+// persistExchange saves user+assistant messages to the session store.
+func (l *Loop) persistExchange(sessionKey, userMsg, assistantMsg string) {
+	if l.sessions == nil || sessionKey == "" {
+		return
+	}
+	l.sessions.Add(sessionKey, provider.Message{Role: "user", Content: userMsg})
+	l.sessions.Add(sessionKey, provider.Message{Role: "assistant", Content: assistantMsg})
+	if err := l.sessions.Save(sessionKey); err != nil {
+		slog.Warn("session save failed", slog.String("key", sessionKey), slog.Any("error", err))
+	}
 }
 
 func (l *Loop) executeToolCalls(ctx context.Context, messages []provider.Message, toolCalls []provider.ToolCall, iteration int, failCounts map[failKey]int) ([]provider.Message, error) {
