@@ -13,7 +13,7 @@ Health: critical | Time: 2026-02-23 12:00
 
 Services needing attention (3):
 
-[CRITICAL] moonshine — exited, 0 restarts, 0 errors
+[CRITICAL] ox-whisper — exited, 0 restarts, 0 errors
 [WARNING] qdrant — running, 0 restarts, 5 errors
   Issue: telemetry connection errors (5 occurrences)
 [ERROR] memdb-api — running, 2 restarts, 3 errors
@@ -23,7 +23,7 @@ Services needing attention (3):
 		service string
 		want    string
 	}{
-		{"moonshine", "CRITICAL"},
+		{"ox-whisper", "CRITICAL"},
 		{"qdrant", "WARNING"},
 		{"memdb-api", "ERROR"},
 		{"nonexistent", ""},
@@ -50,12 +50,12 @@ func TestExtractIssueLevel_ServiceNamePrefix(t *testing.T) {
 }
 
 func TestBuildAutoRemediateMessage_RestartedOnly(t *testing.T) {
-	msg := buildAutoRemediateMessage([]string{"moonshine", "memdb-api"}, nil)
+	msg := buildAutoRemediateMessage([]string{"ox-whisper", "memdb-api"}, nil)
 
 	if !strings.Contains(msg, "Auto-fix applied") {
 		t.Error("missing header")
 	}
-	if !strings.Contains(msg, "moonshine, memdb-api") {
+	if !strings.Contains(msg, "ox-whisper, memdb-api") {
 		t.Error("missing restarted services")
 	}
 	if !strings.Contains(msg, "all services recovered") {
@@ -82,7 +82,7 @@ func TestBuildAutoRemediateMessage_SuppressedOnly(t *testing.T) {
 
 func TestBuildAutoRemediateMessage_Both(t *testing.T) {
 	msg := buildAutoRemediateMessage(
-		[]string{"moonshine"},
+		[]string{"ox-whisper"},
 		[]string{"qdrant (telemetry errors)"},
 	)
 
