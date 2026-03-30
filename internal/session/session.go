@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	tgfmt "github.com/anatolykoptev/go-kit/telegram"
 	"github.com/google/uuid"
 )
 
@@ -224,7 +225,12 @@ func (s *Session) handleAssistant(event map[string]any) {
 			text, _ := b["text"].(string)
 			text = strings.TrimSpace(text)
 			if text != "" {
-				s.notifyUser(truncate(text, maxMessageLen))
+				chunks := tgfmt.SplitMessage(text, maxMessageLen)
+				for _, chunk := range chunks {
+					if strings.TrimSpace(chunk) != "" {
+						s.notifyUser(chunk)
+					}
+				}
 			}
 
 		case "tool_use":
