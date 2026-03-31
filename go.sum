@@ -8,6 +8,8 @@ github.com/anatolykoptev/go-kit v0.13.0 h1:6yHqMT5Kr94jvpDzM1vdDNLC1P+4pMqK0GmY3
 github.com/anatolykoptev/go-kit v0.13.0/go.mod h1:FT5i4PNztu9a924MG0yp705FxBrI6TJZMbyTEhNf+rQ=
 github.com/anatolykoptev/go-kit v0.14.0 h1:Bfj2P9ImtbH0FJ8hexEtNta+97hHdHTyadOwrGWebDM=
 github.com/anatolykoptev/go-kit v0.14.0/go.mod h1:FT5i4PNztu9a924MG0yp705FxBrI6TJZMbyTEhNf+rQ=
+github.com/anatolykoptev/go-kit v0.15.0 h1:+eGHSC+wf/CwlrQMi8wiay6o1He1o3Jlcv4w+CdzopE=
+github.com/anatolykoptev/go-kit v0.15.0/go.mod h1:FT5i4PNztu9a924MG0yp705FxBrI6TJZMbyTEhNf+rQ=
 github.com/anatolykoptev/go-session v0.3.0 h1:6NQVewhu0tlCEJy8uUx8toEGth06wEoj0rNYRjNdedA=
 github.com/anatolykoptev/go-session v0.3.0/go.mod h1:OQTJLr00UOaNlrc31agxs+ycPapaCoP8OAcX1FGgxGg=
 github.com/anatolykoptev/go-stt v0.0.0-20260309003937-1acf00a42f4f h1:cIcZpnS0PI0z+YFBcUflZegI1Si3B2o0iTPM+WaaPOQ=
