@@ -22,8 +22,6 @@ import (
 const (
 	// progressRateLimit is the minimum interval between tool_use progress notifications.
 	progressRateLimit = 500 * time.Millisecond
-	// maxMessageLen is the maximum length of a single Telegram message.
-	maxMessageLen = 4000
 	// scannerMaxBuf is the max token size for the stdout scanner (1 MB).
 	scannerMaxBuf = 1024 * 1024
 )
@@ -225,7 +223,7 @@ func (s *Session) handleAssistant(event map[string]any) {
 			text, _ := b["text"].(string)
 			text = strings.TrimSpace(text)
 			if text != "" {
-				chunks := tgfmt.SplitMessage(text, maxMessageLen)
+				chunks := tgfmt.SplitMessage(text, tgfmt.MaxMessageLen)
 				for _, chunk := range chunks {
 					if strings.TrimSpace(chunk) != "" {
 						s.notifyUser(chunk)
@@ -387,7 +385,7 @@ var toolProgressMap = map[string]toolProgressEntry{
 func formatToolProgress(name string, input map[string]any) string {
 	if entry, ok := toolProgressMap[name]; ok {
 		if val, ok := input[entry.field].(string); ok {
-			val = truncate(val, 100)
+			val = tgfmt.Truncate(val, 100)
 			return entry.emoji + val
 		}
 		return ""
@@ -400,12 +398,4 @@ func formatToolProgress(name string, input map[string]any) string {
 		return "⚙️ " + name
 	}
 	return ""
-}
-
-// truncate limits a string to maxLen, appending "..." if truncated.
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
 }

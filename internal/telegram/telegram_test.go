@@ -3,10 +3,12 @@ package telegram
 import (
 	"errors"
 	"testing"
+
+	tgfmt "github.com/anatolykoptev/go-kit/telegram"
 )
 
 // ---------------------------------------------------------------------------
-// isTransientTelegramError
+// tgfmt.IsTransientError
 // ---------------------------------------------------------------------------
 
 func TestIsTransientTelegramError(t *testing.T) {
@@ -25,8 +27,8 @@ func TestIsTransientTelegramError(t *testing.T) {
 	for _, tc := range transientCases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := errors.New(tc.msg)
-			if !isTransientTelegramError(err) {
-				t.Errorf("isTransientTelegramError(%q) = false, want true", tc.msg)
+			if !tgfmt.IsTransientError(err) {
+				t.Errorf("IsTransientError(%q) = false, want true", tc.msg)
 			}
 		})
 	}
@@ -44,8 +46,8 @@ func TestIsTransientTelegramError(t *testing.T) {
 	for _, tc := range nonTransientCases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := errors.New(tc.msg)
-			if isTransientTelegramError(err) {
-				t.Errorf("isTransientTelegramError(%q) = true, want false", tc.msg)
+			if tgfmt.IsTransientError(err) {
+				t.Errorf("IsTransientError(%q) = true, want false", tc.msg)
 			}
 		})
 	}

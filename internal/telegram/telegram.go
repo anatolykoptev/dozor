@@ -12,15 +12,14 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/bus"
+	tgfmt "github.com/anatolykoptev/go-kit/telegram"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 const (
-	// telegramCompactMaxChars is the character limit before compacting LLM output for Telegram.
 	telegramCompactMaxChars = 4000
 )
 
-// Channel is a Telegram bot that bridges messages to/from the bus.
 type Channel struct {
 	bot     *tgbotapi.BotAPI
 	bus     *bus.Bus
@@ -29,13 +28,9 @@ type Channel struct {
 	sttURL  string // STT service base URL
 	sttLang string // STT transcription language
 
-	// typing indicator cancellation per chat
 	stopTyping sync.Map // chatID string → chan struct{}
 }
 
-// New creates a new Telegram channel from environment variables.
-// DOZOR_TELEGRAM_TOKEN — bot token (required)
-// DOZOR_TELEGRAM_ALLOWED — comma-separated user IDs
 func New(msgBus *bus.Bus) (*Channel, error) {
 	token := os.Getenv("DOZOR_TELEGRAM_TOKEN")
 	if token == "" {
@@ -75,7 +70,6 @@ func New(msgBus *bus.Bus) (*Channel, error) {
 	}, nil
 }
 
-// Start begins polling for updates and dispatching outbound messages.
 func (c *Channel) Start(ctx context.Context) {
 	c.ctx = ctx
 
@@ -91,8 +85,6 @@ func (c *Channel) Start(ctx context.Context) {
 	go c.dispatchOutbound(ctx)
 }
 
-// pollUpdates receives Telegram updates from the channel and dispatches inbound
-// messages until ctx is cancelled or the updates channel is closed.
 func (c *Channel) pollUpdates(ctx context.Context, updates tgbotapi.UpdatesChannel) {
 	for {
 		select {
@@ -110,8 +102,6 @@ func (c *Channel) pollUpdates(ctx context.Context, updates tgbotapi.UpdatesChann
 	}
 }
 
-// dispatchOutbound reads outbound messages from the bus and sends those
-// addressed to the "telegram" channel until ctx is cancelled.
 func (c *Channel) dispatchOutbound(ctx context.Context) {
 	for {
 		msg, ok := c.bus.SubscribeOutbound(ctx)
@@ -131,7 +121,6 @@ func (c *Channel) handleMessage(msg *tgbotapi.Message) {
 	}
 
 	userID := msg.From.ID
-	// Whitelist check (skip if no whitelist configured — open to all).
 	if len(c.allowed) > 0 && !c.allowed[userID] {
 		slog.Warn("telegram: unauthorized user", slog.Int64("user_id", userID))
 		return
@@ -141,7 +130,6 @@ func (c *Channel) handleMessage(msg *tgbotapi.Message) {
 	if text == "" {
 		text = msg.Caption
 	}
-	// Transcribe voice messages.
 	if text == "" && msg.Voice != nil {
 		transcribed, err := c.transcribeVoice(context.Background(), msg.Voice)
 		if err != nil {
@@ -156,7 +144,6 @@ func (c *Channel) handleMessage(msg *tgbotapi.Message) {
 
 	chatID := strconv.FormatInt(msg.Chat.ID, 10)
 
-	// Start typing indicator.
 	if _, err := c.bot.Send(tgbotapi.NewChatAction(msg.Chat.ID, tgbotapi.ChatTyping)); err != nil {
 		slog.Debug("telegram: failed to send typing indicator", slog.Any("error", err))
 	}
@@ -182,7 +169,6 @@ func (c *Channel) sendReply(msg bus.Message) {
 		return
 	}
 
-	// Stop typing indicator.
 	if stop, ok := c.stopTyping.LoadAndDelete(msg.ChatID); ok {
 		if ch, ok := stop.(chan struct{}); ok {
 			close(ch)
@@ -196,10 +182,8 @@ func (c *Channel) sendReply(msg bus.Message) {
 
 	text = sanitizeUTF8(text)
 
-	// Compact verbose LLM output before conversion.
 	text = CompactForTelegram(text, telegramCompactMaxChars)
 
-	// Try HTML mode first, fall back to plain text.
 	htmlText := markdownToTelegramHTML(text)
 	if err := c.sendChunked(chatID, htmlText, tgbotapi.ModeHTML); err != nil {
 		slog.Warn("telegram: HTML send failed, falling back to plain text", slog.Any("error", err))
@@ -211,8 +195,7 @@ func (c *Channel) sendReply(msg bus.Message) {
 }
 
 func (c *Channel) sendChunked(chatID int64, text string, parseMode string) error {
-	const maxLen = 4096
-	chunks := splitMessage(text, maxLen)
+	chunks := splitMessage(text, tgfmt.MaxMessageLen)
 	for _, chunk := range chunks {
 		if chunk == "" {
 			continue
@@ -228,7 +211,6 @@ func (c *Channel) sendChunked(chatID int64, text string, parseMode string) error
 	return nil
 }
 
-// sendWithRetry sends a Telegram message with retry for transient errors.
 func (c *Channel) sendWithRetry(msg tgbotapi.Chattable) error {
 	const maxRetries = 3
 	var lastErr error
@@ -238,7 +220,7 @@ func (c *Channel) sendWithRetry(msg tgbotapi.Chattable) error {
 			return nil
 		}
 		lastErr = err
-		if !isTransientTelegramError(err) {
+		if !tgfmt.IsTransientError(err) {
 			return err
 		}
 		slog.Warn("telegram: transient error, retrying",
@@ -247,18 +229,6 @@ func (c *Channel) sendWithRetry(msg tgbotapi.Chattable) error {
 		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 	}
 	return fmt.Errorf("telegram send failed after %d retries: %w", maxRetries, lastErr)
-}
-
-// isTransientTelegramError returns true for errors worth retrying.
-func isTransientTelegramError(err error) bool {
-	msg := err.Error()
-	transient := []string{"429", "502", "503", "504", "timeout", "connection reset", "connection refused"}
-	for _, t := range transient {
-		if strings.Contains(msg, t) {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *Channel) typingLoop(chatID int64, stop <-chan struct{}) {
