@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/a2aproject/a2a-go v0.3.6
-	github.com/anatolykoptev/go-kit v0.13.0
+	github.com/anatolykoptev/go-kit v0.14.0
 	github.com/anatolykoptev/go-session v0.3.0
 	github.com/anatolykoptev/go-stt v0.0.0-20260309003937-1acf00a42f4f
 	github.com/docker/docker v28.5.2+incompatible
