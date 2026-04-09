@@ -20,6 +20,8 @@ const (
 	diskWarnPct = 80
 	// inodeWarnPct is the inode usage percentage threshold for showing a warning.
 	inodeWarnPct = 50
+	// vnstatMinFields is the minimum fields in a vnstat --oneline output (version;iface;date;rx;tx).
+	vnstatMinFields = 5
 )
 
 // GetOverview returns a system-level dashboard.
@@ -36,6 +38,8 @@ func (a *ServerAgent) GetOverview(ctx context.Context) string {
 	overviewWriteIOWait(ctx, &b, a)
 	overviewWriteUptime(ctx, &b, a)
 	overviewWriteNetworkIO(ctx, &b, a)
+	overviewWriteIOStat(ctx, &b, a)
+	overviewWriteTraffic(ctx, &b, a)
 	overviewWriteTopProcesses(ctx, &b, a)
 	overviewWriteDocker(ctx, &b, a)
 	overviewWriteSystemd(ctx, &b, a)
@@ -138,6 +142,11 @@ func overviewWriteNetworkIO(ctx context.Context, b *strings.Builder, a *ServerAg
 			continue
 		}
 		iface := parts[0]
+		// Skip virtual Docker interfaces — only show physical and tunnel interfaces
+		if strings.HasPrefix(iface, "veth") || strings.HasPrefix(iface, "br-") ||
+			strings.HasPrefix(iface, "docker") {
+			continue
+		}
 		var rx, tx int64
 		_, _ = fmt.Sscanf(parts[1], "RX=%d", &rx)
 		_, _ = fmt.Sscanf(parts[2], "TX=%d", &tx)
@@ -206,6 +215,56 @@ func formatBytes(b int64) string {
 		return fmt.Sprintf("%.1f KB", float64(b)/float64(kb))
 	default:
 		return fmt.Sprintf("%d B", b)
+	}
+}
+
+func overviewWriteIOStat(ctx context.Context, b *strings.Builder, a *ServerAgent) {
+	res := a.transport.ExecuteUnsafe(ctx, "iostat -x -d --human 1 1 2>/dev/null")
+	if !res.Success || res.Stdout == "" {
+		return
+	}
+	lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
+	var items []string
+	inDevice := false
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Device") {
+			inDevice = true
+			continue
+		}
+		if !inDevice || strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		dev := fields[0]
+		if strings.HasPrefix(dev, "loop") || strings.HasPrefix(dev, "dm-") {
+			continue
+		}
+		utilStr := fields[len(fields)-1]
+		icon := "OK"
+		if util := parseFloat(strings.TrimSuffix(utilStr, "%")); util > iostatUtilWarnPct {
+			icon = "!!"
+		}
+		items = append(items, fmt.Sprintf("  [%s] %s: r/s=%s w/s=%s util=%s", icon, dev, fields[1], fields[2], utilStr))
+	}
+	if len(items) > 0 {
+		b.WriteString("\nDisk I/O:\n")
+		b.WriteString(strings.Join(items, "\n"))
+		b.WriteString("\n")
+	}
+}
+
+func overviewWriteTraffic(ctx context.Context, b *strings.Builder, a *ServerAgent) {
+	res := a.transport.ExecuteUnsafe(ctx, "vnstat -d 1 --oneline b 2>/dev/null")
+	if !res.Success || res.Stdout == "" {
+		return
+	}
+	// vnstat --oneline format: version;iface;date;rx;tx;...
+	parts := strings.Split(strings.TrimSpace(res.Stdout), ";")
+	if len(parts) >= vnstatMinFields {
+		fmt.Fprintf(b, "\nTraffic today: RX %s / TX %s\n", parts[3], parts[4])
 	}
 }
 

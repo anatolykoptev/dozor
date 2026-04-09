@@ -106,7 +106,7 @@ func serviceHealthLevel(s ServiceStatus) string {
 	if s.HealthcheckOK != nil && !*s.HealthcheckOK {
 		return healthDegraded
 	}
-	if s.RestartCount > 0 || s.ErrorCount > maxRecentErrors {
+	if s.RecentRestarts >= recentRestartThreshold || s.ErrorCount > maxRecentErrors {
 		return healthDegraded
 	}
 	if s.ErrorCount > 0 {

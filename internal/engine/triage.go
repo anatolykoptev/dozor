@@ -18,8 +18,8 @@ const (
 
 // triageExclusionResult holds the outcome of applying dev-mode exclusions.
 type triageExclusionResult struct {
-	services  []string
-	excluded  []string
+	services   []string
+	excluded   []string
 	overridden []string
 }
 
@@ -310,8 +310,8 @@ func triageIssueSummary(problematic []ServiceStatus) string {
 		if s.State != StateRunning {
 			details = append(details, string(s.State))
 		}
-		if s.RestartCount > 0 {
-			details = append(details, fmt.Sprintf("%d restarts", s.RestartCount))
+		if s.RecentRestarts > 0 {
+			details = append(details, fmt.Sprintf("%d restarts/24h", s.RecentRestarts))
 		}
 		if s.ErrorCount > 0 {
 			details = append(details, fmt.Sprintf("%d errors", s.ErrorCount))
@@ -372,8 +372,8 @@ func (a *ServerAgent) writeServiceDetail(ctx context.Context, b *strings.Builder
 
 	fmt.Fprintf(b, "[%s] %s", tag, s.Name)
 	parts := []string{string(s.State)}
-	if s.RestartCount > 0 {
-		parts = append(parts, fmt.Sprintf("%d restarts", s.RestartCount))
+	if s.RecentRestarts > 0 {
+		parts = append(parts, fmt.Sprintf("%d restarts/24h", s.RecentRestarts))
 	}
 	if s.ErrorCount > 0 {
 		parts = append(parts, fmt.Sprintf("%d errors", s.ErrorCount))

@@ -3,11 +3,12 @@ package engine
 // --- MCP tool input structs ---
 
 type InspectInput struct {
-	Mode     string   `json:"mode" jsonschema:"Inspection mode: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron, groups"`
-	Service  string   `json:"service,omitempty" jsonschema:"Service name (required for status, logs modes; optional for analyze)"`
+	Mode     string   `json:"mode" jsonschema:"Inspection mode: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron, groups, metrics"`
+	Service  string   `json:"service,omitempty" jsonschema:"Service name (required for status, logs modes; optional for analyze, metrics)"`
 	Services []string `json:"services,omitempty" jsonschema:"Services to diagnose (all if omitted, only for diagnose mode)"`
 	Lines    int      `json:"lines,omitempty" jsonschema:"Number of log lines (default 100, only for logs mode)"`
 	Filter   string   `json:"filter,omitempty" jsonschema:"Filter log lines by substring (case-insensitive), only for logs mode"`
+	Period   string   `json:"period,omitempty" jsonschema:"Time period for metrics mode: today (default), yesterday, week"`
 }
 
 type ExecInput struct {

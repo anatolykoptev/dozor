@@ -87,8 +87,10 @@ func writeServiceLine(b *strings.Builder, s ServiceStatus) {
 	if s.MemoryMB != nil {
 		fmt.Fprintf(b, " | Mem: %.0fMB", *s.MemoryMB)
 	}
-	if s.RestartCount > 0 {
-		fmt.Fprintf(b, " | Restarts: %d", s.RestartCount)
+	if s.RecentRestarts > 0 {
+		fmt.Fprintf(b, " | Restarts/24h: %d", s.RecentRestarts)
+	} else if s.RestartCount > 0 {
+		fmt.Fprintf(b, " | Total restarts: %d", s.RestartCount)
 	}
 	if s.ErrorCount > 0 {
 		fmt.Fprintf(b, " | Errors: %d", s.ErrorCount)
@@ -135,7 +137,8 @@ func FormatStatus(s ServiceStatus) string {
 	if s.Uptime != "" {
 		fmt.Fprintf(&b, "Uptime: %s\n", s.Uptime)
 	}
-	fmt.Fprintf(&b, "Restarts: %d\n", s.RestartCount)
+	fmt.Fprintf(&b, "Restarts (24h): %d\n", s.RecentRestarts)
+	fmt.Fprintf(&b, "Restarts (total): %d\n", s.RestartCount)
 	if s.CPUPercent != nil {
 		fmt.Fprintf(&b, "CPU: %.1f%%\n", *s.CPUPercent)
 	}

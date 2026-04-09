@@ -64,18 +64,19 @@ func (e LogEntry) IsErrorLevel() bool {
 
 // ServiceStatus for a docker container.
 type ServiceStatus struct {
-	Name          string            `json:"name"`
-	State         ContainerState    `json:"state"`
-	Health        string            `json:"health,omitempty"`
-	Uptime        string            `json:"uptime,omitempty"`
-	StartedAt     time.Time         `json:"started_at,omitempty"`
-	RestartCount  int               `json:"restart_count"`
-	CPUPercent    *float64          `json:"cpu_percent,omitempty"`
-	MemoryMB      *float64          `json:"memory_mb,omitempty"`
-	MemoryLimitMB *float64          `json:"memory_limit_mb,omitempty"`
-	ErrorCount    int               `json:"error_count"`
-	RecentErrors  []LogEntry        `json:"recent_errors,omitempty"`
-	Labels        map[string]string `json:"-"`
+	Name           string            `json:"name"`
+	State          ContainerState    `json:"state"`
+	Health         string            `json:"health,omitempty"`
+	Uptime         string            `json:"uptime,omitempty"`
+	StartedAt      time.Time         `json:"started_at,omitempty"`
+	RestartCount   int               `json:"restart_count"`   // total lifetime restarts (raw Docker field)
+	RecentRestarts int               `json:"recent_restarts"` // restarts in last 24h (from Docker Events API)
+	CPUPercent     *float64          `json:"cpu_percent,omitempty"`
+	MemoryMB       *float64          `json:"memory_mb,omitempty"`
+	MemoryLimitMB  *float64          `json:"memory_limit_mb,omitempty"`
+	ErrorCount     int               `json:"error_count"`
+	RecentErrors   []LogEntry        `json:"recent_errors,omitempty"`
+	Labels         map[string]string `json:"-"`
 
 	HealthcheckURL string `json:"healthcheck_url,omitempty"`
 	HealthcheckOK  *bool  `json:"healthcheck_ok,omitempty"`
@@ -88,12 +89,16 @@ func (s ServiceStatus) DozorLabel(key string) string {
 	return s.Labels["dozor."+key]
 }
 
-// IsHealthy returns true if the service is running with no restarts or errors.
+// recentRestartThreshold is the number of restarts in 24h that indicates instability.
+const recentRestartThreshold = 2
+
+// IsHealthy returns true if the service is running with tolerable restarts and errors.
+// Uses RecentRestarts (last 24h) to avoid false positives from historical Docker restart counts.
 func (s ServiceStatus) IsHealthy() bool {
 	if s.HealthcheckOK != nil && !*s.HealthcheckOK {
 		return false
 	}
-	return s.State == StateRunning && s.RestartCount == 0 && s.ErrorCount == 0
+	return s.State == StateRunning && s.RecentRestarts < recentRestartThreshold && s.ErrorCount <= maxRecentErrors
 }
 
 // GetAlertLevel returns the alert level based on service state.
@@ -104,7 +109,7 @@ func (s ServiceStatus) GetAlertLevel() AlertLevel {
 	if s.HealthcheckOK != nil && !*s.HealthcheckOK {
 		return AlertError
 	}
-	if s.RestartCount > 0 || s.ErrorCount > 5 {
+	if s.RecentRestarts >= recentRestartThreshold || s.ErrorCount > maxRecentErrors {
 		return AlertError
 	}
 	if s.ErrorCount > 0 {

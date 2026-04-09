@@ -34,7 +34,7 @@ type watchDeps struct {
 // runGatewayWatch runs periodic triage and feeds results through the message bus.
 func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, interval time.Duration, cfg engine.Config, kbSearcher *mcpclient.KBSearcher, notify func(string)) {
 	slog.Info("gateway watch started", slog.String("interval", interval.String())) //nolint:gosec // derived from duration
-	time.Sleep(30 * time.Second) // let everything boot
+	time.Sleep(30 * time.Second)                                                   // let everything boot
 
 	w := &watchDeps{
 		eng:        eng,
@@ -130,8 +130,16 @@ func (w *watchDeps) routeToAgent(ctx context.Context, result, hash string) {
 	})
 }
 
+// hashResult creates a stable hash from issue service names only,
+// ignoring timestamps, error counts and log snippets that change every tick.
+// This prevents repeated alerts for the same set of problematic services.
 func hashResult(result string) string {
-	h := sha256.Sum256([]byte(result))
+	issues := engine.ExtractIssues(result)
+	var parts []string
+	for _, issue := range issues {
+		parts = append(parts, issue.Service)
+	}
+	h := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return hex.EncodeToString(h[:8])
 }
 

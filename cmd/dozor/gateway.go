@@ -16,6 +16,7 @@ import (
 	"github.com/anatolykoptev/dozor/internal/a2a"
 	"github.com/anatolykoptev/dozor/internal/approvals"
 	"github.com/anatolykoptev/dozor/internal/bus"
+	"github.com/anatolykoptev/dozor/internal/deploy"
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/session"
@@ -83,19 +84,20 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		slog.Info("knowledge base integration active")
 	}
 
+	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
 	// 4. HTTP mux: MCP + health + webhook.
 	mx := http.NewServeMux()
 	mx.Handle("/mcp", buildMCPHTTPHandler(mcpServer))
 	mx.Handle("/mcp/", buildMCPHTTPHandler(mcpServer))
 	mx.HandleFunc("GET /health", healthHandler("gateway"))
 	registerWebhookHandler(mx, msgBus)
+	registerDeployWebhook(sigCtx, mx, notifyFn)
 
 	// 5. A2A protocol.
 	a2aSecret := os.Getenv("DOZOR_A2A_SECRET")
 	a2a.Register(mx, stack.loop, stack.registry, "http://127.0.0.1:"+port, version, a2aSecret)
-
-	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	// 6. Telegram channel.
 	if os.Getenv("DOZOR_TELEGRAM_TOKEN") != "" {
@@ -189,6 +191,27 @@ func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus) {
 
 	mx.HandleFunc("POST /webhook", handler)
 	mx.HandleFunc("POST /webhook/", handler)
+}
+
+// registerDeployWebhook sets up the GitHub webhook handler for auto-rebuild.
+// If the deploy config file is missing, the handler is silently skipped.
+func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func(string)) {
+	cfgPath := deploy.DefaultConfigPath()
+	cfg, err := deploy.LoadConfig(cfgPath)
+	if err != nil {
+		slog.Info("deploy webhook disabled", slog.String("reason", err.Error()))
+		return
+	}
+
+	noop := func(string) {} // no Telegram notifications for auto-deploy
+	queue := deploy.NewQueue(ctx, noop)
+	handler := deploy.NewHandler(cfg, queue, noop)
+	mx.Handle("POST /deploy/github", handler)
+
+	slog.Info("deploy webhook active",
+		slog.String("path", "/deploy/github"),
+		slog.Int("repos", len(cfg.Repos)),
+	)
 }
 
 // resolveAdminChatID returns the Telegram admin chat ID for internal notifications.

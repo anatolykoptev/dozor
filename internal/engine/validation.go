@@ -59,6 +59,10 @@ var blockedPatterns = []*regexp.Regexp{
 
 	// kill allowed — agent needs it for process management
 
+	// Database destruction
+	regexp.MustCompile(`(?i)\bDROP\s+DATABASE\b`),
+	regexp.MustCompile(`(?i)\bDROP\s+SCHEMA\b`),
+
 	// System reboot/shutdown
 	regexp.MustCompile(`(?i)\breboot\b|\bshutdown\b|\bhalt\b|\bpoweroff\b`),
 

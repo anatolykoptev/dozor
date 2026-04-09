@@ -44,13 +44,13 @@ func (g *AlertGenerator) GenerateAlerts(statuses []ServiceStatus) []Alert {
 			})
 		}
 
-		// High restart count
-		if s.RestartCount >= g.cfg.RestartThreshold {
+		// High restart count in last 24h (avoids false positives from historical Docker restart counts).
+		if s.RecentRestarts >= g.cfg.RestartThreshold {
 			alerts = append(alerts, Alert{
 				Level:           AlertError,
 				Service:         s.Name,
-				Title:           fmt.Sprintf("%s has restarted %d times", s.Name, s.RestartCount),
-				Description:     fmt.Sprintf("Container %s has restarted %d times (threshold: %d)", s.Name, s.RestartCount, g.cfg.RestartThreshold),
+				Title:           fmt.Sprintf("%s restarted %d times in last 24h", s.Name, s.RecentRestarts),
+				Description:     fmt.Sprintf("Container %s restarted %d times in the last 24h (threshold: %d). Total lifetime restarts: %d.", s.Name, s.RecentRestarts, g.cfg.RestartThreshold, s.RestartCount),
 				SuggestedAction: "Check logs for crash reasons. Consider increasing memory/CPU limits.",
 				Timestamp:       now,
 				Channel:         ch,

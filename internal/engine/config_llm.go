@@ -58,9 +58,10 @@ func parseLLMConfig(path string) parsedProxyConfig {
 // defaultSuppressWarnings are the built-in benign service warnings suppressed by default.
 // These can be overridden entirely by setting DOZOR_SUPPRESS_WARNINGS.
 var defaultSuppressWarnings = map[string]string{
-	"qdrant":   "telemetry errors (benign)",
-	"searxng":  "rate limits (self-heals)",
-	"go-hully": "pool exhaustion (resets hourly)",
+	"qdrant":    "telemetry errors (benign)",
+	"searxng":   "rate limits (self-heals)",
+	"go-hully":  "pool exhaustion (resets hourly)",
+	"go-social": "deploy restarts (benign)",
 }
 
 // parseSuppressWarnings parses "service:reason,service:reason" format.

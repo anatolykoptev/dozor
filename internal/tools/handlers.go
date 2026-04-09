@@ -89,8 +89,15 @@ func HandleInspect(ctx context.Context, agent *engine.ServerAgent, input engine.
 		}
 		return engine.FormatGroups(groups), nil
 
+	case "metrics":
+		period := input.Period
+		if period == "" {
+			period = "today"
+		}
+		return agent.GetMetrics(ctx, period, input.Service), nil
+
 	default:
-		return "", fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron, groups", input.Mode)
+		return "", fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron, groups, metrics", input.Mode)
 	}
 }
 

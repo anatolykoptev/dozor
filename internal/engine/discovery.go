@@ -15,6 +15,8 @@ import (
 const (
 	// dockerPingTimeoutSec is the timeout for Docker daemon ping (seconds).
 	dockerPingTimeoutSec = 3
+	// recentRestartWindow is the time window used to count recent container restarts.
+	recentRestartWindow = 24 * time.Hour
 )
 
 // ServiceCache caches discovered service names with TTL.
@@ -53,8 +55,8 @@ func (c *ServiceCache) Invalidate() {
 // DiscoveredContainer holds info from Docker SDK inspection.
 type DiscoveredContainer struct {
 	ID      string
-	Name    string            // cleaned container name (no leading /)
-	Service string            // compose service name if available
+	Name    string // cleaned container name (no leading /)
+	Service string // compose service name if available
 	State   ContainerState
 	Uptime  string
 	Labels  map[string]string
@@ -226,6 +228,10 @@ func (d *DockerDiscovery) InspectContainer(ctx context.Context, nameOrID string)
 	if t, err := time.Parse(time.RFC3339Nano, inspect.State.StartedAt); err == nil {
 		status.StartedAt = t
 	}
+
+	// Count restarts in the last 24h via Docker Events API to avoid false positives
+	// from the accumulated RestartCount field which never resets.
+	status.RecentRestarts = restartsInWindow(ctx, d.client, target.ID, recentRestartWindow)
 
 	return status, true
 }
