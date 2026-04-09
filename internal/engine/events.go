@@ -20,7 +20,8 @@ type dockerEventsClient interface {
 // within the given time window by querying Docker Events API.
 // Returns 0 on any error so callers can treat it as a safe fallback.
 func RestartsInWindow(ctx context.Context, cli dockerEventsClient, containerName string, window time.Duration) int {
-	since := time.Now().Add(-window)
+	now := time.Now()
+	since := now.Add(-window)
 
 	f := filters.NewArgs()
 	f.Add("type", string(events.ContainerEventType))
@@ -30,8 +31,11 @@ func RestartsInWindow(ctx context.Context, cli dockerEventsClient, containerName
 	queryCtx, cancel := context.WithTimeout(ctx, dockerPingTimeoutSec*time.Second)
 	defer cancel()
 
+	// Until bounded — without it the stream keeps waiting for future events
+	// and the call blocks until context timeout.
 	msgCh, errCh := cli.Events(queryCtx, events.ListOptions{
 		Since:   since.Format(time.RFC3339Nano),
+		Until:   now.Format(time.RFC3339Nano),
 		Filters: f,
 	})
 
