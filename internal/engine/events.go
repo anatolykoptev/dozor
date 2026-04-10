@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"time"
 
@@ -61,7 +63,8 @@ func RestartsInWindow(ctx context.Context, cli dockerEventsClient, containerName
 			}
 			// EOF is the normal signal that Docker finished delivering historical events.
 			// Context cancellation is also expected (timeout). Only log truly unexpected errors.
-			if queryCtx.Err() == nil && err.Error() != "EOF" {
+			// Use errors.Is for robust EOF detection — Docker SDK may wrap io.EOF.
+			if queryCtx.Err() == nil && !errors.Is(err, io.EOF) && err.Error() != "EOF" {
 				slog.Warn("[events] RestartsInWindow error", slog.String("container", containerName), slog.String("err", err.Error()))
 			}
 			return count
