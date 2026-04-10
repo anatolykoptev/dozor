@@ -132,17 +132,22 @@ func TestDependentsSimple(t *testing.T) {
 	graph := BuildDependencyGraph(statuses)
 
 	deps := graph.Dependents("postgres")
-	// postgres -> my-api, my-worker (both depend on postgres directly or transitively)
+	// postgres -> my-api (direct) and my-worker (direct + transitive via my-api)
 	if len(deps) != 2 {
 		t.Fatalf("expected 2 dependents of postgres, got %d: %v", len(deps), deps)
 	}
 
-	// my-api should come before my-worker (BFS order: my-api is direct, my-worker via my-api)
-	if deps[0] != "my-api" {
-		t.Errorf("expected my-api first, got %s", deps[0])
+	// Both my-api and my-worker must appear — but order is not guaranteed because
+	// DependencyGraph is a map and Go map iteration is non-deterministic.
+	// Use set membership check rather than positional assertions.
+	found := make(map[string]bool, len(deps))
+	for _, d := range deps {
+		found[d] = true
 	}
-	if deps[1] != "my-worker" {
-		t.Errorf("expected my-worker second, got %s", deps[1])
+	for _, want := range []string{"my-api", "my-worker"} {
+		if !found[want] {
+			t.Errorf("expected %q in dependents, got %v", want, deps)
+		}
 	}
 }
 
