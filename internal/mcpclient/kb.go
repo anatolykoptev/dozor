@@ -5,11 +5,29 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
+	"time"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/toolreg"
 )
+
+// kbSaveMaxAttempts bounds the retry loop for transient MemDB failures.
+// Schema validation errors bypass retry entirely (they are not transient).
+const kbSaveMaxAttempts = 3
+
+// kbSaveInitialBackoff is the starting delay between retry attempts.
+// Doubles per attempt up to kbSaveMaxBackoff, with jitter.
+const kbSaveInitialBackoff = 200 * time.Millisecond
+
+// kbSaveMaxBackoff caps the per-attempt delay so a flapping backend
+// does not hold the save goroutine for too long.
+const kbSaveMaxBackoff = 2 * time.Second
+
+// kbSaveJitterDivisor controls jitter magnitude: jitter = rand(backoff / kbSaveJitterDivisor).
+// A divisor of 5 gives ±20% jitter relative to the current backoff window.
+const kbSaveJitterDivisor = 5
 
 const (
 	// defaultKBUserID is the default user ID for the knowledge base.
@@ -222,10 +240,20 @@ func (s *KBSearcher) Search(ctx context.Context, query string, topK int) (string
 	return formatSearchResult(result), nil
 }
 
-// Save stores content in the knowledge base. Returns ErrKBUnavailable if the
-// circuit breaker is open — callers must decide whether that is acceptable.
-// Previously this returned nil on an open circuit, which silently lost data
-// and made it impossible for the agent to know whether a save had persisted.
+// Save stores content in the knowledge base.
+//
+// Pipeline:
+//  1. Schema validation (not retried — caller-side bug).
+//  2. Circuit breaker gate (returns ErrKBUnavailable if open).
+//  3. Up to kbSaveMaxAttempts MCP calls with exponential backoff + jitter.
+//     Transient failures bump the breaker failure counter only on the last
+//     attempt so a single backend hiccup does not trip the breaker.
+//
+// Returns ErrKBUnavailable if the breaker is open, ErrInvalidSavePayload
+// (wrapped) if the content is schema-rejected, or the last backend error
+// after all retries are exhausted. Context cancellation is honored between
+// attempts — if ctx is cancelled during a backoff sleep, Save returns the
+// cancellation error and records a failure on the breaker.
 func (s *KBSearcher) Save(ctx context.Context, content string) error {
 	if err := ValidateSavePayload(content); err != nil {
 		// Schema rejections do not open the circuit breaker — they are the
@@ -235,21 +263,46 @@ func (s *KBSearcher) Save(ctx context.Context, content string) error {
 	if s.cb != nil && !s.cb.Allow() {
 		return ErrKBUnavailable
 	}
-	_, err := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SaveTool, map[string]any{
-		"user_id":        s.cfg.UserID,
-		"mem_cube_id":    s.cfg.CubeID,
-		"memory_content": content,
-	})
-	if err != nil {
-		if s.cb != nil {
-			s.cb.RecordFailure()
+
+	var lastErr error
+	backoff := kbSaveInitialBackoff
+	for attempt := 1; attempt <= kbSaveMaxAttempts; attempt++ {
+		_, err := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SaveTool, map[string]any{
+			"user_id":        s.cfg.UserID,
+			"mem_cube_id":    s.cfg.CubeID,
+			"memory_content": content,
+		})
+		if err == nil {
+			if s.cb != nil {
+				s.cb.RecordSuccess()
+			}
+			return nil
 		}
-		return fmt.Errorf("memdb save failed: %w", err)
+		lastErr = err
+		if attempt == kbSaveMaxAttempts {
+			break
+		}
+		// Exponential backoff with ±20% jitter. math/rand is intentional —
+		// jitter does not require cryptographic randomness.
+		jitter := time.Duration(rand.Int63n(int64(backoff) / kbSaveJitterDivisor)) //nolint:gosec
+		select {
+		case <-ctx.Done():
+			if s.cb != nil {
+				s.cb.RecordFailure()
+			}
+			return fmt.Errorf("memdb save cancelled after %d attempts: %w", attempt, ctx.Err())
+		case <-time.After(backoff + jitter):
+		}
+		backoff *= 2
+		if backoff > kbSaveMaxBackoff {
+			backoff = kbSaveMaxBackoff
+		}
 	}
+
 	if s.cb != nil {
-		s.cb.RecordSuccess()
+		s.cb.RecordFailure()
 	}
-	return nil
+	return fmt.Errorf("memdb save failed after %d attempts: %w", kbSaveMaxAttempts, lastErr)
 }
 
 // formatSearchResult extracts readable memories from the raw MCP JSON response.
