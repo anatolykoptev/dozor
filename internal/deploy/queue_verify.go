@@ -29,35 +29,58 @@ func snapshotImages(ctx context.Context, composePath string, services []string) 
 }
 
 // composeImageID resolves the image ID that would be used by `compose up <svc>`.
-// Returns empty string if the image does not exist or the command fails.
+// Uses `docker compose images` which works for both `image:` and `build:` services
+// — `compose config` only returns image refs for services with an explicit image
+// field, which is the common mistake. Returns empty string if the image is absent
+// or the command fails.
 func composeImageID(ctx context.Context, composePath, svc string) string {
-	cmd := exec.CommandContext(ctx, "docker", "compose", "config", "--format", "json")
+	// svc is a service name from our own deploy-repos.yaml (trusted local config),
+	// passed as an individual argv slot — not interpolated into a shell.
+	cmd := exec.CommandContext(ctx, "docker", "compose", "images", "--format", "json", svc) //nolint:gosec // trusted local config, not shell
 	cmd.Dir = composePath
 	out, err := cmd.Output()
-	if err != nil {
+	if err != nil || len(out) == 0 {
 		return ""
 	}
-	var cfg struct {
-		Services map[string]struct {
-			Image string `json:"image"`
-		} `json:"services"`
-	}
-	if json.Unmarshal(out, &cfg) != nil {
+	// `compose images --format json` returns either a JSON array or a stream of
+	// newline-delimited objects depending on the Docker version. Try both shapes.
+	trimmed := strings.TrimSpace(string(out))
+	if strings.HasPrefix(trimmed, "[") {
+		var arr []struct {
+			ID            string `json:"ID"`
+			ContainerName string `json:"ContainerName"`
+		}
+		if json.Unmarshal([]byte(trimmed), &arr) != nil {
+			return ""
+		}
+		for _, e := range arr {
+			if e.ContainerName == svc || strings.HasSuffix(e.ContainerName, "_"+svc) {
+				return e.ID
+			}
+		}
+		if len(arr) == 1 {
+			return arr[0].ID
+		}
 		return ""
 	}
-	image := cfg.Services[svc].Image
-	if image == "" {
-		return ""
+	// NDJSON fallback.
+	for _, line := range strings.Split(trimmed, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var e struct {
+			ID            string `json:"ID"`
+			ContainerName string `json:"ContainerName"`
+		}
+		if json.Unmarshal([]byte(line), &e) != nil {
+			continue
+		}
+		if e.ContainerName == svc || strings.HasSuffix(e.ContainerName, "_"+svc) {
+			return e.ID
+		}
 	}
-	// image is sourced from `docker compose config` (local trusted YAML) and passed as an
-	// individual argv slot — not interpolated into a shell, so command injection is not
-	// reachable here. gosec flags any variable passed to exec regardless of context.
-	inspect := exec.CommandContext(ctx, "docker", "image", "inspect", image, "--format", "{{.Id}}") //nolint:gosec // trusted compose-config input, not shell
-	idOut, err := inspect.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(idOut))
+	return ""
 }
 
 // logImageDiff warns for any service whose image ID did not change across `compose build`.
