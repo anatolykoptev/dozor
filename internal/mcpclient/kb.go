@@ -36,6 +36,9 @@ const (
 	toolMemDBSearch = "memdb_search"
 	// toolMemDBSave is the user-facing name exposed to the LLM for saving to MemDB.
 	toolMemDBSave = "memdb_save"
+	// defaultSearchTopK is the default number of results returned by memdb_search
+	// when the caller does not specify top_k.
+	defaultSearchTopK = 5
 )
 
 // KBConfig holds configuration for the knowledge base tools.
@@ -79,15 +82,16 @@ func RegisterKBTools(registry *toolreg.Registry, mgr *ClientManager, cfg KBConfi
 		return
 	}
 
-	registry.Register(&kbSearchTool{mgr: mgr, cfg: cfg})
+	registry.Register(&kbSearchTool{mgr: mgr, cfg: cfg, cache: newSearchCache()})
 	registry.Register(&kbSaveTool{mgr: mgr, cfg: cfg})
 }
 
 // --- memdb_search ---
 
 type kbSearchTool struct {
-	mgr *ClientManager
-	cfg KBConfig
+	mgr   *ClientManager
+	cfg   KBConfig
+	cache *searchCache
 }
 
 func (t *kbSearchTool) Name() string { return toolMemDBSearch }
@@ -119,9 +123,18 @@ func (t *kbSearchTool) Execute(ctx context.Context, args map[string]any) (string
 		return "", errors.New("query is required")
 	}
 
-	topK := 5
+	topK := defaultSearchTopK
 	if v, ok := args["top_k"].(float64); ok && v > 0 {
 		topK = int(v)
+	}
+
+	// Cache key includes everything that affects the underlying MCP call
+	// so two distinct queries cannot share an entry.
+	ck := cacheKey(query, t.cfg.UserID, t.cfg.CubeID, topK)
+	if t.cache != nil {
+		if cached, hit := t.cache.get(ck); hit {
+			return cached, nil
+		}
 	}
 
 	result, err := t.mgr.Call(ctx, t.cfg.ServerID, t.cfg.SearchTool, map[string]any{
@@ -136,7 +149,11 @@ func (t *kbSearchTool) Execute(ctx context.Context, args map[string]any) (string
 		return "", fmt.Errorf("memdb search failed: %w", err)
 	}
 
-	return formatSearchResult(result), nil
+	formatted := formatSearchResult(result)
+	if t.cache != nil {
+		t.cache.set(ck, formatted)
+	}
+	return formatted, nil
 }
 
 // --- memdb_save ---
