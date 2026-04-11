@@ -98,6 +98,19 @@ Three data-level bugs were letting consuming agents fabricate incident narrative
 - `FormatAnalysisEnriched` now filters noise before passing entries to timeline and clustering — the old version showed "Errors: 0" in the header while the timeline below reported 13, a contradiction that pushed agents toward the louder wrong signal.
 - 13 new tests: ctime parsing, single-digit day padding, all freshness classifications, the 429 regression, per-service noise scoping.
 
+**5.8 — Self-Process Awareness (commit `515822b`)**
+
+Prevents the agent from mistaking its own footprint or live user sessions for foreign system load. Motivated by the 2026-04-11 incident where the agent saw `load 51` and proposed killing `claude`/`windsurf`/`code-review-graph` processes to "free memory" — these were the user's active interactive sessions.
+
+- **Process tagging in `server_inspect mode=overview` top-processes list.** `classifyProcess(line)` tags each `ps aux` row as `[user-session]`, `[agent-self]`, `[build]`, or untagged. `tagTopProcesses(raw)` post-processes the raw `ps aux` output and appends tags; un-tagged lines stay un-tagged. Categories:
+  - `[user-session]` — `claude`, `claude-code`, `windsurf(-server)`, `code-review-graph update|build|serve`, `cursor(-server)`. **Never kill these.**
+  - `[agent-self]` — `docker compose logs|stats|ps` (including the plugin path `docker-compose compose logs`), `docker stats`, `journalctl --follow`. Own telemetry gathering.
+  - `[build]` — `/usr/local/go/pkg/tool/.+/compile`, `/tmp/go-build`, `cargo build|run|test|check`, `rustc`, `docker compose build`, `npm|pnpm|yarn run build`, `du -h -d`, `tar -c`.
+- **`LOAD SOURCE` banner** — when strictly more than half of the top slots are tagged, the overview emits `LOAD SOURCE: N of M top processes are agent-self, user-session, or build activity — NOT a foreign incident. Do NOT kill tagged processes.`
+- **Swap reality check** — `overviewWriteMemory` now handles three cases explicitly: `Swap: 0B/0B/0B` → "not configured on this host"; configured but zero usage → "N configured, 0 in use"; actual usage → "in use: X of Y total". Previously only the last case was annotated, and silent `Swap: 0B` rows let agents fabricate a percentage from nothing.
+- **Hard block on user-session kills** in `validation.go` `IsCommandAllowed`: `(kill|pkill|killall)[^&|;]*(claude|claude-code|windsurf(-server)?|code-review-graph|cursor(-server)?)`. Regular kills (`kill -15 12345`, `pkill -f old-worker`) remain allowed.
+- 12 new tests; engine package 181/181; full suite 417/417.
+
 **5.7 — Memory contamination loop break (commit `c7d794c`)**
 
 Root cause of the 2026-04-11 "TLS BLOCKED / hosting lockdown" hallucination episode: `cube=devops` had become a feedback loop, not a knowledge base. Every webhook alert was auto-saved as a "memory", then the next webhook hydrated that as "context", and the agent wove a louder and louder narrative on top of its own prior confabulations.
@@ -177,20 +190,6 @@ All cached data is session-scoped — never loaded into the system prompt. This 
 - Surface `ErrKBUnavailable` distinctly in Telegram/log output so the user sees when writes were dropped by the circuit breaker.
 - Log every `memdb_save` call to `journalctl --user -u dozor` with the content hash — when the KB goes bad, we can audit who wrote what.
 
-### Phase 7: Self-Process Awareness
-
-The 2026-04-11 episode also revealed a second class of false alarm: the agent mistook its own command footprint for "high system load" and proposed killing user processes to "free memory". Fix at the source — the overview report should flag who is generating the load.
-
-- **Process tagging in `server_inspect mode=overview`**: top CPU / memory consumers get a `[agent-self]`, `[user-session]`, or `[build]` tag when they match one of:
-  - `docker compose build | logs --tail | stats` — own telemetry gathering
-  - `go compile` under `/tmp/go-build*` — ongoing Go build
-  - `cargo build`, `rustc` under workspace — ongoing Rust build
-  - `du -h -d`, `tar`, `find .` over the home directory
-  - `claude --dangerously-skip-permissions`, `windsurf-server`, `code-review-graph update` — live user-driven sessions, **never kill**
-- **Overview banner**: when >50% of the top CPU slots are tagged, prepend `LOAD SOURCE: own activity + user sessions — not an external incident`.
-- **Hard block in `server_exec`**: any command matching `kill.*(-9)?.*(claude|windsurf|code-review-graph)` or `docker stop (claude|…)` is rejected with an explanatory error.
-- **Swap reality check**: before emitting any "swap X%" claim, the formatter must see the actual `Swap:` line from `free`. If `Swap: 0B / 0B / 0B`, the report includes "no swap configured on this host" and refuses to interpolate a percentage.
-
 ### Phase 8: Webhook Alert Pipeline
 
 The `/webhook` handler today funnels alerts through the general LLM loop, which is the main reason one 502 turned into a "hosting lockdown" narrative. Replace with a deterministic short-circuit for a bounded set of alert shapes.
@@ -260,7 +259,6 @@ Deep diagnosis before acting.
 ## Priority order
 
 1. **Phase 6.1 + 6.2 + 6.3 + 6.4** — the memory architecture is the bottleneck for everything else. Without schema, separation, and startup snapshot, every later phase feeds the same broken memory pool.
-2. **Phase 7** — cheap, fast, eliminates a whole class of self-induced false alarms.
-3. **Phase 6.5 + 6.6** — reliability polish on top of the new architecture.
-4. **Phase 8** — turns webhook alerts from an LLM gamble into a deterministic pipeline.
-5. Phase 9 → 13 — features on top of a stable foundation.
+2. **Phase 6.5 + 6.6** — reliability polish on top of the new architecture (go-kit/cache working memory, go-kit/retry for save).
+3. **Phase 8** — turns webhook alerts from an LLM gamble into a deterministic pipeline.
+4. Phase 9 → 13 — features on top of a stable foundation.
