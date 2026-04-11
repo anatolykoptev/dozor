@@ -67,9 +67,9 @@ type mockTool struct {
 	callCount int
 }
 
-func (t *mockTool) Name() string                  { return t.name }
-func (t *mockTool) Description() string           { return "mock tool " + t.name }
-func (t *mockTool) Parameters() map[string]any    { return map[string]any{"type": "object"} }
+func (t *mockTool) Name() string               { return t.name }
+func (t *mockTool) Description() string        { return "mock tool " + t.name }
+func (t *mockTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
 func (t *mockTool) Execute(_ context.Context, _ map[string]any) (string, error) {
 	if t.callCount >= len(t.results) {
 		return "", errors.New("mockTool: no more results queued")
@@ -80,8 +80,14 @@ func (t *mockTool) Execute(_ context.Context, _ map[string]any) (string, error) 
 }
 
 // toolResult is a convenience constructor for mockTool results.
-func toolResult(out string, err error) struct{ out string; err error } {
-	return struct{ out string; err error }{out, err}
+func toolResult(out string, err error) struct {
+	out string
+	err error
+} {
+	return struct {
+		out string
+		err error
+	}{out, err}
 }
 
 // ---- helpers ----
@@ -89,7 +95,7 @@ func toolResult(out string, err error) struct{ out string; err error } {
 // newLoop creates a Loop with empty workspace/skills so BuildSystemPrompt uses the
 // fallback identity string — no disk I/O is performed.
 func newTestLoop(p provider.Provider, r *toolreg.Registry, maxIters int) *Loop {
-	return NewLoop(p, r, maxIters, "" /* workspacePath */, nil /* skillsLoader */)
+	return NewLoop(p, r, maxIters, "" /* workspacePath */, nil /* skillsLoader */, nil /* searcher */)
 }
 
 // registryWith registers the given tools and returns the registry.
@@ -127,8 +133,11 @@ func TestProcess_SimpleTextResponse(t *testing.T) {
 // provider requests a tool → registry executes it → provider returns text.
 func TestProcess_SingleToolCall(t *testing.T) {
 	tool := &mockTool{
-		name:    "say_hello",
-		results: []struct{ out string; err error }{toolResult("tool output", nil)},
+		name: "say_hello",
+		results: []struct {
+			out string
+			err error
+		}{toolResult("tool output", nil)},
 	}
 	p := &mockProvider{responses: []mockResponse{
 		toolCallResp("call_1", "say_hello", map[string]any{"msg": "hi"}),
@@ -193,8 +202,11 @@ func TestProcess_EmptyResponseExhaustsIterations(t *testing.T) {
 // "Error: …" tool result and the loop continues — the provider can still reply.
 func TestProcess_ToolExecutionError(t *testing.T) {
 	tool := &mockTool{
-		name:    "boom",
-		results: []struct{ out string; err error }{toolResult("", errors.New("disk full"))},
+		name: "boom",
+		results: []struct {
+			out string
+			err error
+		}{toolResult("", errors.New("disk full"))},
 	}
 	p := &mockProvider{responses: []mockResponse{
 		toolCallResp("c1", "boom", nil),
@@ -218,7 +230,10 @@ func TestProcess_RepeatedToolFailure(t *testing.T) {
 	const failMsg = "connection refused"
 	// Build enough queued results: 3 identical failures, plus a final text
 	// response that should never be reached.
-	results := make([]struct{ out string; err error }, maxRepeatFails+1)
+	results := make([]struct {
+		out string
+		err error
+	}, maxRepeatFails+1)
 	for i := range results {
 		results[i] = toolResult("", errors.New(failMsg))
 	}
@@ -344,8 +359,11 @@ func TestProcess_MaxIterationsReached(t *testing.T) {
 func TestProcess_ToolResultTruncation(t *testing.T) {
 	bigOutput := strings.Repeat("x", maxToolResultLen+1000)
 	tool := &mockTool{
-		name:    "bigdata",
-		results: []struct{ out string; err error }{toolResult(bigOutput, nil)},
+		name: "bigdata",
+		results: []struct {
+			out string
+			err error
+		}{toolResult(bigOutput, nil)},
 	}
 
 	// Capture the tool message content by inspecting what the provider receives.

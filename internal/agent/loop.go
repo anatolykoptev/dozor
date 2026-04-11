@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/provider"
 	"github.com/anatolykoptev/dozor/internal/skills"
 	"github.com/anatolykoptev/dozor/internal/toolreg"
@@ -37,12 +38,16 @@ func (l *Loop) WithSessions(s *SessionStore) *Loop {
 }
 
 // NewLoop creates a new agent loop with dynamic system prompt.
-func NewLoop(p provider.Provider, r *toolreg.Registry, maxIters int, workspacePath string, skillsLoader *skills.Loader) *Loop {
+//
+// The searcher parameter is optional and is forwarded to BuildSystemPrompt
+// for Phase 6.3 startup snapshot injection. Pass nil when MemDB is not
+// configured; the loop remains fully functional without it.
+func NewLoop(p provider.Provider, r *toolreg.Registry, maxIters int, workspacePath string, skillsLoader *skills.Loader, searcher *mcpclient.KBSearcher) *Loop {
 	return &Loop{
 		provider:     p,
 		registry:     r,
 		maxIters:     maxIters,
-		systemPrompt: BuildSystemPrompt(workspacePath, skillsLoader),
+		systemPrompt: BuildSystemPrompt(workspacePath, skillsLoader, searcher),
 	}
 }
 

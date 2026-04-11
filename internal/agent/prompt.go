@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/skills"
 )
 
@@ -19,11 +21,21 @@ import (
 // canonical incident knowledge base is MemDB via `memdb_search` / `memdb_save`.
 var bootstrapFiles = []string{"IDENTITY.md", "AGENTS.md"}
 
-// BuildSystemPrompt constructs the system prompt from workspace files and skills.
-func BuildSystemPrompt(workspacePath string, skillsLoader *skills.Loader) string {
+// BuildSystemPrompt constructs the system prompt from workspace files, skills,
+// and (optionally) a startup memory snapshot pulled from MemDB via the given
+// KBSearcher.
+//
+// Sections, in order:
+//  1. Bootstrap files (IDENTITY.md, AGENTS.md).
+//  2. Fallback identity if no bootstrap file was found.
+//  3. Skills summary (XML metadata for LLM skill discovery).
+//  4. Startup memory snapshot (Phase 6.3) — a single semantic memdb_search
+//     call wrapped in <startup_snapshot> tags. Skipped entirely when
+//     searcher is nil, and silent on any snapshot error or timeout.
+func BuildSystemPrompt(workspacePath string, skillsLoader *skills.Loader, searcher *mcpclient.KBSearcher) string {
 	var parts []string
 
-	// 1. Load bootstrap files (IDENTITY.md, AGENTS.md, MEMORY.md).
+	// 1. Load bootstrap files (IDENTITY.md, AGENTS.md).
 	for _, name := range bootstrapFiles {
 		content := loadBootstrapFile(workspacePath, name)
 		if content != "" {
@@ -40,6 +52,16 @@ func BuildSystemPrompt(workspacePath string, skillsLoader *skills.Loader) string
 	if skillsLoader != nil {
 		if summary := skillsLoader.BuildSummary(); summary != "" {
 			parts = append(parts, summary)
+		}
+	}
+
+	// 4. Startup memory snapshot — single semantic query against MemDB so
+	// the agent starts each session with the most relevant operational
+	// facts already in context. Replaces the raw MEMORY.md load that was
+	// removed in Phase 5.7. Silent failure on error or timeout.
+	if searcher != nil {
+		if snapshot := BuildStartupSnapshot(context.Background(), searcher); snapshot != "" {
+			parts = append(parts, snapshot)
 		}
 	}
 

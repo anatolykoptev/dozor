@@ -18,11 +18,9 @@ import (
 	"github.com/anatolykoptev/dozor/internal/bus"
 	"github.com/anatolykoptev/dozor/internal/deploy"
 	"github.com/anatolykoptev/dozor/internal/engine"
-	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/session"
 	"github.com/anatolykoptev/dozor/internal/telegram"
 	"github.com/anatolykoptev/dozor/internal/tools"
-	mcpclientExt "github.com/anatolykoptev/dozor/pkg/extensions/mcpclient"
 )
 
 const (
@@ -44,7 +42,9 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		port = p
 	}
 
-	// 1. Agent stack: tool registry, skills, LLM provider, agent loop.
+	// 1. Agent stack: tool registry, skills, LLM provider, session store.
+	// The loop itself is attached after extensions load — it needs the
+	// extension-provided KBSearcher for the Phase 6.3 startup snapshot.
 	stack := buildAgentStack(eng)
 
 	// 2. Message bus + notify (created before MCP server so exec tool can use them).
@@ -73,16 +73,16 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	mcpServer := buildMCPServer(eng, execOpts)
 	extRegistry := buildExtensionRegistry(eng, stack.registry, mcpServer, true, notifyFn)
 
-	// Extract KBSearcher for programmatic KB access (triage enrichment + auto-save).
-	var kbSearcher *mcpclient.KBSearcher
-	if ext := extRegistry.Get("mcpclient"); ext != nil {
-		if mcpExt, ok := ext.(*mcpclientExt.MCPClientExtension); ok {
-			kbSearcher = mcpExt.KBSearcher()
-		}
-	}
+	// Extract KBSearcher for programmatic KB access (triage enrichment +
+	// auto-save) and Phase 6.3 startup snapshot injection.
+	kbSearcher := kbSearcherFromExtensions(extRegistry)
 	if kbSearcher != nil {
 		slog.Info("knowledge base integration active")
 	}
+
+	// 3b. Attach the agent loop now that we can pass the searcher for the
+	// startup snapshot. stack.loop is used from step 5 onwards.
+	stack.attachLoop(kbSearcher)
 
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

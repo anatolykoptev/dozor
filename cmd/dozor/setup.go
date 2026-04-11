@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	session "github.com/anatolykoptev/go-session"
 	"github.com/anatolykoptev/dozor/internal/agent"
 	"github.com/anatolykoptev/dozor/internal/engine"
+	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/provider"
 	"github.com/anatolykoptev/dozor/internal/skills"
 	"github.com/anatolykoptev/dozor/internal/toolreg"
@@ -19,23 +19,32 @@ import (
 	"github.com/anatolykoptev/dozor/pkg/extensions"
 	"github.com/anatolykoptev/dozor/pkg/extensions/a2aclient"
 	"github.com/anatolykoptev/dozor/pkg/extensions/claudecode"
-	"github.com/anatolykoptev/dozor/pkg/extensions/mcpclient"
+	extmcpclient "github.com/anatolykoptev/dozor/pkg/extensions/mcpclient"
 	"github.com/anatolykoptev/dozor/pkg/extensions/websearch"
+	session "github.com/anatolykoptev/go-session"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // agentStack holds all components needed to run the LLM agent loop.
+//
+// The loop field is populated lazily by attachLoop so it can be constructed
+// after the extension registry loads and expose the MemDB KBSearcher for the
+// Phase 6.3 startup snapshot. Call sites that don't need a snapshot (e.g.
+// smart-watch) pass nil.
 type agentStack struct {
 	registry      *toolreg.Registry
 	skillsLoader  *skills.Loader
 	llm           provider.Provider
+	maxIters      int
 	loop          *agent.Loop
 	sessions      *agent.SessionStore
 	workspacePath string
 }
 
-// buildAgentStack creates the full LLM agent stack (tool registry, skills, LLM, loop).
-// Used by gateway and smart-watch commands.
+// buildAgentStack creates the tool registry, skills loader, LLM provider
+// and session store. It does NOT create the agent loop — the loop needs
+// the extension-provided KBSearcher for the Phase 6.3 startup snapshot, so
+// call attachLoop after buildExtensionRegistry to finish wiring the stack.
 func buildAgentStack(eng *engine.ServerAgent) *agentStack {
 	workspacePath := resolveWorkspacePath()
 
@@ -55,21 +64,45 @@ func buildAgentStack(eng *engine.ServerAgent) *agentStack {
 		slog.Int("skills", len(skillsLoader.ListSkills())))
 
 	llm := provider.NewFromEnv()
-	loop := agent.NewLoop(llm, registry, llm.MaxIterations(), workspacePath, skillsLoader)
+	maxIters := llm.MaxIterations()
 
 	sessionsDir := workspacePath + "/sessions"
 	sessions := agent.NewSessionStore(sessionsDir)
 	sessions.WithCompactor(buildSummarizeFn(llm))
-	loop.WithSessions(sessions)
 
 	return &agentStack{
 		registry:      registry,
 		skillsLoader:  skillsLoader,
 		llm:           llm,
-		loop:          loop,
+		maxIters:      maxIters,
 		sessions:      sessions,
 		workspacePath: workspacePath,
 	}
+}
+
+// attachLoop builds the agent loop on top of an existing stack. The
+// searcher parameter is forwarded to agent.NewLoop for the Phase 6.3
+// startup snapshot; pass nil when MemDB isn't configured or when the
+// caller doesn't want a snapshot (e.g. smart-watch).
+func (s *agentStack) attachLoop(searcher *mcpclient.KBSearcher) {
+	loop := agent.NewLoop(s.llm, s.registry, s.maxIters, s.workspacePath, s.skillsLoader, searcher)
+	loop.WithSessions(s.sessions)
+	s.loop = loop
+}
+
+// kbSearcherFromExtensions retrieves the programmatic KBSearcher from the
+// mcpclient extension, or returns nil if the extension isn't registered or
+// MemDB isn't configured.
+func kbSearcherFromExtensions(extRegistry *extensions.Registry) *mcpclient.KBSearcher {
+	ext := extRegistry.Get("mcpclient")
+	if ext == nil {
+		return nil
+	}
+	typed, ok := ext.(*extmcpclient.MCPClientExtension)
+	if !ok {
+		return nil
+	}
+	return typed.KBSearcher()
 }
 
 // resolveWorkspacePath returns the DOZOR_WORKSPACE path or ~/.dozor.
@@ -98,7 +131,7 @@ func buildExtensionRegistry(eng *engine.ServerAgent, registry *toolreg.Registry,
 	extRegistry.Register(websearch.New())
 	extRegistry.Register(claudecode.New())
 	if gatewayMode {
-		extRegistry.Register(mcpclient.New())
+		extRegistry.Register(extmcpclient.New())
 		extRegistry.Register(a2aclient.New())
 	}
 	if err := extRegistry.LoadAll(context.Background(), eng, registry, mcpServer, notify); err != nil {

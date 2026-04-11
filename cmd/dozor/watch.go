@@ -57,7 +57,10 @@ func buildSmartWatchLoop(eng *engine.ServerAgent) *agent.Loop {
 	skillsLoader := skills.NewLoader(workspacePath+"/skills", builtinSkillsDir)
 
 	llm := provider.NewFromEnv()
-	return agent.NewLoop(llm, registry, llm.MaxIterations(), workspacePath, skillsLoader)
+	// Watch mode does not inject a MemDB startup snapshot — it runs on a
+	// short tick and the extra network call would add latency to every
+	// tick. Pass nil searcher so BuildSystemPrompt skips section 4.
+	return agent.NewLoop(llm, registry, llm.MaxIterations(), workspacePath, skillsLoader, nil)
 }
 
 // runSmartWatch periodically runs triage and feeds issues through the LLM agent.
