@@ -84,6 +84,7 @@ func (e *MCPClientExtension) Register(ctx context.Context, extCtx *extensions.Co
 	if extCtx.Tools != nil {
 		mcpclient.RegisterTools(extCtx.Tools, e.manager)
 		mcpclient.RegisterKBTools(extCtx.Tools, e.manager, kbCfg)
+		mcpclient.RegisterDeleteTool(extCtx.Tools, e.manager, kbCfg)
 	}
 
 	// Circuit breaker for KB — protects against cascading failures from MemDB.
