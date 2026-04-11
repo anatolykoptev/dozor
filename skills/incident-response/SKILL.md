@@ -109,7 +109,7 @@ Your job is to handle ONLY the remaining issues that auto-remediation couldn't f
 
 ### Rules for Watch Mode
 1. Do NOT re-run server_triage — results are already provided
-2. Do NOT call kb_search — past incidents already searched
+2. Do NOT call memdb_search — past incidents already searched
 3. Do NOT call server_inspect unless a service is in an unusual state
 4. MAX 3 tool calls per watch incident
 5. If you can't resolve in 3 calls — escalate to claude_code

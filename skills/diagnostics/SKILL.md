@@ -70,7 +70,7 @@ Systematic approach to diagnosing server issues.
    for the same incident. The first call has all the data you need.
 2. **Triage first, inspect second** — if triage already shows the issue clearly,
    skip server_inspect entirely.
-3. **Read memory before tools** — call read_memory or kb_search before
+3. **Read memory before tools** — call read_memory or memdb_search before
    running diagnostics. Past incidents may have the answer.
 4. **3-iteration budget** — if not resolved in 3 tool calls, escalate.
    Don't loop through server_inspect -> server_exec -> server_inspect.

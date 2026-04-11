@@ -181,7 +181,7 @@ dozor/
 │   ├── skills/                 # Skill loader (workspace + builtin, YAML front-matter)
 │   ├── approvals/              # Telegram approval flow for exec_security=ask
 │   ├── provider/               # LLM provider abstraction + withFallback chain
-│   ├── mcpclient/              # MCP client manager, KB tools (kb_search, kb_save)
+│   ├── mcpclient/              # MCP client manager, MemDB KB tools (memdb_search, memdb_save)
 │   ├── toolreg/                # Unified tool registry (local + remote MCP tools)
 │   ├── telegram/               # Telegram bot transport
 │   ├── tools/                  # MCP tool handlers (dependency-injected)

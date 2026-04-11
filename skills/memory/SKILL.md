@@ -5,18 +5,18 @@ description: "Knowledge base: store and retrieve operational knowledge. AUTO-CON
 
 # Memory (Knowledge Base)
 
-Use `kb_search` and `kb_save` to build institutional knowledge about server operations.
+Use `memdb_search` and `memdb_save` to build institutional knowledge about server operations.
 
 ## Tools
 
-- **kb_search(query)** — search past incidents, solutions, patterns
-- **kb_save(content)** — save new knowledge after resolving issues
+- **memdb_search(query)** — search past incidents, solutions, patterns
+- **memdb_save(content)** — save new knowledge after resolving issues
 
 ## When to Search
 
 ### BEFORE acting on incidents (MANDATORY)
 ```
-kb_search(query: "<service name> <error pattern>")
+memdb_search(query: "<service name> <error pattern>")
 ```
 
 Look for:
@@ -26,20 +26,20 @@ Look for:
 
 ### Before restarting services
 ```
-kb_search(query: "restart <service> reason")
+memdb_search(query: "restart <service> reason")
 ```
 Avoid repeating ineffective restarts.
 
 ### During capacity reviews
 ```
-kb_search(query: "disk growth" or "memory leak <service>")
+memdb_search(query: "disk growth" or "memory leak <service>")
 ```
 
 ## When to Save
 
 ### After resolving non-trivial incidents (MANDATORY)
 ```
-kb_save(content: "Incident: [service] [description]\nSymptom: [what was observed]\nRoot cause: [why it happened]\nFix: [exact commands/actions]\nPrevention: [how to prevent recurrence]")
+memdb_save(content: "Incident: [service] [description]\nSymptom: [what was observed]\nRoot cause: [why it happened]\nFix: [exact commands/actions]\nPrevention: [how to prevent recurrence]")
 ```
 
 ### After discovering useful patterns
@@ -65,4 +65,4 @@ kb_save(content: "Incident: [service] [description]\nSymptom: [what was observed
 3. Use structured format for incidents (symptom/cause/fix)
 4. Don't duplicate — search first, update existing if needed
 5. Keep memories actionable — "restart fixed it" is less useful than "OOM due to connection leak, restart + set pool_size=20 fixed it"
-6. Prefer `kb_save` over `update_memory` — the knowledge base is shared across agents, MEMORY.md is local only
+6. Prefer `memdb_save` over `update_memory` — the knowledge base is shared across agents, MEMORY.md is local only

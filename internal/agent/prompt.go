@@ -10,7 +10,14 @@ import (
 )
 
 // bootstrapFiles are loaded from workspace in this order.
-var bootstrapFiles = []string{"IDENTITY.md", "AGENTS.md", "MEMORY.md"}
+//
+// MEMORY.md was previously in this list but was removed deliberately: loading
+// the entire file into every session's system prompt encouraged the agent to
+// inherit stale or fabricated "recurring patterns" from months-old entries,
+// and the file grew unboundedly via blind append (update_memory). MEMORY.md
+// is now available on-demand via the `read_memory` tool instead, and the
+// canonical incident knowledge base is MemDB via `memdb_search` / `memdb_save`.
+var bootstrapFiles = []string{"IDENTITY.md", "AGENTS.md"}
 
 // BuildSystemPrompt constructs the system prompt from workspace files and skills.
 func BuildSystemPrompt(workspacePath string, skillsLoader *skills.Loader) string {

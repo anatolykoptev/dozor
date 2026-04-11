@@ -129,9 +129,15 @@ func processAgentMessage(ctx context.Context, deps messageLoopDeps, msg bus.Mess
 	}
 
 	// Enrich message with KB context (long-term memory).
+	//
+	// Webhook-sourced messages (SenderID="webhook") are NOT enriched: they are raw
+	// telemetry payloads, not user questions, and loading past "memories" about
+	// similar alerts feeds the agent its own prior confabulations as if they were
+	// proven facts — the exact mechanism that caused the 2026-04-11 TLS-blocked
+	// narrative to spread through cube=devops.
 	topK, searchTimeout, _, _, _ := kbConfig()
 	enrichedText := msg.Text
-	if deps.kbSearcher != nil && agent.NeedsMemoryContext(msg.Text) {
+	if deps.kbSearcher != nil && !isWebhookSourced(msg) && agent.NeedsMemoryContext(msg.Text) {
 		kbCtx, kbCancel := context.WithTimeout(ctx, searchTimeout)
 		kbResult, err := deps.kbSearcher.Search(kbCtx, msg.Text, topK)
 		kbCancel()
@@ -152,8 +158,16 @@ func processAgentMessage(ctx context.Context, deps messageLoopDeps, msg bus.Mess
 	}
 
 	// Auto-save important interactions to KB.
+	//
+	// Webhook-sourced messages are NEVER auto-saved: the "user" side is a raw
+	// alert payload (not a real user question), and the "assistant" side is
+	// whatever narrative the agent built from it — persisting that pair creates
+	// a feedback loop where every future alert pulls prior confabulations as
+	// "past incidents". If a webhook-triggered investigation produces a genuine
+	// finding, the agent should call memdb_save explicitly with a structured
+	// Incident/Evidence/Root cause/Fix payload.
 	_, _, saveTimeout, maxContentLen, _ := kbConfig()
-	if deps.kbSearcher != nil && isWorthSaving(msg.Text, response) {
+	if deps.kbSearcher != nil && !isWebhookSourced(msg) && isWorthSaving(msg.Text, response) {
 		go func(q, r string) {
 			saveCtx, cancel := context.WithTimeout(context.Background(), saveTimeout)
 			defer cancel()
@@ -326,19 +340,41 @@ func handleExitSession(msgBus *bus.Bus, mgr *session.Manager, msg bus.Message) {
 	slog.Info("session ended by user", slog.String("chat_id", msg.ChatID))
 }
 
+// isWebhookSourced returns true if the message originated from the HTTP /webhook
+// endpoint (an external monitor alert). These must bypass both KB enrichment and
+// KB auto-save to prevent the alert → memory → context → confabulation loop.
+func isWebhookSourced(msg bus.Message) bool {
+	return msg.SenderID == "webhook" || msg.ChatID == "webhook" || msg.Channel == "internal"
+}
+
 // isWorthSaving determines if an interaction should be persisted to the knowledge base.
+//
+// Tightened after 2026-04-11 contamination incident: the previous fallback
+// "save anything longer than 200 chars" auto-persisted roughly every response,
+// which turned the KB into a chat log and fed the agent its own narratives as
+// "past incidents". Now requires either a strong resolution indicator in the
+// answer OR an explicit user question (NeedsMemoryContext), never both fallbacks.
 func isWorthSaving(question, answer string) bool {
 	if !agent.NeedsMemoryContext(question) {
 		return false
 	}
-	indicators := []string{"✅", "Fixed", "Restarted", "Deployed", "Error:", "Root cause", "docker", "systemctl"}
-	for _, ind := range indicators {
+	// Require a strong indicator that the agent DID something concrete and
+	// verifiable. Generic substrings like "docker" or "systemctl" match every
+	// response and are no longer sufficient.
+	strongIndicators := []string{
+		"✅ Fixed",
+		"✅ Restarted",
+		"✅ Deployed",
+		"Root cause:",
+		"Resolution:",
+		"Prevention:",
+	}
+	for _, ind := range strongIndicators {
 		if strings.Contains(answer, ind) {
 			return true
 		}
 	}
-	_, _, _, _, minSaveLen := kbConfig()
-	return len(answer) > minSaveLen
+	return false
 }
 
 // truncateForKB shortens a string to maxLen, appending "..." if truncated.

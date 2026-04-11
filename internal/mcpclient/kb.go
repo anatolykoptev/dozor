@@ -14,9 +14,15 @@ import (
 const (
 	// defaultKBUserID is the default user ID for the knowledge base.
 	defaultKBUserID = "default"
+	// toolMemDBSearch is the user-facing name exposed to the LLM for searching MemDB.
+	toolMemDBSearch = "memdb_search"
+	// toolMemDBSave is the user-facing name exposed to the LLM for saving to MemDB.
+	toolMemDBSave = "memdb_save"
 )
 
 // KBConfig holds configuration for the knowledge base tools.
+// Internal type names keep the historical "KB" prefix for grep continuity;
+// user-facing tool names are `memdb_search` / `memdb_save` (see toolMemDB* constants).
 type KBConfig struct {
 	ServerID   string // MCP server ID (default "memdb")
 	UserID     string // KB user (default "default")
@@ -25,24 +31,30 @@ type KBConfig struct {
 	SaveTool   string // MCP tool name for save (default "add_memory")
 }
 
-// RegisterKBTools adds kb_search and kb_save tools that wrap MCP calls
-// to an external knowledge base server. These are simpler than raw mcp_call.
+// applyDefaults fills in missing KBConfig fields. Extracted so RegisterKBTools
+// and NewKBSearcher share a single source of truth.
+func (c *KBConfig) applyDefaults() {
+	if c.ServerID == "" {
+		c.ServerID = "memdb"
+	}
+	if c.UserID == "" {
+		c.UserID = defaultKBUserID
+	}
+	if c.CubeID == "" {
+		c.CubeID = defaultKBUserID
+	}
+	if c.SearchTool == "" {
+		c.SearchTool = "search_memories"
+	}
+	if c.SaveTool == "" {
+		c.SaveTool = "add_memory"
+	}
+}
+
+// RegisterKBTools adds memdb_search and memdb_save tools that wrap MCP calls
+// to the MemDB server. These are simpler than raw mcp_call.
 func RegisterKBTools(registry *toolreg.Registry, mgr *ClientManager, cfg KBConfig) {
-	if cfg.ServerID == "" {
-		cfg.ServerID = "memdb"
-	}
-	if cfg.UserID == "" {
-		cfg.UserID = defaultKBUserID
-	}
-	if cfg.CubeID == "" {
-		cfg.CubeID = defaultKBUserID
-	}
-	if cfg.SearchTool == "" {
-		cfg.SearchTool = "search_memories"
-	}
-	if cfg.SaveTool == "" {
-		cfg.SaveTool = "add_memory"
-	}
+	cfg.applyDefaults()
 
 	// Only register if the KB server is configured.
 	if _, ok := mgr.GetServer(cfg.ServerID); !ok {
@@ -53,16 +65,18 @@ func RegisterKBTools(registry *toolreg.Registry, mgr *ClientManager, cfg KBConfi
 	registry.Register(&kbSaveTool{mgr: mgr, cfg: cfg})
 }
 
-// --- kb_search ---
+// --- memdb_search ---
 
 type kbSearchTool struct {
 	mgr *ClientManager
 	cfg KBConfig
 }
 
-func (t *kbSearchTool) Name() string { return "kb_search" }
+func (t *kbSearchTool) Name() string { return toolMemDBSearch }
 func (t *kbSearchTool) Description() string {
-	return "Search the knowledge base for past incidents, solutions, and operational patterns. Use BEFORE fixing issues to find proven solutions."
+	return "Search the shared MemDB knowledge base for past incidents, solutions, and operational patterns. " +
+		"Use BEFORE fixing any non-trivial issue to find proven solutions from previous sessions and sibling agents. " +
+		"Backed by `search_memories` on the memdb MCP server; results are semantically ranked and deduped."
 }
 func (t *kbSearchTool) Parameters() map[string]any {
 	return map[string]any{
@@ -101,22 +115,26 @@ func (t *kbSearchTool) Execute(ctx context.Context, args map[string]any) (string
 		"dedup":      "mmr",
 	})
 	if err != nil {
-		return "", fmt.Errorf("kb search failed: %w", err)
+		return "", fmt.Errorf("memdb search failed: %w", err)
 	}
 
 	return formatSearchResult(result), nil
 }
 
-// --- kb_save ---
+// --- memdb_save ---
 
 type kbSaveTool struct {
 	mgr *ClientManager
 	cfg KBConfig
 }
 
-func (t *kbSaveTool) Name() string { return "kb_save" }
+func (t *kbSaveTool) Name() string { return toolMemDBSave }
 func (t *kbSaveTool) Description() string {
-	return "Save an incident resolution, operational pattern, or knowledge to the shared knowledge base. Use AFTER resolving non-trivial issues."
+	return "Save an incident resolution, operational fact, or anti-pattern to the shared MemDB knowledge base. " +
+		"Use AFTER resolving a non-trivial issue. The entry must cite concrete tool output (commands + their results) — " +
+		"do not save vague narratives. Format: `Incident: <service> <symptom>\\nEvidence: <quoted tool output>\\n" +
+		"Root cause: <why>\\nFix: <exact commands>\\nPrevention: <how to avoid recurrence>`. " +
+		"Entries are shared across dozor, vaelor, and claude-code sessions."
 }
 func (t *kbSaveTool) Parameters() map[string]any {
 	return map[string]any{
@@ -124,7 +142,7 @@ func (t *kbSaveTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"content": map[string]any{
 				"type":        "string",
-				"description": "Knowledge to save. For incidents use format: Incident: [service] [description]\\nSymptom: [what was observed]\\nRoot cause: [why it happened]\\nFix: [exact commands/actions]\\nPrevention: [how to prevent recurrence]",
+				"description": "Knowledge to save. Must include Incident, Evidence (quoted tool output), Root cause, Fix, Prevention.",
 			},
 		},
 		"required": []string{"content"},
@@ -143,13 +161,13 @@ func (t *kbSaveTool) Execute(ctx context.Context, args map[string]any) (string, 
 		"memory_content": content,
 	})
 	if err != nil {
-		return "", fmt.Errorf("kb save failed: %w", err)
+		return "", fmt.Errorf("memdb save failed: %w", err)
 	}
 
-	return "Knowledge saved to knowledge base.\n" + result, nil
+	return "Knowledge saved to MemDB.\n" + result, nil
 }
 
-// KBSearcher provides programmatic (non-tool) access to the knowledge base.
+// KBSearcher provides programmatic (non-tool) access to the MemDB knowledge base.
 type KBSearcher struct {
 	mgr *ClientManager
 	cfg KBConfig
@@ -159,26 +177,17 @@ type KBSearcher struct {
 // NewKBSearcher creates a KBSearcher if the KB server is configured. Returns nil otherwise.
 // If cb is non-nil, it is used to protect against cascading failures.
 func NewKBSearcher(mgr *ClientManager, cfg KBConfig, cb *engine.CircuitBreaker) *KBSearcher {
-	if cfg.ServerID == "" {
-		cfg.ServerID = "memdb"
-	}
-	if cfg.UserID == "" {
-		cfg.UserID = defaultKBUserID
-	}
-	if cfg.CubeID == "" {
-		cfg.CubeID = defaultKBUserID
-	}
-	if cfg.SearchTool == "" {
-		cfg.SearchTool = "search_memories"
-	}
-	if cfg.SaveTool == "" {
-		cfg.SaveTool = "add_memory"
-	}
+	cfg.applyDefaults()
 	if _, ok := mgr.GetServer(cfg.ServerID); !ok {
 		return nil
 	}
 	return &KBSearcher{mgr: mgr, cfg: cfg, cb: cb}
 }
+
+// ErrKBUnavailable is returned by Search/Save when the circuit breaker is open.
+// Callers can distinguish this from a real backend error and decide whether to
+// skip persistence silently (startup snapshot) or surface it (user-initiated save).
+var ErrKBUnavailable = errors.New("memdb temporarily unavailable (circuit breaker open)")
 
 // Search queries the knowledge base and returns formatted results.
 func (s *KBSearcher) Search(ctx context.Context, query string, topK int) (string, error) {
@@ -186,7 +195,7 @@ func (s *KBSearcher) Search(ctx context.Context, query string, topK int) (string
 		topK = 3
 	}
 	if s.cb != nil && !s.cb.Allow() {
-		return "KB temporarily unavailable (circuit breaker open)", nil
+		return "", ErrKBUnavailable
 	}
 	result, err := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SearchTool, map[string]any{
 		"query":      query,
@@ -200,7 +209,7 @@ func (s *KBSearcher) Search(ctx context.Context, query string, topK int) (string
 		if s.cb != nil {
 			s.cb.RecordFailure()
 		}
-		return "", fmt.Errorf("kb search failed: %w", err)
+		return "", fmt.Errorf("memdb search failed: %w", err)
 	}
 	if s.cb != nil {
 		s.cb.RecordSuccess()
@@ -208,10 +217,13 @@ func (s *KBSearcher) Search(ctx context.Context, query string, topK int) (string
 	return formatSearchResult(result), nil
 }
 
-// Save stores content in the knowledge base.
+// Save stores content in the knowledge base. Returns ErrKBUnavailable if the
+// circuit breaker is open — callers must decide whether that is acceptable.
+// Previously this returned nil on an open circuit, which silently lost data
+// and made it impossible for the agent to know whether a save had persisted.
 func (s *KBSearcher) Save(ctx context.Context, content string) error {
 	if s.cb != nil && !s.cb.Allow() {
-		return nil // silently skip when circuit is open
+		return ErrKBUnavailable
 	}
 	_, err := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SaveTool, map[string]any{
 		"user_id":        s.cfg.UserID,
@@ -222,7 +234,7 @@ func (s *KBSearcher) Save(ctx context.Context, content string) error {
 		if s.cb != nil {
 			s.cb.RecordFailure()
 		}
-		return fmt.Errorf("kb save failed: %w", err)
+		return fmt.Errorf("memdb save failed: %w", err)
 	}
 	if s.cb != nil {
 		s.cb.RecordSuccess()

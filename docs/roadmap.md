@@ -36,10 +36,10 @@ Remove server-specific hardcoding to make Dozor a portable open-source tool.
 - 9 skill files updated: replaced all server-specific references (service names, paths, URLs) with generic placeholders
 
 **5.3 — Pluggable knowledge base**
-- Renamed `memdb_search`/`memdb_save` to `kb_search`/`kb_save`
-- MCP backend is now configurable via `DOZOR_KB_SERVER`, `DOZOR_KB_SEARCH_TOOL`, `DOZOR_KB_SAVE_TOOL`
+- User-facing tool names are `memdb_search`/`memdb_save` (internal Go types still use the generic `KB*` prefix).
+- MCP backend is configurable via `DOZOR_KB_SERVER`, `DOZOR_KB_SEARCH_TOOL`, `DOZOR_KB_SAVE_TOOL`
 - Backward compat with `DOZOR_MEMDB_USER`/`DOZOR_MEMDB_CUBE`
-- Watch prompt conditionally references `kb_search` only when KB is configured
+- Watch prompt conditionally references `memdb_search` only when KB is configured
 
 **5.4 — Workspace cleanup**
 - `workspace/MEMORY.md` shipped as empty template
