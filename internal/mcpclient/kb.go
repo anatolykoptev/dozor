@@ -46,7 +46,8 @@ const (
 // user-facing tool names are `memdb_search` / `memdb_save` (see toolMemDB* constants).
 type KBConfig struct {
 	ServerID   string // MCP server ID (default "memdb")
-	UserID     string // KB user (default "default")
+	UserID     string // KB user (legacy; kept for back-compat)
+	PersonID   string // Phase 2: person identity sent as MemDB user_id; falls back to UserID
 	CubeID     string // KB cube (default "default")
 	SearchTool string // MCP tool name for search (default "search_memories")
 	SaveTool   string // MCP tool name for save (default "add_memory")
@@ -60,6 +61,9 @@ func (c *KBConfig) applyDefaults() {
 	}
 	if c.UserID == "" {
 		c.UserID = defaultKBUserID
+	}
+	if c.PersonID == "" {
+		c.PersonID = c.UserID // Phase 2 back-compat: default person = legacy UserID
 	}
 	if c.CubeID == "" {
 		c.CubeID = defaultKBUserID
@@ -130,7 +134,7 @@ func (t *kbSearchTool) Execute(ctx context.Context, args map[string]any) (string
 
 	// Cache key includes everything that affects the underlying MCP call
 	// so two distinct queries cannot share an entry.
-	ck := cacheKey(query, t.cfg.UserID, t.cfg.CubeID, topK)
+	ck := cacheKey(query, t.cfg.PersonID, t.cfg.CubeID, topK)
 	if t.cache != nil {
 		if cached, hit := t.cache.get(ck); hit {
 			return cached, nil
@@ -139,7 +143,7 @@ func (t *kbSearchTool) Execute(ctx context.Context, args map[string]any) (string
 
 	result, err := t.mgr.Call(ctx, t.cfg.ServerID, t.cfg.SearchTool, map[string]any{
 		"query":      query,
-		"user_id":    t.cfg.UserID,
+		"user_id":    t.cfg.PersonID,
 		"cube_ids":   []string{t.cfg.CubeID},
 		"top_k":      topK,
 		"relativity": 0.82,
@@ -196,7 +200,7 @@ func (t *kbSaveTool) Execute(ctx context.Context, args map[string]any) (string, 
 	}
 
 	result, err := t.mgr.Call(ctx, t.cfg.ServerID, t.cfg.SaveTool, map[string]any{
-		"user_id":        t.cfg.UserID,
+		"user_id":        t.cfg.PersonID,
 		"mem_cube_id":    t.cfg.CubeID,
 		"memory_content": content,
 	})
@@ -239,7 +243,7 @@ func (s *KBSearcher) Search(ctx context.Context, query string, topK int) (string
 	}
 	result, err := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SearchTool, map[string]any{
 		"query":      query,
-		"user_id":    s.cfg.UserID,
+		"user_id":    s.cfg.PersonID,
 		"cube_ids":   []string{s.cfg.CubeID},
 		"top_k":      topK,
 		"relativity": 0.82,
@@ -285,7 +289,7 @@ func (s *KBSearcher) Save(ctx context.Context, content string) error {
 	backoff := kbSaveInitialBackoff
 	for attempt := 1; attempt <= kbSaveMaxAttempts; attempt++ {
 		_, err := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SaveTool, map[string]any{
-			"user_id":        s.cfg.UserID,
+			"user_id":        s.cfg.PersonID,
 			"mem_cube_id":    s.cfg.CubeID,
 			"memory_content": content,
 		})

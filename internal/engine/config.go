@@ -69,6 +69,7 @@ type Config struct {
 	MCPServers   map[string]MCPServerConfig
 	KBServer     string
 	KBUser       string
+	KBPersonID   string // Phase 2 split: person identity (defaults to KBUser if unset)
 	KBCube       string
 	KBSearchTool string
 	KBSaveTool   string
@@ -160,19 +161,10 @@ func Init() Config {
 		PerplexityMaxResults:  envInt("DOZOR_PERPLEXITY_MAX_RESULTS", defaultBraveMaxResults),
 		PerplexityEnabled:     envBool("DOZOR_PERPLEXITY_ENABLED", false),
 		MCPServers:            parseMCPServers(env("DOZOR_MCP_SERVERS", "")),
-		KBServer:              env("DOZOR_KB_SERVER", "memdb"),
-		KBUser:                env("DOZOR_KB_USER", env("DOZOR_MEMDB_USER", "default")),
-		KBCube:                env("DOZOR_KB_CUBE", env("DOZOR_MEMDB_CUBE", "default")),
-		KBSearchTool:          env("DOZOR_KB_SEARCH_TOOL", "search_memories"),
-		KBSaveTool:            env("DOZOR_KB_SAVE_TOOL", "add_memory"),
 		AlertConfirmCount:     envInt("DOZOR_ALERT_CONFIRM_COUNT", 2),
 		FlapWindow:            envInt("DOZOR_FLAP_WINDOW", 10),
 		FlapHigh:              envFloat("DOZOR_FLAP_HIGH", defaultFlapHigh),
 		FlapLow:               envFloat("DOZOR_FLAP_LOW", defaultFlapLow),
-		CBKBThreshold:         envInt("DOZOR_CB_KB_THRESHOLD", defaultCBKBThreshold),
-		CBKBReset:             envDurationStr("DOZOR_CB_KB_RESET", defaultCBKBResetMin*time.Minute),
-		CBLLMThreshold:        envInt("DOZOR_CB_LLM_THRESHOLD", defaultErrorThreshold),
-		CBLLMReset:            envDurationStr("DOZOR_CB_LLM_RESET", defaultCBLLMResetMin*time.Minute),
 		LLMConfigPath:         env("DOZOR_LLM_CONFIG_PATH", ""),
 		LLMCheckURL:           env("DOZOR_LLM_URL", ""),
 		LLMCheckAPIKey:        env("DOZOR_LLM_API_KEY", ""),
@@ -182,6 +174,9 @@ func Init() Config {
 		RootAllowedContainers: parseRootAllowed(env("DOZOR_ROOT_ALLOWED", "")),
 		DangerousHostMounts:   parseDangerousMounts(env("DOZOR_DANGEROUS_MOUNTS", "")),
 	}
+
+	c.KBServer, c.KBUser, c.KBPersonID, c.KBCube, c.KBSearchTool, c.KBSaveTool = initKBConfig()
+	c.CBKBThreshold, c.CBLLMThreshold, c.CBKBReset, c.CBLLMReset = initCBConfig()
 
 	// Parse CLIProxyAPI config — fills GeminiAPIKeys and overrides LLMCheckAPIKey if available.
 	if c.LLMConfigPath != "" {

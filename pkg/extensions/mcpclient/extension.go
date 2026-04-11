@@ -76,6 +76,7 @@ func (e *MCPClientExtension) Register(ctx context.Context, extCtx *extensions.Co
 	kbCfg := mcpclient.KBConfig{
 		ServerID:   extCtx.Config.KBServer,
 		UserID:     extCtx.Config.KBUser,
+		PersonID:   extCtx.Config.KBPersonID, // Phase 2: MemDB user_id = person identity
 		CubeID:     extCtx.Config.KBCube,
 		SearchTool: extCtx.Config.KBSearchTool,
 		SaveTool:   extCtx.Config.KBSaveTool,

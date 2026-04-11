@@ -86,7 +86,7 @@ func (t *kbDeleteTool) Execute(ctx context.Context, args map[string]any) (string
 	// MemDB's native delete endpoint accepts memory_ids + user_id; we pass
 	// the cube-scoped user_id so a rogue delete cannot cross tenants.
 	result, err := t.mgr.Call(ctx, t.cfg.ServerID, "delete_memory", map[string]any{
-		"user_id":    t.cfg.UserID,
+		"user_id":    t.cfg.PersonID,
 		"memory_ids": ids,
 	})
 	if err != nil {
