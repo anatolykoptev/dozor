@@ -151,8 +151,13 @@ func (t *kbSaveTool) Parameters() map[string]any {
 
 func (t *kbSaveTool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	content, _ := args["content"].(string)
-	if content == "" {
-		return "", errors.New("content is required")
+	// Validate unconditionally — the validator handles empty content and
+	// returns an ErrInvalidSavePayload-wrapped error with a useful remediation
+	// message. Skipping the pre-check keeps both save paths (this tool and
+	// KBSearcher.Save) consistent so errors.Is(err, ErrInvalidSavePayload)
+	// succeeds from either entry point.
+	if err := ValidateSavePayload(content); err != nil {
+		return "", err
 	}
 
 	result, err := t.mgr.Call(ctx, t.cfg.ServerID, t.cfg.SaveTool, map[string]any{
@@ -222,6 +227,11 @@ func (s *KBSearcher) Search(ctx context.Context, query string, topK int) (string
 // Previously this returned nil on an open circuit, which silently lost data
 // and made it impossible for the agent to know whether a save had persisted.
 func (s *KBSearcher) Save(ctx context.Context, content string) error {
+	if err := ValidateSavePayload(content); err != nil {
+		// Schema rejections do not open the circuit breaker — they are the
+		// caller's fault, not the backend's.
+		return err
+	}
 	if s.cb != nil && !s.cb.Allow() {
 		return ErrKBUnavailable
 	}
