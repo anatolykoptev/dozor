@@ -23,6 +23,7 @@ const (
 	defaultKBSaveTimeout    = 15 * time.Second
 	defaultKBMaxContentLen  = 500
 	defaultMinWorthySaveLen = 200
+	logTextMaxRunes         = 500
 )
 
 // kbConfig returns KB integration parameters, respecting env overrides.
@@ -66,7 +67,8 @@ func runMessageLoop(ctx context.Context, deps messageLoopDeps) {
 		}
 		slog.Info("processing message",
 			slog.String("channel", msg.Channel),
-			slog.String("sender", msg.SenderID))
+			slog.String("sender", msg.SenderID),
+			slog.String("text", truncateLog(msg.Text, logTextMaxRunes)))
 
 		if handleApproval(deps.approvalsMgr, deps.msgBus, msg) {
 			continue
@@ -110,6 +112,11 @@ func handleApproval(mgr *approvals.Manager, msgBus *bus.Bus, msg bus.Message) bo
 
 // processAgentMessage sends a message through the agent loop and publishes the response.
 func processAgentMessage(ctx context.Context, deps messageLoopDeps, msg bus.Message) {
+	if deps.stack == nil {
+		slog.Warn("processAgentMessage: agent stack not initialized, dropping message",
+			slog.String("msg_id", msg.ID))
+		return
+	}
 	if msg.Channel == "telegram" && msg.ChatID != "" {
 		deps.msgBus.PublishOutbound(bus.Message{
 			ID:        msg.ID + "-ack",
@@ -225,7 +232,7 @@ func autoEscalateToClaudeCode(ctx context.Context, stack *agentStack, originalTa
 // routeToSession handles session-related commands for telegram messages.
 // Returns true if the message was handled by a session and should not be processed further.
 func routeToSession(ctx context.Context, msgBus *bus.Bus, mgr *session.Manager, cfg session.Config, msg bus.Message) bool {
-	if msg.Channel != "telegram" || msg.ChatID == "" {
+	if msg.Channel != "telegram" || msg.ChatID == "" || mgr == nil {
 		return false
 	}
 
@@ -340,4 +347,13 @@ func truncateForKB(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// truncateLog truncates s to maxLen runes for log output.
+func truncateLog(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
 }

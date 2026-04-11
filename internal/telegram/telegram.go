@@ -184,6 +184,10 @@ func (c *Channel) sendReply(msg bus.Message) {
 
 	text = CompactForTelegram(text, telegramCompactMaxChars)
 
+	slog.Info("telegram: sending reply",
+		slog.String("chat_id", msg.ChatID),
+		slog.Int("length", len(text)))
+
 	htmlText := markdownToTelegramHTML(text)
 	if err := c.sendChunked(chatID, htmlText, tgbotapi.ModeHTML); err != nil {
 		slog.Warn("telegram: HTML send failed, falling back to plain text", slog.Any("error", err))
