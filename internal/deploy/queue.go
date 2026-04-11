@@ -13,6 +13,12 @@ import (
 const (
 	queueSize    = 16
 	buildTimeout = 15 * time.Minute
+	upMaxRetries = 2
+)
+
+// upRetryDelay and healthWait are variables so tests can override them.
+var (
+	upRetryDelay = 10 * time.Second
 	healthWait   = 30 * time.Second
 )
 
@@ -181,13 +187,34 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 	imagesAfter := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
 	logImageDiff(imagesBefore, imagesAfter, req.Config.Services, req.CommitSHA)
 
-	// Step 3: docker compose up
+	// Step 3: docker compose up — retry once on transient failure
 	upArgs := append(
 		[]string{"compose", "up", "-d", "--no-deps", "--force-recreate"},
 		req.Config.Services...)
-	if err := runCmd(ctx, req.Config.ComposePath,
-		"docker", upArgs...); err != nil {
-		result.Error = fmt.Sprintf("docker up: %v", err)
+
+	var upErr error
+	for attempt := 1; attempt <= upMaxRetries; attempt++ {
+		upErr = runCmd(ctx, req.Config.ComposePath, "docker", upArgs...)
+		if upErr == nil {
+			break
+		}
+		slog.Warn("deploy: docker up failed, retrying",
+			"attempt", attempt,
+			"max", upMaxRetries,
+			"error", truncate(upErr.Error(), maxOutputLen),
+			"services", req.Config.Services,
+		)
+		if attempt < upMaxRetries {
+			select {
+			case <-ctx.Done():
+				result.Error = fmt.Sprintf("docker up: context cancelled during retry: %v", upErr)
+				return result
+			case <-time.After(upRetryDelay):
+			}
+		}
+	}
+	if upErr != nil {
+		result.Error = fmt.Sprintf("docker up (after %d attempts): %v", upMaxRetries, upErr)
 		return result
 	}
 
@@ -210,7 +237,15 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 	return result
 }
 
+// cmdRunner is the function used to run external commands.
+// It can be replaced in tests.
+var cmdRunner = defaultRunCmd
+
 func runCmd(ctx context.Context, dir, name string, args ...string) error {
+	return cmdRunner(ctx, dir, name, args...)
+}
+
+func defaultRunCmd(ctx context.Context, dir, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
