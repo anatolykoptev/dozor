@@ -96,8 +96,11 @@ func HandleInspect(ctx context.Context, agent *engine.ServerAgent, input engine.
 		}
 		return agent.GetMetrics(ctx, period, input.Service), nil
 
+	case "dmesg":
+		return handleInspectDmesg(ctx, agent)
+
 	default:
-		return "", fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron, groups, metrics", input.Mode)
+		return "", fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron, groups, metrics, dmesg", input.Mode)
 	}
 }
 
@@ -381,6 +384,17 @@ func handleInspectLogs(ctx context.Context, agent *engine.ServerAgent, input eng
 	}
 	header += "):\n\n"
 	return header + b.String(), nil
+}
+
+// handleInspectDmesg handles the "dmesg" mode for HandleInspect.
+// It reads the kernel ring buffer and parses OOM kill events.
+func handleInspectDmesg(ctx context.Context, agent *engine.ServerAgent) (string, error) {
+	res := agent.ExecuteCommand(ctx, "dmesg --ctime 2>/dev/null || sudo dmesg --ctime 2>/dev/null")
+	if !res.Success {
+		return "Cannot read dmesg (no permissions).", nil
+	}
+	events := engine.ParseDmesgOOM(res.Stdout)
+	return engine.FormatOOMReport(events), nil
 }
 
 // handleInspectAnalyze handles the "analyze" mode for HandleInspect.

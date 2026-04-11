@@ -23,7 +23,8 @@ func registerInspect(server *mcp.Server, agent *engine.ServerAgent) {
 - systemd: local systemd service monitoring
 - connections: TCP/UDP connections by state, top remote IPs, per-service counts
 - cron: all cron jobs, systemd timers, and at jobs
-- metrics: historical system metrics via sar/iostat/vnstat [optional: period=today|yesterday|week, service for per-process stats]`,
+- metrics: historical system metrics via sar/iostat/vnstat [optional: period=today|yesterday|week, service for per-process stats]
+- dmesg: kernel OOM-kill events (process, memory, container)`,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.InspectInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		text, err := HandleInspect(ctx, agent, input)
