@@ -116,10 +116,14 @@ func (w *watchDeps) routeToAgent(ctx context.Context, result, hash string) {
 	prompt := buildWatchPrompt(w.eng.IsDevMode())
 	prompt += enrichWithKB(ctx, w.kbSearcher, result)
 
+	var issueNames []string
+	for _, issue := range issues {
+		issueNames = append(issueNames, issue.Service+": "+issue.Description)
+	}
 	slog.Info("gateway watch: routing to agent",
 		slog.String("hash", hash),
 		slog.Int("issues", len(issues)),
-	)
+		slog.String("summary", strings.Join(issueNames, "; ")))
 	w.msgBus.PublishInbound(bus.Message{
 		ID:        fmt.Sprintf("watch-%d", time.Now().UnixMilli()),
 		Channel:   "internal",
