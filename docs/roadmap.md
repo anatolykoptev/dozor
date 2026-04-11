@@ -98,6 +98,18 @@ Three data-level bugs were letting consuming agents fabricate incident narrative
 - `FormatAnalysisEnriched` now filters noise before passing entries to timeline and clustering — the old version showed "Errors: 0" in the header while the timeline below reported 13, a contradiction that pushed agents toward the louder wrong signal.
 - 13 new tests: ctime parsing, single-digit day padding, all freshness classifications, the 429 regression, per-service noise scoping.
 
+**5.9 — Memory Architecture v2 (commits `adeb065`, `77d2e19`, `2bb64fa`, `02014e3`, `e140d5a`)**
+
+Five sub-phases, each landed as its own commit and reviewed two-stage (spec + code quality) via subagent-driven execution. Plan: `~/docs/superpowers/plans/2026-04-11-dozor-phase6-memory-architecture.md`.
+
+- **5.9.1 Schema validator for `memdb_save`** (`adeb065`). New `ValidateSavePayload` gates both `kbSaveTool.Execute` and `KBSearcher.Save`. Rejects: empty content, raw `user:/assistant:` dialog transcripts, numeric vital claims (swap/ram/load/cpu/disk/gpu %) lacking a tool output citation, and incident-structured content (Incident/Symptom/Root cause/Fix/Resolution/Prevention markers) without a non-empty `Evidence:` field. Schema rejections bypass the circuit breaker — they are caller-side bugs, not transient backend failures. 7 new tests; regex uses `\r?\n` for CRLF tolerance.
+- **5.9.2 `memdb_delete` MCP tool** (`77d2e19`). New user-facing tool with required `memory_ids` + `reason` parameters. Forwards to MemDB's native `delete_memory` with the cube-scoped `user_id` so cross-tenant deletes are impossible. Every call is logged via `slog.Info` with IDs and reason for audit. 7 new tests cover name/description/schema + all argument-validation edge cases.
+- **5.9.3 Retry wrap for `KBSearcher.Save`** (`2bb64fa`). Up to 3 attempts with exponential backoff (200ms → 400ms → 800ms, capped at 2s) and ±20% jitter via `math/rand`. Schema rejections bypass retry entirely. Circuit breaker failure counter is only bumped on the final attempt so a single backend hiccup no longer trips the breaker. Context cancellation is honored between attempts.
+- **5.9.4 60s TTL cache for `memdb_search`** (`02014e3`). New `searchCache` wraps `kbSearchTool.Execute`. Cache key is SHA-256 of `(query, user_id, cube_id, top_k)`. 60-second TTL, 256-entry FIFO eviction. Session-local — never bleeds into system prompt or across restarts. Regression test `TestSearchCache_OrderSyncAfterExpiry` guards a subtle bug where expired `get()` removals would have left stale keys in the `order` slice and broken FIFO eviction. 6 tests total.
+- **5.9.5 Startup memory snapshot** (`e140d5a`). `BuildSystemPrompt` accepts an optional `*mcpclient.KBSearcher`. When non-nil, runs a single `memdb_search("infrastructure state services configuration architecture", top_k=5)` at agent startup and injects the result as a fourth prompt section wrapped in `<startup_snapshot source="memdb_search">` tags with a disambiguation comment. Replaces the raw `MEMORY.md` bootstrap load removed in Phase 5.7 — semantic filtering surfaces only the top-5 most relevant facts, and every entry has passed the Phase 5.9.1 validator. Required a restructure of `buildAgentStack` so loop construction is deferred until after extensions load (chicken-and-egg: the searcher only exists once the `mcpclient` extension is up). Watch mode passes `nil` — the per-tick snapshot cost would add network latency to every health probe. 3 new tests.
+
+Full test suite: 440/440 across 19 packages. Phase 6.2 (cube separation: `dozor-facts` / `dozor-incidents` / `dozor-anti-patterns`) is deferred because it requires fixing the `user_name`/`cube_id` column mismatch in `/home/krolik/src/MemDB` — separate repo, separate plan.
+
 **5.8 — Self-Process Awareness (commit `515822b`)**
 
 Prevents the agent from mistaking its own footprint or live user sessions for foreign system load. Motivated by the 2026-04-11 incident where the agent saw `load 51` and proposed killing `claude`/`windsurf`/`code-review-graph` processes to "free memory" — these were the user's active interactive sessions.
@@ -128,67 +140,14 @@ Root cause of the 2026-04-11 "TLS BLOCKED / hosting lockdown" hallucination epis
 
 ## Planned
 
-### Phase 6: Memory Architecture v2
+### Phase 6.2: Cube separation (deferred — requires MemDB changes)
 
-The top priority. Phase 5.6 / 5.7 stopped the loop but the memory subsystem is still missing structure. The goal of Phase 6 is to turn MemDB from an ad-hoc chat log into a disciplined, queryable incident knowledge base that can't re-contaminate itself.
+Split `cube=devops` into three cubes with different persistence semantics:
+- `dozor-facts` — permanent, rarely-changing infra truths. Hand-curated, no auto-save.
+- `dozor-incidents` — resolved incidents with Phase 5.9.1 schema. Auto-expire after 90 days.
+- `dozor-anti-patterns` — permanent gravestones: confirmed false-positive patterns, "do not act on this" warnings.
 
-**6.1 — Structured incident schema for `memdb_save`**
-
-The current save format is `"user: <q>\nassistant: <r>"` — unstructured chat. Replace with a typed payload:
-
-```
-Incident: <service> <symptom>
-Evidence: <quoted tool output — commands + their results>
-Root cause: <why it happened>
-Fix: <exact commands/actions taken>
-Prevention: <how to avoid recurrence>
-Service: <canonical service name>
-Timestamp: <RFC3339>
-Session: <session id>
-```
-
-- Reject saves that lack `Evidence:` or have it empty.
-- Regex guard on numeric claims: any mention of `swap X%`, `RAM X%`, `load X` must be accompanied by a quoted tool line (`free -h`, `uptime`, `top`) — otherwise the save is rejected.
-- Tool description updated with an example and an explicit anti-pattern list.
-
-**6.2 — Cube separation: facts / incidents / anti-patterns**
-
-Today everything lives in one `cube=devops` bucket. Split into three:
-
-- `dozor-facts` — permanent, rarely-changing infra truths (port assignments, schema names, user quirks). Hand-curated, no auto-save.
-- `dozor-incidents` — resolved incidents with the Phase 6.1 schema. **Auto-expire after 90 days** via a MemDB cron or a `valid_until` field — stale incidents stop influencing context.
-- `dozor-anti-patterns` — permanent gravestones: confirmed false-positive patterns, narratives that turned out to be wrong, "do not act on this" warnings. Populated by the user or by explicit post-mortem.
-
-`memdb_search` default query reads from facts + incidents + anti-patterns; an explicit `historical=true` flag is required to search expired incidents. Requires fixing the `user_name` vs `cube_id` bug first: the write path stores `cube_id` as the `user_name` property while the read path filters by `user_id`; writes and reads only agree when the two IDs are equal, which blocks the split.
-
-**6.3 — Startup memory snapshot**
-
-Replace the removed `MEMORY.md` bootstrap load with a single semantic query at agent-loop start:
-
-- `memdb_search("infrastructure state", top_k=5)` against `dozor-facts` cube.
-- Inject the result as a `<startup_snapshot>` section in the system prompt.
-- The file-based `MEMORY.md` stays as a local-only optional override for environments without MemDB.
-- This restores "agent knows something at boot" without the stale-file-growing-forever problem.
-
-**6.4 — `memdb_delete` MCP tool**
-
-Expose MemDB's native `delete_memory` as a registered tool so the agent (or an operator via Telegram) can remove bad entries without direct DB access. Signature: `memdb_delete(memory_ids: [string], reason: string)`. The reason is required and logged. Used for the "this memory turned out to be wrong" workflow, which feeds Phase 6.2's anti-pattern cube.
-
-**6.5 — go-kit/cache for working memory**
-
-`go-kit/cache` (L1 in-memory + L2 Redis, S3-FIFO eviction) used to cache short-lived intermediate results within a session:
-
-- Triage snapshots (so `server_triage` isn't re-run on every tick of the same incident).
-- `memdb_search` results per query for 60 seconds (so repeated identical searches during one investigation hit cache).
-- `server_probe` results per URL for 30 seconds.
-
-All cached data is session-scoped — never loaded into the system prompt. This is working memory, not long-term memory.
-
-**6.6 — `memdb_save` reliability**
-
-- Wrap the Save call in `go-kit/retry` with exponential backoff + jitter.
-- Surface `ErrKBUnavailable` distinctly in Telegram/log output so the user sees when writes were dropped by the circuit breaker.
-- Log every `memdb_save` call to `journalctl --user -u dozor` with the content hash — when the KB goes bad, we can audit who wrote what.
+`memdb_search` default query reads from facts + incidents + anti-patterns; explicit `historical=true` flag is required to search expired incidents. Blocker: the `user_name` vs `cube_id` column mismatch in `/home/krolik/src/MemDB` must be fixed first — the write path stores `cube_id` as the `user_name` property while the read path filters by `user_id`, so writes and reads only agree when the two IDs are equal, which blocks the three-cube split. Tracked separately; belongs to a MemDB-repo plan.
 
 ### Phase 8: Webhook Alert Pipeline
 
@@ -258,7 +217,6 @@ Deep diagnosis before acting.
 
 ## Priority order
 
-1. **Phase 6.1 + 6.2 + 6.3 + 6.4** — the memory architecture is the bottleneck for everything else. Without schema, separation, and startup snapshot, every later phase feeds the same broken memory pool.
-2. **Phase 6.5 + 6.6** — reliability polish on top of the new architecture (go-kit/cache working memory, go-kit/retry for save).
-3. **Phase 8** — turns webhook alerts from an LLM gamble into a deterministic pipeline.
-4. Phase 9 → 13 — features on top of a stable foundation.
+1. **Phase 8 — Webhook Alert Pipeline.** Largest remaining reliability gap. Webhook handler currently funnels raw alerts through the full LLM loop, and even with Phase 5.7 / 5.9 hardening the alert→narrative surface area is wider than it needs to be. Deterministic dispatcher with per-alert-type falsifying probes eliminates the entire class of "alert triggered an investigation that fabricated a narrative".
+2. **Phase 6.2 cube separation** — blocked on MemDB repo changes; track in a separate plan.
+3. Phase 9 → 13 — features on top of a stable foundation.
