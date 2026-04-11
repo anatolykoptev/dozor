@@ -90,6 +90,21 @@ func (c *LogCollector) GetErrorLogs(ctx context.Context, service string, lines i
 	return c.GetLogs(ctx, service, lines, true)
 }
 
+// GetContainerLogs fetches raw docker logs for a container by name,
+// bypassing docker compose. Useful for crash debugging and containers
+// not managed by compose.
+func (c *LogCollector) GetContainerLogs(ctx context.Context, container string, lines int) []LogEntry {
+	if lines <= 0 {
+		lines = 100
+	}
+	cmd := fmt.Sprintf("docker logs --tail %d --timestamps %s 2>&1", lines, container)
+	res := c.transport.ExecuteUnsafe(ctx, cmd)
+	if !res.Success {
+		return nil
+	}
+	return parseLogLines(res.Stdout, container)
+}
+
 func parseLogLines(output, service string) []LogEntry {
 	lines := strings.Split(output, "\n")
 	entries := make([]LogEntry, 0, len(lines))

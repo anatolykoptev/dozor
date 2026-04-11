@@ -168,6 +168,12 @@ func (a *ServerAgent) GetLogs(ctx context.Context, service string, lines int, er
 	return a.logs.GetLogs(ctx, service, lines, errorsOnly)
 }
 
+// GetContainerLogs returns raw docker logs for a container by name,
+// bypassing docker compose. Useful for crash debugging.
+func (a *ServerAgent) GetContainerLogs(ctx context.Context, container string, lines int) []LogEntry {
+	return a.logs.GetContainerLogs(ctx, container, lines)
+}
+
 // AnalyzeLogs runs error pattern analysis on service logs.
 func (a *ServerAgent) AnalyzeLogs(ctx context.Context, service string) AnalyzeResult {
 	entries := a.logs.GetLogs(ctx, service, a.cfg.LogLines, false)

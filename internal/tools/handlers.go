@@ -99,8 +99,43 @@ func HandleInspect(ctx context.Context, agent *engine.ServerAgent, input engine.
 	case "dmesg":
 		return handleInspectDmesg(ctx, agent)
 
+	case "container_logs":
+		if input.Service == "" {
+			return "", errors.New("service (container name) is required for container_logs mode")
+		}
+		lines := input.Lines
+		if lines <= 0 {
+			lines = 100
+		}
+		if lines > maxLinesLog {
+			return "", fmt.Errorf("lines must be <= %d", maxLinesLog)
+		}
+		entries := agent.GetContainerLogs(ctx, input.Service, lines)
+		filter := strings.ToLower(input.Filter)
+		var b strings.Builder
+		matched := 0
+		for _, e := range entries {
+			if filter != "" {
+				haystack := strings.ToLower(e.Message + e.Raw)
+				if !strings.Contains(haystack, filter) {
+					continue
+				}
+			}
+			if e.Timestamp != nil {
+				fmt.Fprintf(&b, "[%s] ", e.Timestamp.Format("15:04:05"))
+			}
+			fmt.Fprintf(&b, "[%s] %s\n", e.Level, e.Message)
+			matched++
+		}
+		header := fmt.Sprintf("Container logs for %s (%d entries", input.Service, matched)
+		if filter != "" {
+			header += fmt.Sprintf(", filter=%q", input.Filter)
+		}
+		header += "):\n\n"
+		return header + b.String(), nil
+
 	default:
-		return "", fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron, groups, metrics, dmesg", input.Mode)
+		return "", fmt.Errorf("unknown mode %q, use: health, status, diagnose, logs, analyze, errors, security, overview, remote, systemd, connections, cron, groups, metrics, dmesg, container_logs", input.Mode)
 	}
 }
 
