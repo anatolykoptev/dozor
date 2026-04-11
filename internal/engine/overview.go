@@ -8,6 +8,9 @@ import (
 )
 
 const (
+	// swapFieldCount is the minimum number of whitespace fields expected in a
+	// `free -h` "Swap:" row (label + total + used, at minimum).
+	swapFieldCount = 3
 	// ioWaitWarnPct is the I/O wait percentage threshold for showing a warning.
 	ioWaitWarnPct = 5
 	// netFieldsMin is the minimum number of fields in a parsed network line.
@@ -54,13 +57,27 @@ func overviewWriteMemory(ctx context.Context, b *strings.Builder, a *ServerAgent
 	}
 	b.WriteString("Memory:\n")
 	b.WriteString(res.Stdout)
+	// Swap reality check: three canonical states, emit an explicit annotation
+	// for each so the consuming LLM cannot interpolate a swap percentage from
+	// nothing. A prior incident had an agent fabricate "swap 99%" on this
+	// host — the host has no swap file at all.
 	for _, line := range strings.Split(res.Stdout, "\n") {
 		if !strings.HasPrefix(line, "Swap:") {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) >= 3 && fields[2] != "0B" && fields[2] != "0" {
-			fmt.Fprintf(b, "\nSwap in use: %s of %s total\n", fields[2], fields[1])
+		if len(fields) < swapFieldCount {
+			continue
+		}
+		total := fields[1]
+		used := fields[2]
+		switch {
+		case total == "0B" || total == "0":
+			b.WriteString("\nSwap: not configured on this host (no swapfile / swap partition).\n")
+		case used == "0B" || used == "0":
+			fmt.Fprintf(b, "\nSwap: %s configured, 0 in use.\n", total)
+		default:
+			fmt.Fprintf(b, "\nSwap in use: %s of %s total\n", used, total)
 		}
 	}
 	b.WriteString("\n")
@@ -156,9 +173,15 @@ func overviewWriteNetworkIO(ctx context.Context, b *strings.Builder, a *ServerAg
 
 func overviewWriteTopProcesses(ctx context.Context, b *strings.Builder, a *ServerAgent) {
 	res := a.transport.ExecuteUnsafe(ctx, "ps aux --sort=-%cpu 2>/dev/null | head -6")
-	if res.Success && res.Stdout != "" {
-		b.WriteString("\nTop processes (CPU):\n")
-		b.WriteString(res.Stdout)
+	if !res.Success || res.Stdout == "" {
+		return
+	}
+	b.WriteString("\nTop processes (CPU):\n")
+	tagged, total, count := tagTopProcesses(res.Stdout)
+	b.WriteString(tagged)
+	b.WriteString("\n")
+	if banner := topProcessLoadBanner(total, count); banner != "" {
+		b.WriteString(banner)
 	}
 }
 

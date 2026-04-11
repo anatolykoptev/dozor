@@ -69,3 +69,45 @@ func TestBlocklistBlocked(t *testing.T) {
 		}
 	}
 }
+
+// TestBlocklistUserSessionKills guards the Phase 7 rule that kill/pkill/killall
+// against user-driven interactive sessions is forbidden — these are live user
+// activity, not background debris.
+func TestBlocklistUserSessionKills(t *testing.T) {
+	blocked := []string{
+		"kill -9 $(pgrep claude)",
+		"pkill -f claude",
+		"killall claude-code",
+		"kill $(pgrep windsurf-server)",
+		"pkill -f windsurf",
+		"kill -TERM $(pidof code-review-graph)",
+		"killall cursor-server",
+		"pkill -9 cursor",
+	}
+	for _, cmd := range blocked {
+		ok, reason := IsCommandAllowed(cmd)
+		if ok {
+			t.Errorf("SHOULD BE BLOCKED (user session kill) but allowed: %q", cmd)
+		} else {
+			t.Logf("correctly blocked user session kill: %q => %s", cmd, reason)
+		}
+	}
+}
+
+// TestBlocklistRegularKillsStillAllowed confirms we didn't over-block the
+// legitimate kill/pkill usage the agent still needs.
+func TestBlocklistRegularKillsStillAllowed(t *testing.T) {
+	allowed := []string{
+		"kill -15 12345",
+		"kill $(pgrep dozor)",
+		"pkill -f old-worker",
+		"killall chrome-sandbox",
+		"kill -HUP $(pidof nginx)",
+	}
+	for _, cmd := range allowed {
+		ok, reason := IsCommandAllowed(cmd)
+		if !ok {
+			t.Errorf("SHOULD BE ALLOWED but blocked: %q\n  reason: %s", cmd, reason)
+		}
+	}
+}

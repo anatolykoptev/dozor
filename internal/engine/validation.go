@@ -57,7 +57,12 @@ var blockedPatterns = []*regexp.Regexp{
 	// Cron modification
 	regexp.MustCompile(`(?i)crontab\s+-[re]`),
 
-	// kill allowed — agent needs it for process management
+	// kill allowed — agent needs it for process management.
+	// BUT: hard-block kill/pkill against user-driven interactive sessions.
+	// These are live user activity, not background debris. A prior incident
+	// had the agent propose killing `claude --dangerously-skip-permissions`
+	// sessions to "free memory" during its own build.
+	regexp.MustCompile(`(?i)\b(kill|pkill|killall)\b[^&|;]*\b(claude|claude-code|windsurf|windsurf-server|code-review-graph|cursor|cursor-server)\b`),
 
 	// Database destruction
 	regexp.MustCompile(`(?i)\bDROP\s+DATABASE\b`),
