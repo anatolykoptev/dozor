@@ -300,21 +300,34 @@ func FormatSecurityReport(issues []SecurityIssue) string {
 
 // FormatAnalysis returns a human-readable analysis report.
 func FormatAnalysis(r AnalyzeResult) string {
-	s := fmt.Sprintf("Log Analysis: %s\nTotal lines: %d | Errors: %d | Warnings: %d\n",
+	s := fmt.Sprintf("Log Analysis: %s\nTotal lines: %d | Errors: %d | Warnings: %d",
 		r.Service, r.TotalLines, r.ErrorCount, r.WarningCount)
+	if r.NoiseCount > 0 {
+		s += fmt.Sprintf(" | Known-noise: %d", r.NoiseCount)
+	}
+	s += "\n"
 
 	if len(r.Issues) == 0 {
 		s += "\nNo known error patterns detected."
-		return s
+	} else {
+		s += fmt.Sprintf("\nDetected %d issue type(s):\n", len(r.Issues))
+		for _, issue := range r.Issues {
+			s += fmt.Sprintf("\n[%s] %s (%d occurrences)\n", issue.Level, issue.Description, issue.Count) //nolint:perfsprint
+			s += fmt.Sprintf("  Category: %s\n", issue.Category)
+			s += fmt.Sprintf("  Action: %s\n", issue.Action)
+			if issue.Example != "" {
+				s += fmt.Sprintf("  Example: %s\n", issue.Example)
+			}
+		}
 	}
 
-	s += fmt.Sprintf("\nDetected %d issue type(s):\n", len(r.Issues))
-	for _, issue := range r.Issues {
-		s += fmt.Sprintf("\n[%s] %s (%d occurrences)\n", issue.Level, issue.Description, issue.Count) //nolint:perfsprint
-		s += fmt.Sprintf("  Category: %s\n", issue.Category)
-		s += fmt.Sprintf("  Action: %s\n", issue.Action)
-		if issue.Example != "" {
-			s += fmt.Sprintf("  Example: %s\n", issue.Example)
+	if len(r.NoiseHits) > 0 {
+		s += "\n\nKnown noise (matched suppression rules — NOT incidents, do NOT act on these):\n"
+		for _, n := range r.NoiseHits {
+			s += fmt.Sprintf("  [%dx] %s\n", n.Count, n.Reason)
+			if n.Example != "" {
+				s += fmt.Sprintf("        sample: %s\n", n.Example)
+			}
 		}
 	}
 
@@ -322,12 +335,31 @@ func FormatAnalysis(r AnalyzeResult) string {
 }
 
 // FormatAnalysisEnriched adds error timeline and clustering to the standard analysis.
+//
+// Entries matching a noiseRule for r.Service are filtered out before the timeline
+// and clustering pass — otherwise the report header would say "Errors: 0" while
+// the timeline below shows a tall bar of "13 errors", confusing the consumer.
 func FormatAnalysisEnriched(r AnalyzeResult, entries []LogEntry) string {
+	denoised := filterNoise(entries, r.Service)
 	s := FormatAnalysis(r)
-	s += "\n" + AnalyzeErrorTimeline(entries)
-	clusters := ClusterErrors(entries)
+	s += "\n" + AnalyzeErrorTimeline(denoised)
+	clusters := ClusterErrors(denoised)
 	if len(clusters) > 0 {
 		s += "\n" + FormatErrorClusters(clusters)
 	}
 	return s
+}
+
+// filterNoise drops entries that match a noiseRule for the given service.
+// Used by enriched output paths so timeline/cluster views agree with the
+// header counts.
+func filterNoise(entries []LogEntry, service string) []LogEntry {
+	out := make([]LogEntry, 0, len(entries))
+	for _, e := range entries {
+		if matchNoiseRule(e, service) != nil {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

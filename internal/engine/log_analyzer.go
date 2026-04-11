@@ -98,7 +98,11 @@ var errorPatterns = []ErrorPattern{
 		SuggestedAction: "Check service load and response times. Consider increasing timeout values.",
 	},
 	{
-		Pattern:         `(?i)(rate.?limit|too many requests|429)`,
+		// Tightened from `(?i)(rate.?limit|too many requests|429)` which produced
+		// false positives on bare `429` substrings inside nanosecond timestamps
+		// like `073474290Z`. Now requires either an explicit "rate limit" phrase,
+		// "too many requests", or `429` in a recognizable HTTP-status context.
+		Pattern:         `(?i)(\brate.?limit(?:ed|ing|s)?\b|too many requests|HTTP/\d\.\d\s+429\b|"status"\s*:\s*429\b|\bstatus[:= ]429\b|\b429\s+too\s+many\b)`,
 		Level:           AlertWarning,
 		Category:        "rate_limit",
 		Description:     "Rate limiting triggered",
@@ -123,6 +127,8 @@ type compiledErrorPattern struct {
 var compiledPatterns []compiledErrorPattern
 
 // suppressedPatterns matches benign log noise that should be excluded from triage.
+// These are GLOBAL — they apply to every service. For per-service "this is expected
+// behavior of THIS service, not noise everywhere", use noiseRules below.
 var suppressedPatterns = []string{
 	`canceling statement due to user request`,
 	`connection to client lost`,
@@ -131,6 +137,62 @@ var suppressedPatterns = []string{
 }
 
 var compiledSuppressed []*regexp.Regexp
+
+// noiseRule marks log lines that match the expected behavior of a specific service.
+// Unlike suppressedPatterns (silent global drop), noise hits are surfaced in
+// AnalyzeResult.NoiseHits with a human-readable reason so the consuming agent
+// sees what was suppressed and why — instead of being told "no issues" while
+// silently hiding signal.
+type noiseRule struct {
+	// services scopes the rule. Empty = global. Otherwise the service name must match exactly.
+	services []string
+	re       *regexp.Regexp
+	reason   string
+}
+
+// noiseRules is the curated list of known false-positive patterns. Each entry
+// here represents a real bug previously caused by treating expected behavior
+// as an incident. Adding a new entry is a one-line edit.
+//
+// Editorial rule: a pattern only belongs here if (a) it has been observed
+// firing as a false alarm AND (b) the service truly is operating normally
+// when the pattern matches. When in doubt, do NOT add — false negatives are
+// worse than false positives in a monitoring tool.
+var noiseRules = []noiseRule{
+	{
+		// cliproxyapi pools many Gemini keys and rotates round-robin. When one
+		// key hits its rate limit, the proxy returns 502 with ~0s latency and
+		// the next request transparently uses the next key. Sporadic 502s are
+		// expected; the symptom is "5xx > 50% sustained for >10min", which is
+		// not what a single 502 line looks like.
+		services: []string{"cliproxyapi"},
+		re: regexp.MustCompile(
+			`gin_logger\.go:\d+\]\s+50[02]\s*\|\s*[0-9.]+m?s\s*\|\s*[0-9.]+\s*\|\s*POST\s+"?/v1/(chat/completions|messages|models|completions)`,
+		),
+		reason: "cliproxyapi round-robin LLM key rotation: a sporadic 502/500 with sub-second latency means cliproxyapi rotated to the next key on a rate-limit hit. NOT an outage. Only treat as incident if 5xx exceeds 50% sustained over 10 minutes.",
+	},
+	{
+		// Headless Chromium on ARM probes for GPU hardware that does not exist
+		// and logs ERROR-level lines while falling back to software rendering.
+		// These have been firing for months without affecting any cloakbrowser
+		// functionality. They are part of every browser context init.
+		services: []string{"cloakbrowser"},
+		re: regexp.MustCompile(
+			`(?:SharedImageManager::ProduceSkia|IPH_ExtensionsZeroStatePromo|gles2_cmd_decoder_passthrough|user_education_interface_impl|gpu/command_buffer/service/shared_image)`,
+		),
+		reason: "ARM headless Chromium hardware probing — benign initialization warnings that fire on every browser context init and have no effect on functionality. Only treat as incident if the cloakbrowser container is currently restarting (check via docker_ps restart count) or actual chrome OOM events appear in dmesg with timestamps inside the last 10 minutes.",
+	},
+	{
+		// go-code re-indexes the symbol graph in the background and occasionally
+		// catches embed-jina mid-restart or under load. The retry next cycle
+		// almost always succeeds. A single failure is not actionable.
+		services: []string{"go-code"},
+		re: regexp.MustCompile(
+			`background index failed.*embed.*Post\s+"?http://embed-jina:`,
+		),
+		reason: "go-code background re-index transient failure to embed-jina; auto-retried on the next indexing cycle. Only treat as incident if the same error fires more than 3 times in 10 minutes.",
+	},
+}
 
 func init() {
 	compiledPatterns = make([]compiledErrorPattern, len(errorPatterns))
@@ -142,6 +204,49 @@ func init() {
 	for i, p := range suppressedPatterns {
 		compiledSuppressed[i] = regexp.MustCompile(`(?i)` + p)
 	}
+}
+
+// recordNoiseHit bumps the noise counters and captures an example for a given rule.
+// Extracted from AnalyzeLogs to keep the main loop flat (nestif lint).
+func recordNoiseHit(result *AnalyzeResult, entry LogEntry, rule *noiseRule, counts map[string]int, examples map[string]string) {
+	result.NoiseCount++
+	counts[rule.reason]++
+	if _, ok := examples[rule.reason]; ok {
+		return
+	}
+	example := entry.Message
+	if example == "" {
+		example = entry.Raw
+	}
+	if len(example) > issueExampleMaxLen {
+		example = example[:issueExampleMaxLen] + "..."
+	}
+	examples[rule.reason] = example
+}
+
+// matchNoiseRule returns the noiseRule that matches entry for the given service,
+// or nil if no rule applies. A nil result means the entry should go through normal
+// pattern matching.
+func matchNoiseRule(entry LogEntry, service string) *noiseRule {
+	for i := range noiseRules {
+		r := &noiseRules[i]
+		if len(r.services) > 0 {
+			allowed := false
+			for _, s := range r.services {
+				if s == service {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				continue
+			}
+		}
+		if r.re.MatchString(entry.Message) || r.re.MatchString(entry.Raw) {
+			return r
+		}
+	}
+	return nil
 }
 
 // LabelPattern creates an ErrorPattern from a user-supplied regex string (dozor.logs.pattern label).
@@ -167,12 +272,14 @@ func isSuppressed(entry LogEntry) bool {
 
 // AnalyzeResult from log analysis.
 type AnalyzeResult struct {
-	Service         string  `json:"service"`
-	TotalLines      int     `json:"total_lines"`
-	ErrorCount      int     `json:"error_count"`
-	WarningCount    int     `json:"warning_count"`
-	SuppressedCount int     `json:"suppressed_count"`
-	Issues          []Issue `json:"issues"`
+	Service         string     `json:"service"`
+	TotalLines      int        `json:"total_lines"`
+	ErrorCount      int        `json:"error_count"`
+	WarningCount    int        `json:"warning_count"`
+	SuppressedCount int        `json:"suppressed_count"`
+	NoiseCount      int        `json:"noise_count"`
+	NoiseHits       []NoiseHit `json:"noise_hits,omitempty"`
+	Issues          []Issue    `json:"issues"`
 }
 
 // Issue found during log analysis.
@@ -183,6 +290,15 @@ type Issue struct {
 	Action      string     `json:"suggested_action"`
 	Count       int        `json:"count"`
 	Example     string     `json:"example,omitempty"`
+}
+
+// NoiseHit is a log entry (or group of identical entries) that matched a known
+// noiseRule. Surfaced in AnalyzeResult so the consuming agent sees what was
+// suppressed and why, instead of being shown a misleading "no issues" result.
+type NoiseHit struct {
+	Reason  string `json:"reason"`
+	Count   int    `json:"count"`
+	Example string `json:"example,omitempty"`
 }
 
 // buildEffectivePatterns merges built-in compiled patterns with user-supplied extras.
@@ -249,6 +365,11 @@ func matchEntryToPatterns(entry LogEntry, service string, allPatterns []compiled
 
 // AnalyzeLogs examines log entries for known error patterns.
 // Extra patterns (e.g. from dozor.logs.pattern labels) are appended to built-in patterns.
+//
+// Pipeline per entry:
+//  1. global suppression (silently dropped, counted in SuppressedCount)
+//  2. per-service noise rule (counted in NoiseCount, surfaced in NoiseHits, NOT promoted to issue)
+//  3. error/warning level counting + pattern matching
 func AnalyzeLogs(entries []LogEntry, service string, extraPatterns ...ErrorPattern) AnalyzeResult {
 	result := AnalyzeResult{
 		Service:    service,
@@ -258,10 +379,16 @@ func AnalyzeLogs(entries []LogEntry, service string, extraPatterns ...ErrorPatte
 	allPatterns := buildEffectivePatterns(extraPatterns)
 	issueCounts := make(map[string]int)
 	issueExamples := make(map[string]string)
+	noiseCounts := make(map[string]int)
+	noiseExamples := make(map[string]string)
 
 	for _, entry := range entries {
 		if isSuppressed(entry) {
 			result.SuppressedCount++
+			continue
+		}
+		if rule := matchNoiseRule(entry, service); rule != nil {
+			recordNoiseHit(&result, entry, rule, noiseCounts, noiseExamples)
 			continue
 		}
 		countLogLevels(&result, entry)
@@ -285,6 +412,19 @@ func AnalyzeLogs(entries []LogEntry, service string, extraPatterns ...ErrorPatte
 			Example:     issueExamples[key],
 		})
 	}
+
+	// Build noise hits, sorted by count descending so the loudest false positives
+	// appear first in the output.
+	for reason, count := range noiseCounts {
+		result.NoiseHits = append(result.NoiseHits, NoiseHit{
+			Reason:  reason,
+			Count:   count,
+			Example: noiseExamples[reason],
+		})
+	}
+	sort.Slice(result.NoiseHits, func(i, j int) bool {
+		return result.NoiseHits[i].Count > result.NoiseHits[j].Count
+	})
 
 	return result
 }

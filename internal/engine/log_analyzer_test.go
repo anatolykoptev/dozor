@@ -221,3 +221,126 @@ func TestAnalyzeLogs(t *testing.T) {
 		t.Error("expected at least one issue to be detected")
 	}
 }
+
+// TestRateLimitPatternNoFalsePositiveOnNanoseconds is a regression guard for
+// the previous bug where the unbounded `429` regex matched the substring `429`
+// inside nanosecond timestamps like `073474290Z`, causing harmless 200 OK
+// gin_logger lines to be reported as "Rate limiting triggered".
+func TestRateLimitPatternNoFalsePositiveOnNanoseconds(t *testing.T) {
+	// These lines all contain `429` as a substring of a longer number, but
+	// none of them are actual rate-limit signals.
+	benignLines := []string{
+		`2026-04-11T09:18:37.073474290Z [info] [gin_logger.go:93] 200 |  7.847s | 172.18.0.10 | POST /v1/chat/completions`,
+		`2026-04-11 17:42:90 [info] connection from 10.0.4.29 succeeded`,
+		`processing batch 4290 of 5000`,
+	}
+	for _, line := range benignLines {
+		entries := []LogEntry{{Level: "INFO", Message: line, Raw: line}}
+		result := AnalyzeLogs(entries, "test-service")
+		for _, issue := range result.Issues {
+			if issue.Category == "rate_limit" {
+				t.Errorf("rate-limit false positive on benign line:\n  %q\n  → matched as %q", line, issue.Description)
+			}
+		}
+	}
+
+	// Real rate-limit indicators should still trigger.
+	realLines := []string{
+		`HTTP/1.1 429 Too Many Requests`,
+		`upstream returned 429 too many requests`,
+		`rate limit exceeded for client`,
+		`{"status": 429, "error": "throttled"}`,
+		`got rate-limited by api`,
+	}
+	for _, line := range realLines {
+		entries := []LogEntry{{Level: "ERROR", Message: line, Raw: line}}
+		result := AnalyzeLogs(entries, "test-service")
+		matched := false
+		for _, issue := range result.Issues {
+			if issue.Category == "rate_limit" {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("expected rate-limit pattern to match real signal, missed: %q", line)
+		}
+	}
+}
+
+// TestNoiseSuppression_Cliproxyapi verifies that round-robin LLM key rotation
+// 502s are surfaced as known noise (with reason) rather than as issues.
+func TestNoiseSuppression_Cliproxyapi(t *testing.T) {
+	entries := []LogEntry{
+		{
+			Level:   "INFO",
+			Message: `[2026-04-11 17:23:14] [41041d24] [error] [gin_logger.go:89] 502 |           1ms |     172.18.0.10 | POST    "/v1/chat/completions"`,
+			Raw:     `[2026-04-11 17:23:14] [41041d24] [error] [gin_logger.go:89] 502 |           1ms |     172.18.0.10 | POST    "/v1/chat/completions"`,
+		},
+		{
+			Level:   "INFO",
+			Message: `[2026-04-11 17:26:58] [0e6fc151] [error] [gin_logger.go:89] 502 |            0s |     172.18.0.10 | POST    "/v1/chat/completions"`,
+			Raw:     `[2026-04-11 17:26:58] [0e6fc151] [error] [gin_logger.go:89] 502 |            0s |     172.18.0.10 | POST    "/v1/chat/completions"`,
+		},
+	}
+	result := AnalyzeLogs(entries, "cliproxyapi")
+	if result.NoiseCount != 2 {
+		t.Errorf("expected NoiseCount=2, got %d", result.NoiseCount)
+	}
+	if len(result.NoiseHits) != 1 {
+		t.Errorf("expected 1 noise reason group, got %d", len(result.NoiseHits))
+	}
+	if len(result.NoiseHits) > 0 {
+		if result.NoiseHits[0].Count != 2 {
+			t.Errorf("expected count=2 in noise hit, got %d", result.NoiseHits[0].Count)
+		}
+		if !strings.Contains(result.NoiseHits[0].Reason, "round-robin") {
+			t.Errorf("expected reason to mention round-robin, got: %q", result.NoiseHits[0].Reason)
+		}
+	}
+	// And no fake "issue" should be raised from these lines.
+	if len(result.Issues) != 0 {
+		t.Errorf("expected 0 issues from suppressed lines, got %d: %+v", len(result.Issues), result.Issues)
+	}
+}
+
+// TestNoiseSuppression_NotForOtherService confirms that the cliproxyapi noise
+// rule does not silently swallow lines for OTHER services that happen to look
+// similar — service scoping must be enforced.
+func TestNoiseSuppression_NotForOtherService(t *testing.T) {
+	entries := []LogEntry{
+		{
+			Level:   "INFO",
+			Message: `gin_logger.go:89] 502 |   1ms | 172.18.0.10 | POST "/v1/chat/completions"`,
+			Raw:     `gin_logger.go:89] 502 |   1ms | 172.18.0.10 | POST "/v1/chat/completions"`,
+		},
+	}
+	result := AnalyzeLogs(entries, "some-other-service")
+	if result.NoiseCount != 0 {
+		t.Errorf("expected NoiseCount=0 for non-cliproxyapi service, got %d", result.NoiseCount)
+	}
+}
+
+// TestNoiseSuppression_Cloakbrowser checks the ARM Chromium init noise filter.
+func TestNoiseSuppression_Cloakbrowser(t *testing.T) {
+	entries := []LogEntry{
+		{
+			Level:   "ERROR",
+			Message: `[19:19:0411/021042.803514:ERROR:chrome/browser/ui/views/user_education/impl/browser_user_education_interface_impl.cc:154] Attempting to show IPH IPH_ExtensionsZeroStatePromo before browser initialization complete`,
+			Raw:     `[19:19:0411/021042.803514:ERROR:chrome/browser/ui/views/user_education/impl/browser_user_education_interface_impl.cc:154] Attempting to show IPH IPH_ExtensionsZeroStatePromo before browser initialization complete`,
+		},
+		{
+			Level:   "ERROR",
+			Message: `[46:46:0411/015357.097748:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:252] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.`,
+			Raw:     `[46:46:0411/015357.097748:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:252] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.`,
+		},
+	}
+	result := AnalyzeLogs(entries, "cloakbrowser")
+	if result.NoiseCount != 2 {
+		t.Errorf("expected NoiseCount=2, got %d", result.NoiseCount)
+	}
+	// Importantly: ERROR-level lines that match noise should NOT count toward ErrorCount.
+	if result.ErrorCount != 0 {
+		t.Errorf("noise lines must not increment ErrorCount, got ErrorCount=%d", result.ErrorCount)
+	}
+}
