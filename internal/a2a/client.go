@@ -55,39 +55,46 @@ func (m *ClientManager) GetAgent(id string) (RemoteAgent, bool) {
 }
 
 // Discover fetches the agent card from a remote agent.
+// Retries on transient network errors and 5xx/429 with exponential backoff.
 func (m *ClientManager) Discover(ctx context.Context, agentID string) (string, error) {
 	agent, ok := m.agents[agentID]
 	if !ok {
 		return "", fmt.Errorf("unknown agent: %s", agentID)
 	}
 
-	url := strings.TrimRight(agent.URL, "/") + "/.well-known/agent-card.json"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := m.client.Do(req) //nolint:gosec // agent URL is configured
-	if err != nil {
-		return "", fmt.Errorf("discover %s: %w", agentID, err)
-	}
-	defer resp.Body.Close()
+	cardURL := strings.TrimRight(agent.URL, "/") + "/.well-known/agent-card.json"
+	var result string
+	err := withRetry(ctx, DefaultRetryOpts, "discover:"+agentID, func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, cardURL, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := m.client.Do(req) //nolint:gosec // agent URL is configured
+		if err != nil {
+			return fmt.Errorf("discover %s: %w", agentID, err)
+		}
+		defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("discover %s: HTTP %d", agentID, resp.StatusCode)
-	}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return &httpError{status: resp.StatusCode, msg: fmt.Sprintf("discover %s: HTTP %d", agentID, resp.StatusCode)}
+		}
 
-	m.mu.Lock()
-	m.cards[agentID] = json.RawMessage(body)
-	m.mu.Unlock()
+		m.mu.Lock()
+		m.cards[agentID] = json.RawMessage(body)
+		m.mu.Unlock()
 
-	return string(body), nil
+		result = string(body)
+		return nil
+	})
+	return result, err
 }
 
 // Call sends a message to a remote agent and returns the response text.
+// Retries on transient network errors and 5xx/429 with exponential backoff.
 func (m *ClientManager) Call(ctx context.Context, agentID, message string) (string, error) {
 	agent, ok := m.agents[agentID]
 	if !ok {
@@ -96,7 +103,7 @@ func (m *ClientManager) Call(ctx context.Context, agentID, message string) (stri
 
 	endpoint := strings.TrimRight(agent.URL, "/") + "/a2a"
 
-	// Build JSON-RPC request.
+	// Build JSON-RPC request once — msgID is stable across retries.
 	msgID := fmt.Sprintf("dozor-%d", time.Now().UnixMilli())
 	payload := map[string]any{
 		"jsonrpc": "2.0",
@@ -116,34 +123,42 @@ func (m *ClientManager) Call(ctx context.Context, agentID, message string) (stri
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if agent.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+agent.Token)
-	}
-
 	slog.Info("calling remote agent",
 		slog.String("agent_id", agentID),
 		slog.Int("message_len", len(message)))
-	resp, err := m.client.Do(req) //nolint:gosec // agent URL is configured
-	if err != nil {
-		return "", fmt.Errorf("call %s: %w", agentID, err)
-	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("call %s: HTTP %d: %s", agentID, resp.StatusCode, string(respBody))
-	}
+	var result string
+	err = withRetry(ctx, DefaultRetryOpts, "call:"+agentID, func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if agent.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+agent.Token)
+		}
 
-	// Parse JSON-RPC response → extract text from result.
-	return extractResponseText(respBody)
+		resp, err := m.client.Do(req) //nolint:gosec // agent URL is configured
+		if err != nil {
+			return fmt.Errorf("call %s: %w", agentID, err)
+		}
+		defer resp.Body.Close()
+
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return &httpError{
+				status: resp.StatusCode,
+				msg:    fmt.Sprintf("call %s: HTTP %d: %s", agentID, resp.StatusCode, truncate(string(respBody), maxErrBodyBytes)),
+			}
+		}
+
+		result, err = extractResponseText(respBody)
+		return err
+	})
+	return result, err
 }
 
 // extractResponseText pulls text content from an A2A JSON-RPC response.
