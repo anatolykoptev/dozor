@@ -16,6 +16,9 @@ type RepoConfig struct {
 	Services    []string `yaml:"services"`
 	SourcePath  string   `yaml:"source_path"`
 	NoCache     bool     `yaml:"no_cache"`
+	// SmokeURL is an optional HTTP endpoint probed after `compose up` — must return 2xx
+	// within smokeTimeout or the deploy is marked FAILED. Typically a /health or /readyz path.
+	SmokeURL string `yaml:"smoke_url,omitempty"`
 }
 
 // Config holds the full deploy webhook configuration.

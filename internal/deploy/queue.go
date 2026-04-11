@@ -163,7 +163,9 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 		}
 	}
 
-	// Step 2: docker compose build
+	// Step 2: docker compose build — snapshot image IDs first so we can detect no-op builds.
+	imagesBefore := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
+
 	buildArgs := []string{"compose", "build"}
 	if req.Config.NoCache {
 		buildArgs = append(buildArgs, "--no-cache")
@@ -175,6 +177,9 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 		result.Error = fmt.Sprintf("docker build: %v", err)
 		return result
 	}
+
+	imagesAfter := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
+	logImageDiff(imagesBefore, imagesAfter, req.Config.Services, req.CommitSHA)
 
 	// Step 3: docker compose up
 	upArgs := append(
@@ -193,6 +198,12 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 			result.Error = fmt.Sprintf("health check %s: %v", svc, err)
 			return result
 		}
+	}
+
+	// Step 5: smoke test (optional) — fail the deploy if the configured URL doesn't answer 2xx.
+	if err := smokeTest(ctx, req.Config.SmokeURL); err != nil {
+		result.Error = fmt.Sprintf("smoke test: %v", err)
+		return result
 	}
 
 	result.Success = true

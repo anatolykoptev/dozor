@@ -203,9 +203,10 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 		return
 	}
 
-	noop := func(string) {} // no Telegram notifications for auto-deploy
-	queue := deploy.NewQueue(ctx, noop)
-	handler := deploy.NewHandler(cfg, queue, noop)
+	// Log deploy lifecycle to journalctl instead of Telegram — visibility for debug.
+	deployLog := func(msg string) { slog.Info("deploy", "msg", msg) }
+	queue := deploy.NewQueue(ctx, deployLog)
+	handler := deploy.NewHandler(cfg, queue, deployLog)
 	mx.Handle("POST /deploy/github", handler)
 
 	slog.Info("deploy webhook active",
