@@ -104,17 +104,45 @@ func verifyPortMapping(ctx context.Context, composePath, service string, publish
 }
 
 const (
-	smokeTimeout = 10 * time.Second
-	smokeOKFloor = 200
-	smokeOKCeil  = 400
+	smokeTimeout      = 10 * time.Second
+	smokeOKFloor      = 200
+	smokeOKCeil       = 400
+	smokeMaxRetries   = 5
+	smokeRetryBackoff = 2 * time.Second
 )
 
-// smokeTest performs a single HTTP GET against the configured SmokeURL. Any 2xx/3xx
-// response is considered healthy. Returns an error on non-2xx or transport failure.
+// smokeTest probes the configured SmokeURL with retries. Containers need a few
+// seconds to bind their port after `docker compose up`, so a single-shot probe
+// often hits connection reset. We retry up to smokeMaxRetries times with a fixed
+// backoff. Any 2xx/3xx response on any attempt = success.
 func smokeTest(ctx context.Context, url string) error {
 	if url == "" {
 		return nil
 	}
+	var lastErr error
+	for attempt := range smokeMaxRetries {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("smoke test cancelled: %w", lastErr)
+			case <-time.After(smokeRetryBackoff):
+			}
+		}
+		lastErr = smokeProbe(ctx, url)
+		if lastErr == nil {
+			if attempt > 0 {
+				slog.Info("deploy: smoke test passed after retry",
+					"url", url, "attempt", attempt+1)
+			}
+			return nil
+		}
+		slog.Debug("deploy: smoke test retry",
+			"url", url, "attempt", attempt+1, "error", lastErr)
+	}
+	return lastErr
+}
+
+func smokeProbe(ctx context.Context, url string) error {
 	ctx, cancel := context.WithTimeout(ctx, smokeTimeout)
 	defer cancel()
 
