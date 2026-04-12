@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -31,9 +32,28 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 		return result
 	}
 
+	// Step 4: health check (brief wait + verify running + port mapping)
 	time.Sleep(healthWait)
 	for _, svc := range req.Config.Services {
 		if err := checkHealth(ctx, req.Config.ComposePath, svc); err != nil {
+			if strings.Contains(err.Error(), "port mapping") {
+				slog.Warn("deploy: port mapping lost, force-recreating",
+					"service", svc,
+					"error", err,
+				)
+				// One targeted force-recreate attempt
+				recreateArgs := []string{"compose", "up", "-d", "--no-deps", "--force-recreate", svc}
+				if rerr := runCmd(ctx, req.Config.ComposePath, "docker", recreateArgs...); rerr != nil {
+					result.Error = fmt.Sprintf("port recovery %s: %v (original: %v)", svc, rerr, err)
+					return result
+				}
+				time.Sleep(portRecoveryWait)
+				if err2 := checkHealth(ctx, req.Config.ComposePath, svc); err2 != nil {
+					result.Error = fmt.Sprintf("health check %s after port recovery: %v", svc, err2)
+					return result
+				}
+				continue // recovery succeeded
+			}
 			result.Error = fmt.Sprintf("health check %s: %v", svc, err)
 			return result
 		}

@@ -15,10 +15,11 @@ const (
 	upMaxRetries = 2
 )
 
-// upRetryDelay and healthWait are variables so tests can override them.
+// upRetryDelay, healthWait, and portRecoveryWait are variables so tests can override them.
 var (
-	upRetryDelay = 10 * time.Second
-	healthWait   = 30 * time.Second
+	upRetryDelay     = 10 * time.Second
+	healthWait       = 30 * time.Second
+	portRecoveryWait = 10 * time.Second
 )
 
 // BuildRequest represents a queued build job.
