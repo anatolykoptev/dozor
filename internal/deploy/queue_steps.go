@@ -7,16 +7,28 @@ import (
 	"time"
 )
 
-// gitPull fetches and resets to origin/main. Returns error message or "".
-func gitPull(ctx context.Context, sourcePath string) string {
+// gitPull fetches and checks out the exact commit SHA from the webhook.
+// Falls back to origin/main if commitSHA is empty or short (tag name, etc).
+func gitPull(ctx context.Context, sourcePath, commitSHA string) string {
 	if sourcePath == "" {
 		return ""
 	}
-	if err := runCmd(ctx, sourcePath, "git", "fetch", "origin", "main"); err != nil {
+	if err := runCmd(ctx, sourcePath, "git", "fetch", "origin"); err != nil {
 		return fmt.Sprintf("git fetch: %v", err)
 	}
-	if err := runCmd(ctx, sourcePath, "git", "reset", "--hard", "origin/main"); err != nil {
-		return fmt.Sprintf("git reset: %v", err)
+	// Use exact SHA if it looks like a full/short commit hash (7+ hex chars).
+	// Otherwise fall back to origin/main.
+	target := "origin/main"
+	if len(commitSHA) >= 7 { //nolint:mnd
+		target = commitSHA
+	}
+	if err := runCmd(ctx, sourcePath, "git", "checkout", target); err != nil {
+		// Fallback: if checkout fails (detached HEAD issues), try reset.
+		slog.Warn("deploy: git checkout failed, trying reset",
+			"target", target, "error", err)
+		if err2 := runCmd(ctx, sourcePath, "git", "reset", "--hard", target); err2 != nil {
+			return fmt.Sprintf("git reset to %s: %v", target, err2)
+		}
 	}
 	return ""
 }

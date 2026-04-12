@@ -63,7 +63,7 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 		return result
 	}
 
-	if errMsg := gitPull(ctx, req.Config.SourcePath); errMsg != "" {
+	if errMsg := gitPull(ctx, req.Config.SourcePath, req.CommitSHA); errMsg != "" {
 		result.Error = errMsg
 		return result
 	}
