@@ -12,6 +12,97 @@ import (
 	"time"
 )
 
+// containerInfo holds the parsed output of `docker compose ps --format json`.
+type containerInfo struct {
+	State      string          `json:"State"`
+	Status     string          `json:"Status"`
+	Publishers []portPublisher `json:"Publishers"`
+}
+
+// portPublisher represents a single port binding from `docker compose ps --format json`.
+type portPublisher struct {
+	URL           string `json:"URL"`
+	TargetPort    int    `json:"TargetPort"`
+	PublishedPort int    `json:"PublishedPort"`
+	Protocol      string `json:"Protocol"`
+}
+
+// outputRunner is the function used to run external commands that need stdout captured.
+// It can be replaced in tests.
+var outputRunner = defaultOutputRunner
+
+func defaultOutputRunner(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // trusted local config, not shell
+	cmd.Dir = dir
+	return cmd.Output()
+}
+
+// checkHealth verifies the container is running and its port bindings are present.
+func checkHealth(ctx context.Context, composePath, service string) error {
+	output, err := outputRunner(ctx, composePath,
+		"docker", "compose", "ps", "--format", "json", service)
+	if err != nil {
+		return fmt.Errorf("check status: %w", err)
+	}
+
+	// `compose ps --format json` returns a JSON array or NDJSON depending on Docker version.
+	trimmed := strings.TrimSpace(string(output))
+	var c containerInfo
+	if strings.HasPrefix(trimmed, "[") {
+		var arr []containerInfo
+		if err := json.Unmarshal([]byte(trimmed), &arr); err != nil || len(arr) == 0 {
+			return fmt.Errorf("parse ps output: %w", err)
+		}
+		c = arr[0]
+	} else {
+		line := strings.SplitN(trimmed, "\n", 2)[0]
+		if err := json.Unmarshal([]byte(line), &c); err != nil {
+			return fmt.Errorf("parse ps output: %w", err)
+		}
+	}
+
+	if !strings.EqualFold(c.State, "running") {
+		return fmt.Errorf("not running: state=%s status=%s", c.State, c.Status)
+	}
+
+	if err := verifyPortMapping(ctx, composePath, service, c.Publishers); err != nil {
+		return fmt.Errorf("port mapping: %w", err)
+	}
+	return nil
+}
+
+// verifyPortMapping checks that at least one published port is bound when the
+// compose config declares ports for the service. Errors from fetching compose
+// config are non-fatal (returns nil) so a misconfigured environment doesn't
+// block deploys unnecessarily.
+func verifyPortMapping(ctx context.Context, composePath, service string, publishers []portPublisher) error {
+	cfgOut, cfgErr := outputRunner(ctx, composePath,
+		"docker", "compose", "config", "--format", "json")
+	if cfgErr != nil {
+		return nil // can't verify — don't block deploy
+	}
+
+	var cfg struct {
+		Services map[string]struct {
+			Ports []any `json:"ports"`
+		} `json:"services"`
+	}
+	if json.Unmarshal(cfgOut, &cfg) != nil {
+		return nil
+	}
+	svcCfg, ok := cfg.Services[service]
+	if !ok || len(svcCfg.Ports) == 0 {
+		return nil // no ports declared — nothing to verify
+	}
+
+	for _, p := range publishers {
+		if p.PublishedPort > 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("service %s declares ports but none are bound (race recovery: force-recreate)", service)
+}
+
 const (
 	smokeTimeout = 10 * time.Second
 	smokeOKFloor = 200
