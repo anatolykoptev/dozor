@@ -102,6 +102,7 @@ func (a *ServerAgent) triageEnrichErrors(ctx context.Context, statuses []Service
 		errors := a.logs.GetErrorLogs(ctx, s.Name, a.cfg.LogLines)
 		errors = filterStartupErrors(errors, s.StartedAt)
 		errors = filterStaleErrors(errors, now)
+		errors = filterNoiseErrors(errors, s.Name)
 		statuses[i].ErrorCount = len(errors)
 		if len(errors) > triageRecentErrorsMax {
 			statuses[i].RecentErrors = errors[len(errors)-triageRecentErrorsMax:]

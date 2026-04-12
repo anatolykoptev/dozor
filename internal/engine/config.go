@@ -94,6 +94,9 @@ type Config struct {
 	InternalPorts         map[string]string
 	RootAllowedContainers map[string]bool
 	DangerousHostMounts   []string
+
+	// Nuclei vulnerability scanning
+	NucleiSeverities string // comma-separated list: critical,high,medium,low,info
 }
 
 // MCPServerConfig holds config for a remote MCP server.
@@ -173,6 +176,7 @@ func Init() Config {
 		InternalPorts:         parseInternalPorts(env("DOZOR_INTERNAL_PORTS", "")),
 		RootAllowedContainers: parseRootAllowed(env("DOZOR_ROOT_ALLOWED", "")),
 		DangerousHostMounts:   parseDangerousMounts(env("DOZOR_DANGEROUS_MOUNTS", "")),
+		NucleiSeverities:      env("DOZOR_NUCLEI_SEVERITIES", "critical,high,medium"),
 	}
 
 	c.KBServer, c.KBUser, c.KBPersonID, c.KBCube, c.KBSearchTool, c.KBSaveTool = initKBConfig()

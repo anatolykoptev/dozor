@@ -35,5 +35,6 @@ func RegisterAllWithOpts(server *mcp.Server, agent *engine.ServerAgent, execOpts
 	registerEnv(server, agent)
 	registerGit(server, agent)
 	registerDevMode(server, agent)
+	registerNuclei(server, agent)
 	// Web tools moved to extension system (pkg/extensions/websearch/)
 }

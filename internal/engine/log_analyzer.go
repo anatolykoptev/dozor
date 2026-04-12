@@ -178,7 +178,7 @@ var noiseRules = []noiseRule{
 		// functionality. They are part of every browser context init.
 		services: []string{"cloakbrowser"},
 		re: regexp.MustCompile(
-			`(?:SharedImageManager::ProduceSkia|IPH_ExtensionsZeroStatePromo|gles2_cmd_decoder_passthrough|user_education_interface_impl|gpu/command_buffer/service/shared_image)`,
+			`(?:SharedImageManager::ProduceSkia|IPH_ExtensionsZeroStatePromo|gles2_cmd_decoder_passthrough|user_education_interface_impl|gpu/command_buffer/service/shared_image|ALSA lib|alsa_util\.cc)`,
 		),
 		reason: "ARM headless Chromium hardware probing — benign initialization warnings that fire on every browser context init and have no effect on functionality. Only treat as incident if the cloakbrowser container is currently restarting (check via docker_ps restart count) or actual chrome OOM events appear in dmesg with timestamps inside the last 10 minutes.",
 	},
@@ -247,6 +247,19 @@ func matchNoiseRule(entry LogEntry, service string) *noiseRule {
 		}
 	}
 	return nil
+}
+
+// filterNoiseErrors removes log entries that match a known noise rule for the
+// given service. This ensures noise lines are excluded from ErrorCount used by
+// serviceHealthLevel, preventing cosmetic errors from triggering degraded alerts.
+func filterNoiseErrors(entries []LogEntry, service string) []LogEntry {
+	filtered := make([]LogEntry, 0, len(entries))
+	for _, e := range entries {
+		if matchNoiseRule(e, service) == nil {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
 }
 
 // LabelPattern creates an ErrorPattern from a user-supplied regex string (dozor.logs.pattern label).

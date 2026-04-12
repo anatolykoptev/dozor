@@ -97,6 +97,7 @@ func (a *ServerAgent) enrichDiagnoseStatuses(ctx context.Context, statuses []Ser
 			continue
 		}
 		errors := a.logs.GetErrorLogs(ctx, s.Name, a.cfg.LogLines)
+		errors = filterNoiseErrors(errors, s.Name)
 		statuses[i].ErrorCount = len(errors)
 		if len(errors) > maxRecentErrors {
 			statuses[i].RecentErrors = errors[len(errors)-maxRecentErrors:]

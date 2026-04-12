@@ -22,6 +22,7 @@ type SecurityCollector struct {
 	transport *Transport
 	cfg       Config
 	discovery *DockerDiscovery
+	nuclei    *NucleiCollector
 }
 
 // resolveServices returns configured services or falls back to discovery.
@@ -47,7 +48,60 @@ func (c *SecurityCollector) CheckAll(ctx context.Context) []SecurityIssue {
 	issues = append(issues, c.checkFirewallRules(ctx)...)
 	issues = append(issues, c.checkCrontabs(ctx)...)
 	issues = append(issues, c.checkActiveConnections(ctx)...)
+	issues = append(issues, c.checkNucleiVulns(ctx)...)
 	return issues
+}
+
+// checkNucleiVulns runs nuclei vulnerability scan on exposed services.
+func (c *SecurityCollector) checkNucleiVulns(ctx context.Context) []SecurityIssue {
+	if c.nuclei == nil {
+		c.nuclei = NewNucleiCollector(c.transport, c.cfg)
+	}
+
+	// Skip if nuclei not available
+	if !c.nuclei.IsAvailable(ctx) {
+		return nil
+	}
+
+	// Get service statuses to find scan targets
+	services := c.getServiceStatuses(ctx)
+	if len(services) == 0 {
+		return nil
+	}
+
+	findings, err := c.nuclei.ScanServices(ctx, services)
+	if err != nil {
+		// Return issue about scan failure
+		return []SecurityIssue{
+			{
+				Level:       AlertWarning,
+				Category:    "scan",
+				Title:       "Nuclei vulnerability scan failed",
+				Description: err.Error(),
+				Remediation: "Check nuclei installation and network connectivity",
+			},
+		}
+	}
+
+	return FindingsToIssues(findings)
+}
+
+// getServiceStatuses retrieves service statuses for scanning.
+func (c *SecurityCollector) getServiceStatuses(ctx context.Context) []ServiceStatus {
+	svcNames := c.resolveServices(ctx)
+	if len(svcNames) == 0 {
+		return nil
+	}
+
+	statusCollector := &StatusCollector{transport: c.transport, discovery: c.discovery}
+	var statuses []ServiceStatus
+	for _, name := range svcNames {
+		s := statusCollector.GetContainerStatus(ctx, name)
+		if s.State != StateUnknown {
+			statuses = append(statuses, s)
+		}
+	}
+	return statuses
 }
 
 func truncate(s string, maxLen int) string {

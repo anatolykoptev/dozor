@@ -114,3 +114,10 @@ type ContainerExecInput struct {
 	Command   string `json:"command" jsonschema:"Shell command to execute inside the container"`
 	User      string `json:"user,omitempty" jsonschema:"User to run command as (default: container's default user)"`
 }
+
+// NucleiInput is the MCP tool input for server_vuln_scan.
+type NucleiInput struct {
+	Target     string `json:"target,omitempty" jsonschema:"Target URL or host to scan (default: scan all configured services)"`
+	Severities string `json:"severities,omitempty" jsonschema:"Comma-separated severity levels: critical,high,medium,low,info (default: critical,high,medium)"`
+	Timeout    int    `json:"timeout,omitempty" jsonschema:"Scan timeout in seconds (default: 300)"`
+}
