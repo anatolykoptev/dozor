@@ -69,6 +69,26 @@ func TestWaitForMaintenanceLock_DeadlineExceeded(t *testing.T) {
 	if !strings.Contains(err.Error(), "not released after") {
 		t.Errorf("expected 'not released after' in error, got: %v", err)
 	}
+	if !strings.Contains(err.Error(), "locked by: unknown") {
+		t.Errorf("expected 'locked by: unknown' for empty lock file, got: %v", err)
+	}
+}
+
+func TestWaitForMaintenanceLock_MetadataInError(t *testing.T) {
+	defer setMaintenanceDelays(t, 10*time.Millisecond, 30*time.Millisecond)()
+
+	if err := os.WriteFile(maintenanceLockPath, []byte("krolik: MemDB Phase 2 migration"), 0o644); err != nil {
+		t.Fatalf("could not create lock file: %v", err)
+	}
+	defer os.Remove(maintenanceLockPath)
+
+	err := waitForMaintenanceLock(context.Background(), []string{"svc"})
+	if err == nil {
+		t.Fatal("expected error when deadline exceeded, got nil")
+	}
+	if !strings.Contains(err.Error(), "locked by: krolik: MemDB Phase 2 migration") {
+		t.Errorf("expected lock metadata in error, got: %v", err)
+	}
 }
 
 func TestWaitForMaintenanceLock_ContextCancelled(t *testing.T) {

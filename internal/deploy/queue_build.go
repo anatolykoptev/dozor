@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,17 +17,28 @@ func waitForMaintenanceLock(ctx context.Context, services []string) error {
 	if _, err := os.Stat(maintenanceLockPath); err != nil {
 		return nil // no lock
 	}
+
+	// Read lock metadata: "who: reason" format (optional)
+	lockInfo := "unknown"
+	if data, err := os.ReadFile(maintenanceLockPath); err == nil {
+		if content := strings.TrimSpace(string(data)); content != "" {
+			lockInfo = content
+		}
+	}
+
 	slog.Info("deploy: maintenance lock detected, waiting",
 		"lock", maintenanceLockPath,
+		"locked_by", lockInfo,
 		"services", services,
 	)
 	deadline := time.After(maintenanceMaxWait)
 	for {
 		select {
 		case <-ctx.Done():
-			return errors.New("context cancelled while waiting for maintenance lock")
+			return fmt.Errorf("context cancelled while waiting for maintenance lock (locked by: %s)", lockInfo)
 		case <-deadline:
-			return fmt.Errorf("maintenance lock %s not released after %s", maintenanceLockPath, maintenanceMaxWait)
+			return fmt.Errorf("maintenance lock %s not released after %s (locked by: %s)",
+				maintenanceLockPath, maintenanceMaxWait, lockInfo)
 		case <-time.After(maintenancePollInterval):
 			if _, err := os.Stat(maintenanceLockPath); err != nil {
 				slog.Info("deploy: maintenance lock released, proceeding")
