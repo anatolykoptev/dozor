@@ -2,11 +2,41 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 )
+
+const maintenanceLockPath = "/tmp/krolik-server-maintenance.lock"
+
+// waitForMaintenanceLock blocks until the lock file is removed or deadline expires.
+// Returns nil immediately if no lock file exists.
+func waitForMaintenanceLock(ctx context.Context, services []string) error {
+	if _, err := os.Stat(maintenanceLockPath); err != nil {
+		return nil // no lock
+	}
+	slog.Info("deploy: maintenance lock detected, waiting",
+		"lock", maintenanceLockPath,
+		"services", services,
+	)
+	deadline := time.After(maintenanceMaxWait)
+	for {
+		select {
+		case <-ctx.Done():
+			return errors.New("context cancelled while waiting for maintenance lock")
+		case <-deadline:
+			return fmt.Errorf("maintenance lock %s not released after %s", maintenanceLockPath, maintenanceMaxWait)
+		case <-time.After(maintenancePollInterval):
+			if _, err := os.Stat(maintenanceLockPath); err != nil {
+				slog.Info("deploy: maintenance lock released, proceeding")
+				return nil
+			}
+		}
+	}
+}
 
 func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult {
 	ctx, cancel := context.WithTimeout(ctx, buildTimeout)
@@ -15,6 +45,12 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 	result := BuildResult{
 		Repo:     req.Repo,
 		Services: req.Config.Services,
+	}
+
+	// Step 0: wait for maintenance lock to clear
+	if err := waitForMaintenanceLock(ctx, req.Config.Services); err != nil {
+		result.Error = err.Error()
+		return result
 	}
 
 	if errMsg := gitPull(ctx, req.Config.SourcePath); errMsg != "" {
