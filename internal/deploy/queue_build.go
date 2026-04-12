@@ -63,8 +63,11 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 		return result
 	}
 
+	result.PreviousImages = snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
+
 	if errMsg := composeUp(ctx, req); errMsg != "" {
 		result.Error = errMsg
+		q.tryRollback(ctx, &result, req.Config.ComposePath)
 		return result
 	}
 
@@ -81,27 +84,44 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 				recreateArgs := []string{"compose", "up", "-d", "--no-deps", "--force-recreate", svc}
 				if rerr := runCmd(ctx, req.Config.ComposePath, "docker", recreateArgs...); rerr != nil {
 					result.Error = fmt.Sprintf("port recovery %s: %v (original: %v)", svc, rerr, err)
+					q.tryRollback(ctx, &result, req.Config.ComposePath)
 					return result
 				}
 				time.Sleep(portRecoveryWait)
 				if err2 := checkHealth(ctx, req.Config.ComposePath, svc); err2 != nil {
 					result.Error = fmt.Sprintf("health check %s after port recovery: %v", svc, err2)
+					q.tryRollback(ctx, &result, req.Config.ComposePath)
 					return result
 				}
 				continue // recovery succeeded
 			}
 			result.Error = fmt.Sprintf("health check %s: %v", svc, err)
+			q.tryRollback(ctx, &result, req.Config.ComposePath)
 			return result
 		}
 	}
 
 	if err := smokeTest(ctx, req.Config.SmokeURL); err != nil {
 		result.Error = fmt.Sprintf("smoke test: %v", err)
+		q.tryRollback(ctx, &result, req.Config.ComposePath)
 		return result
 	}
 
 	result.Success = true
 	return result
+}
+
+// tryRollback attempts to restore services to previous images on deploy failure.
+func (q *Queue) tryRollback(ctx context.Context, result *BuildResult, composePath string) {
+	if len(result.PreviousImages) == 0 {
+		return
+	}
+	if err := rollbackImages(ctx, composePath, result.Services, result.PreviousImages); err != nil {
+		result.Error += fmt.Sprintf(" | rollback also failed: %v", err)
+		return
+	}
+	result.RolledBack = true
+	result.Error += " | rolled back to previous version"
 }
 
 func gitPull(ctx context.Context, sourcePath string) string {

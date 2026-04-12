@@ -34,11 +34,13 @@ type BuildRequest struct {
 
 // BuildResult holds the outcome of a build.
 type BuildResult struct {
-	Repo     string
-	Services []string
-	Success  bool
-	Duration time.Duration
-	Error    string
+	Repo           string
+	Services       []string
+	Success        bool
+	Duration       time.Duration
+	Error          string
+	RolledBack     bool              // true if rollback was attempted and succeeded
+	PreviousImages map[string]string // service → image ID before compose up
 }
 
 // Queue serializes Docker builds to prevent OOM on ARM.
@@ -143,6 +145,9 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest) {
 	if result.Success {
 		q.notify(fmt.Sprintf(
 			"\u2705 [%s] Deployed (%s)", services, result.Duration.Round(time.Second)))
+	} else if result.RolledBack {
+		q.notify(fmt.Sprintf(
+			"\u26a0\ufe0f [%s] FAILED (rolled back): %s", services, result.Error))
 	} else {
 		q.notify(fmt.Sprintf(
 			"\u274c [%s] FAILED: %s", services, result.Error))
