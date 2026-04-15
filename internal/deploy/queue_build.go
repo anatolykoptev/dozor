@@ -63,12 +63,14 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 		return result
 	}
 
-	if errMsg := gitPull(ctx, req.Config.SourcePath, req.CommitSHA); errMsg != "" {
+	worktreePath, worktreeCleanup, errMsg := gitPrepare(ctx, req.Config.SourcePath, req.CommitSHA)
+	if errMsg != "" {
 		result.Error = errMsg
 		return result
 	}
+	defer worktreeCleanup()
 
-	if errMsg := composeBuild(ctx, req); errMsg != "" {
+	if errMsg := composeBuild(ctx, req, worktreePath); errMsg != "" {
 		result.Error = errMsg
 		return result
 	}
