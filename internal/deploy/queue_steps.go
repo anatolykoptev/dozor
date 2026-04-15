@@ -7,8 +7,9 @@ import (
 	"time"
 )
 
-// gitPull fetches and checks out the exact commit SHA from the webhook.
-// Falls back to origin/main if commitSHA is empty or short (tag name, etc).
+// gitPull fetches and checks out the target commit while keeping HEAD attached to a branch.
+// Uses "git checkout <branch> && git reset --hard <sha>" instead of "git checkout <sha>"
+// to prevent detached HEAD state that persists across sessions.
 func gitPull(ctx context.Context, sourcePath, commitSHA string) string {
 	if sourcePath == "" {
 		return ""
@@ -16,21 +17,30 @@ func gitPull(ctx context.Context, sourcePath, commitSHA string) string {
 	if err := runCmd(ctx, sourcePath, "git", "fetch", "origin"); err != nil {
 		return fmt.Sprintf("git fetch: %v", err)
 	}
-	// Use exact SHA if it looks like a full/short commit hash (7+ hex chars).
-	// Otherwise fall back to origin/main.
-	target := "origin/main"
+
+	// Determine the default branch (main or master).
+	branch := detectDefaultBranch(ctx, sourcePath)
+
+	// Ensure we are on the branch (not detached).
+	_ = runCmd(ctx, sourcePath, "git", "checkout", branch)
+
+	// Reset to the target: exact SHA or latest remote branch.
+	target := "origin/" + branch
 	if len(commitSHA) >= 7 { //nolint:mnd
 		target = commitSHA
 	}
-	if err := runCmd(ctx, sourcePath, "git", "checkout", target); err != nil {
-		// Fallback: if checkout fails (detached HEAD issues), try reset.
-		slog.Warn("deploy: git checkout failed, trying reset",
-			"target", target, "error", err)
-		if err2 := runCmd(ctx, sourcePath, "git", "reset", "--hard", target); err2 != nil {
-			return fmt.Sprintf("git reset to %s: %v", target, err2)
-		}
+	if err := runCmd(ctx, sourcePath, "git", "reset", "--hard", target); err != nil {
+		return fmt.Sprintf("git reset to %s: %v", target, err)
 	}
 	return ""
+}
+
+// detectDefaultBranch returns "main" or "master" based on which remote branch exists.
+func detectDefaultBranch(ctx context.Context, sourcePath string) string {
+	if err := runCmd(ctx, sourcePath, "git", "rev-parse", "--verify", "origin/main"); err == nil {
+		return "main"
+	}
+	return "master"
 }
 
 // composeBuild runs docker compose build with optional --no-cache.
