@@ -1,7 +1,14 @@
 package websearch
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"time"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/pkg/extensions"
@@ -120,7 +127,12 @@ func (e *WebSearchExtension) Register(ctx context.Context, extCtx *extensions.Co
 		return nil, engine.TextOutput{Text: result}, nil
 	})
 
-	// Register server_web_fetch
+	// Register server_web_fetch (delegates to ox-browser for better content extraction)
+	oxBrowserURL := os.Getenv("OX_BROWSER_URL")
+	if oxBrowserURL == "" {
+		oxBrowserURL = "http://localhost:8901"
+	}
+
 	mcp.AddTool(extCtx.MCPServer, &mcp.Tool{
 		Name:        "server_web_fetch",
 		Description: "Fetch and extract text content from a URL. Use to read web pages, documentation, or API responses.",
@@ -134,12 +146,70 @@ func (e *WebSearchExtension) Register(ctx context.Context, extCtx *extensions.Co
 			maxLength = 50000
 		}
 
-		result, err := engine.WebFetch(ctx, input.URL, maxLength)
+		result, err := fetchViaOxBrowser(ctx, oxBrowserURL, input.URL, maxLength)
 		if err != nil {
-			return nil, engine.TextOutput{}, err
+			log.Warn("ox-browser fetch failed, falling back to engine.WebFetch", "error", err)
+			result, err = engine.WebFetch(ctx, input.URL, maxLength)
+			if err != nil {
+				return nil, engine.TextOutput{}, err
+			}
 		}
 		return nil, engine.TextOutput{Text: result}, nil
 	})
 
 	return nil
+}
+
+type oxBrowserRequest struct {
+	URL       string `json:"url"`
+	Format    string `json:"format"`
+	MaxLength int    `json:"max_length"`
+}
+
+type oxBrowserResponse struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	URL     string `json:"url"`
+}
+
+func fetchViaOxBrowser(ctx context.Context, baseURL, targetURL string, maxLength int) (string, error) {
+	reqBody := oxBrowserRequest{
+		URL:       targetURL,
+		Format:    "text",
+		MaxLength: maxLength,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal ox-browser request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/read", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("failed to create ox-browser request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ox-browser request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		return "", fmt.Errorf("ox-browser returned HTTP %d", resp.StatusCode)
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read ox-browser response: %w", err)
+	}
+
+	var oxResp oxBrowserResponse
+	if err := json.Unmarshal(respBody, &oxResp); err != nil {
+		return "", fmt.Errorf("failed to parse ox-browser response: %w", err)
+	}
+
+	return fmt.Sprintf("URL: %s\nTitle: %s\nContent:\n\n%s", targetURL, oxResp.Title, oxResp.Content), nil
 }
