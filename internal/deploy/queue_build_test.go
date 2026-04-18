@@ -20,20 +20,26 @@ func makeReq(composePath string) BuildRequest {
 	}
 }
 
-// zeroDelays sets healthWait, upRetryDelay, and portRecoveryWait to zero for fast tests and
-// returns a restore function to be called via defer.
+// zeroDelays sets healthWait, upRetryDelay, and portRecoveryWait to zero for fast tests
+// and stubs buildRunner to a no-op so executeBuild tests don't shell out to real docker.
+// Returns a restore function to be called via defer.
 func zeroDelays(t *testing.T) func() {
 	t.Helper()
 	origHealth := healthWait
 	origRetry := upRetryDelay
 	origRecovery := portRecoveryWait
+	origBuild := buildRunner
 	healthWait = 0
 	upRetryDelay = 0
 	portRecoveryWait = 0
+	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		return nil, nil
+	}
 	return func() {
 		healthWait = origHealth
 		upRetryDelay = origRetry
 		portRecoveryWait = origRecovery
+		buildRunner = origBuild
 	}
 }
 

@@ -2,9 +2,12 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -65,7 +68,8 @@ func detectDefaultBranch(ctx context.Context, sourcePath string) string {
 // composeBuild runs docker compose build with optional --no-cache.
 // Snapshots images before/after to detect no-op builds.
 // If worktreePath is non-empty, a temporary compose override redirects the build
-// context for all target services to the worktree directory.
+// context for all target services to the worktree directory — preserving each
+// service's original subdirectory offset relative to sourcePath.
 func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) string {
 	imagesBefore := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
 
@@ -73,12 +77,29 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) st
 
 	// Generate a temporary override file that remaps build.context to the worktree.
 	if worktreePath != "" {
-		overridePath, err := writeBuildContextOverride(req.Config.Services, worktreePath)
+		overrides, err := resolveBuildOverrides(
+			ctx,
+			req.Config.ComposePath,
+			req.Config.SourcePath,
+			req.Config.Services,
+			worktreePath,
+		)
+		if err != nil {
+			return fmt.Sprintf("resolve overrides: %v", err)
+		}
+		overridePath, err := writeBuildContextOverride(overrides)
 		if err != nil {
 			return fmt.Sprintf("compose override: %v", err)
 		}
 		defer os.Remove(overridePath)
 		buildArgs = append(buildArgs, "-f", "docker-compose.yml", "-f", overridePath)
+
+		slog.Info("deploy: build context override",
+			"services", req.Config.Services,
+			"worktree", worktreePath,
+			"override_path", overridePath,
+			"overrides", overrides,
+		)
 	}
 
 	buildArgs = append(buildArgs, "build")
@@ -87,8 +108,8 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) st
 	}
 	buildArgs = append(buildArgs, req.Config.Services...)
 
-	if err := runCmd(ctx, req.Config.ComposePath, "docker", buildArgs...); err != nil {
-		return fmt.Sprintf("docker build: %v", err)
+	if errMsg := runBuildWithFullLog(ctx, req, buildArgs); errMsg != "" {
+		return errMsg
 	}
 
 	imagesAfter := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
@@ -96,10 +117,129 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) st
 	return ""
 }
 
+// buildRunner invokes `docker build` and returns the full combined output.
+// It is a package-level var so tests can substitute it. The default
+// implementation is in queue_helpers.go (defaultBuildRunner).
+var buildRunner = defaultBuildRunner
+
+// runBuildWithFullLog invokes docker build via buildRunner and, on failure,
+// dumps the full combined stderr to /tmp/dozor-build-<shortSHA>-<ts>.log.
+// runCmd truncates output to maxOutputLen, which previously masked Docker's
+// real complaint (e.g. the truncated "transferring dockerfile: 2B done"
+// that hid the subdir-context bug).
+func runBuildWithFullLog(ctx context.Context, req BuildRequest, buildArgs []string) string {
+	output, err := buildRunner(ctx, req.Config.ComposePath, buildArgs)
+	if err == nil {
+		return ""
+	}
+
+	dumpPath := fmt.Sprintf("/tmp/dozor-build-%s-%d.log", short(req.CommitSHA), time.Now().UnixMilli())
+	if werr := os.WriteFile(dumpPath, output, 0o600); werr != nil { //nolint:mnd // standard log-file mode
+		slog.Warn("deploy: failed to dump full build log", "path", dumpPath, "error", werr)
+		dumpPath = ""
+	}
+
+	slog.Error("deploy: docker build failed",
+		"services", req.Config.Services,
+		"commit", short(req.CommitSHA),
+		"err", err,
+		"stderr_tail", truncate(string(output), maxOutputLen),
+		"full_log_path", dumpPath,
+	)
+
+	if dumpPath != "" {
+		return fmt.Sprintf("docker build: %v (full log: %s)", err, dumpPath)
+	}
+	return fmt.Sprintf("docker build: %v: %s", err, truncate(string(output), maxOutputLen))
+}
+
+// BuildOverride describes the build.context rewrite for a single service in
+// the temporary docker-compose override file.
+type BuildOverride struct {
+	Service string
+	Context string // absolute path: worktreePath joined with the original subdir offset
+}
+
+// resolveBuildOverrides reads the compose at composePath, finds each service's
+// original build.context via `docker compose config --format json`, computes
+// its relative offset from sourcePath, and returns one BuildOverride per
+// service with the context rebased onto worktreePath.
+//
+// If a service's original context equals sourcePath exactly (common case —
+// repo-root-as-context), the override is simply worktreePath.
+// If a service's context lives outside sourcePath, an error is returned so
+// the deploy fails loudly instead of silently using a wrong path.
+func resolveBuildOverrides(
+	ctx context.Context,
+	composePath, sourcePath string,
+	services []string,
+	worktreePath string,
+) ([]BuildOverride, error) {
+	out, err := outputRunner(ctx, composePath, "docker", "compose", "config", "--format", "json")
+	if err != nil {
+		return nil, fmt.Errorf("docker compose config: %w", err)
+	}
+
+	contexts, err := parseComposeContexts(out, services)
+	if err != nil {
+		return nil, err
+	}
+
+	overrides := make([]BuildOverride, 0, len(services))
+	for _, svc := range services {
+		origCtx := contexts[svc]
+		rel, err := filepath.Rel(sourcePath, origCtx)
+		if err != nil {
+			return nil, fmt.Errorf("service %q: cannot relativize %q against source %q: %w",
+				svc, origCtx, sourcePath, err)
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("service %q: build.context %q is outside source_path %q",
+				svc, origCtx, sourcePath)
+		}
+		newCtx := worktreePath
+		if rel != "." {
+			newCtx = filepath.Join(worktreePath, rel)
+		}
+		overrides = append(overrides, BuildOverride{Service: svc, Context: newCtx})
+	}
+	return overrides, nil
+}
+
+// parseComposeContexts decodes the JSON output of `docker compose config
+// --format json` and returns a map of service → build.context for each of
+// the requested services. Returns an error if any requested service is
+// missing or has no build.context.
+func parseComposeContexts(configJSON []byte, services []string) (map[string]string, error) {
+	var parsed struct {
+		Services map[string]struct {
+			Build *struct {
+				Context string `json:"context"`
+			} `json:"build"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(configJSON, &parsed); err != nil {
+		return nil, fmt.Errorf("parse compose config: %w", err)
+	}
+
+	result := make(map[string]string, len(services))
+	for _, svc := range services {
+		entry, ok := parsed.Services[svc]
+		if !ok {
+			return nil, fmt.Errorf("service %q not found in compose config", svc)
+		}
+		if entry.Build == nil || entry.Build.Context == "" {
+			return nil, fmt.Errorf("service %q has no build.context in compose config", svc)
+		}
+		result[svc] = entry.Build.Context
+	}
+	return result, nil
+}
+
 // writeBuildContextOverride creates a temporary docker-compose override YAML that
-// redirects build.context for each service to the given worktree path.
+// redirects build.context for each service to the given absolute path.
 // Returns the path to the temp file (caller must remove it).
-func writeBuildContextOverride(services []string, worktreePath string) (string, error) {
+func writeBuildContextOverride(overrides []BuildOverride) (string, error) {
 	f, err := os.CreateTemp("", "dozor-compose-override-*.yml")
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
@@ -107,8 +247,8 @@ func writeBuildContextOverride(services []string, worktreePath string) (string, 
 
 	// Write a minimal compose override that only overrides build.context.
 	fmt.Fprintln(f, "services:")
-	for _, svc := range services {
-		fmt.Fprintf(f, "  %s:\n    build:\n      context: %s\n", svc, worktreePath)
+	for _, o := range overrides {
+		fmt.Fprintf(f, "  %s:\n    build:\n      context: %s\n", o.Service, o.Context)
 	}
 
 	if err := f.Close(); err != nil {
