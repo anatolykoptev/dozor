@@ -178,9 +178,16 @@ var noiseRules = []noiseRule{
 		// functionality. They are part of every browser context init.
 		services: []string{"cloakbrowser"},
 		re: regexp.MustCompile(
-			`(?:SharedImageManager::ProduceSkia|IPH_ExtensionsZeroStatePromo|gles2_cmd_decoder_passthrough|user_education_interface_impl|gpu/command_buffer/service/shared_image|ALSA lib|alsa_util\.cc)`,
+			`(?:SharedImageManager::ProduceSkia|IPH_ExtensionsZeroStatePromo|gles2_cmd_decoder_passthrough|user_education_interface_impl|gpu/command_buffer/service/shared_image|ALSA lib|alsa_util\.cc|ev_root_ca_metadata\.cc|Failed to decode OID)`,
 		),
 		reason: "ARM headless Chromium hardware probing — benign initialization warnings that fire on every browser context init and have no effect on functionality. Only treat as incident if the cloakbrowser container is currently restarting (check via docker_ps restart count) or actual chrome OOM events appear in dmesg with timestamps inside the last 10 minutes.",
+	},
+	{
+		services: []string{"go-search"},
+		re: regexp.MustCompile(
+			`search source failed.*(?:rate limited|status 400|EOF|timeout)`,
+		),
+		reason: "go-search multi-source aggregation: individual sources (brave, yep, reddit) hit rate limits or return transient errors while other sources succeed. Only treat as incident if ALL sources fail simultaneously or /health returns non-200.",
 	},
 	{
 		// go-code re-indexes the symbol graph in the background and occasionally

@@ -22,7 +22,7 @@ const (
 	defaultMemoryThreshold        = 90
 	defaultCBLLMResetMin          = 10
 	defaultCBKBResetMin           = 5
-	defaultRestartThreshold       = 3
+	defaultRestartThreshold       = 5
 )
 
 // Config holds all dozor configuration.

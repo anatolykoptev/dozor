@@ -59,7 +59,7 @@ func (a *ServerAgent) StartDeploy(ctx context.Context, projectPath string, servi
 // CheckDeployHealth verifies all services are running after a deploy.
 // Returns a summary string with OK/FAIL per service.
 func (a *ServerAgent) CheckDeployHealth(ctx context.Context, services []string) string {
-	time.Sleep(10 * time.Second)
+	time.Sleep(30 * time.Second)
 	services = a.resolveServices(ctx, services)
 	if len(services) == 0 {
 		return "Post-deploy check: no services found."

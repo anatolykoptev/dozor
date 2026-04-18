@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
 )
@@ -181,9 +182,14 @@ func HandleRemoteExec(ctx context.Context, agent *engine.ServerAgent, command st
 }
 
 // HandleRestart processes a server_restart request.
+// Refuses to restart a service that has been running >60s and reports healthy.
 func HandleRestart(ctx context.Context, agent *engine.ServerAgent, service string) (string, error) {
 	if ok, reason := engine.ValidateServiceName(service); !ok {
 		return "", fmt.Errorf("invalid service: %s", reason)
+	}
+	status := agent.GetServiceStatus(ctx, service)
+	if status.IsHealthy() && !status.StartedAt.IsZero() && time.Since(status.StartedAt) > 60*time.Second {
+		return fmt.Sprintf("Restart blocked: %s has been running for %s and is healthy. No restart needed.", service, time.Since(status.StartedAt).Truncate(time.Second)), nil
 	}
 	result := agent.RestartService(ctx, service)
 	if !result.Success {

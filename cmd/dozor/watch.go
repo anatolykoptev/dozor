@@ -101,7 +101,7 @@ func runSmartCheck(ctx context.Context, cfg engine.Config, eng *engine.ServerAge
 
 	slog.Info("triage state changed, analyzing with LLM")
 
-	prompt := "The following is a server triage report. Analyze the issues and take corrective action if safe to do so. After taking any actions, verify the fixes.\n\nTriage Report:\n" + triageResult
+	prompt := "The following is a server triage report. Evaluate system state and confirm stability. Only take corrective action if a service is clearly down or in a crash loop. Do not restart healthy services.\n\nTriage Report:\n" + triageResult
 
 	response, err := loop.Process(ctx, "watch", prompt)
 	if err != nil {

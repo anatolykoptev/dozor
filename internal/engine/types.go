@@ -90,7 +90,7 @@ func (s ServiceStatus) DozorLabel(key string) string {
 }
 
 // recentRestartThreshold is the number of restarts in 24h that indicates instability.
-const recentRestartThreshold = 2
+const recentRestartThreshold = 5
 
 // IsHealthy returns true if the service is running with tolerable restarts and errors.
 // Uses RecentRestarts (last 24h) to avoid false positives from historical Docker restart counts.
