@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,5 +165,79 @@ func TestWriteBuildContextOverride_Format(t *testing.T) {
 	}
 	if filepath.Ext(path) != ".yml" {
 		t.Errorf("expected .yml extension, got: %s", path)
+	}
+}
+
+// TestRunBuildWithFullLog_DumpsStderrOnFailure verifies that when docker
+// build fails, runBuildWithFullLog writes the full combined output to a
+// /tmp/dozor-build-<sha>-<ts>.log file and surfaces the path in the error
+// message. This is the diagnostic that would have exposed the truncated
+// "transferring dockerfile: 2B done" error that masked the subdir bug.
+func TestRunBuildWithFullLog_DumpsStderrOnFailure(t *testing.T) {
+	origBuild := buildRunner
+	defer func() { buildRunner = origBuild }()
+
+	// Long output that exceeds maxOutputLen so we can verify the dump
+	// contains the FULL output, not the truncation.
+	fullOutput := strings.Repeat("docker build line\n", 200)
+	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		return []byte(fullOutput), errors.New("exit status 1")
+	}
+
+	req := BuildRequest{
+		CommitSHA: "deadbeefcafe",
+		Config: RepoConfig{
+			ComposePath: "/tmp",
+			Services:    []string{"svc"},
+		},
+	}
+
+	errMsg := runBuildWithFullLog(context.Background(), req, []string{"compose", "build", "svc"})
+	if errMsg == "" {
+		t.Fatal("expected non-empty error message")
+	}
+	if !strings.Contains(errMsg, "full log:") {
+		t.Errorf("expected error to include 'full log:' path, got: %s", errMsg)
+	}
+
+	// Extract dump path from error message and verify the file contains
+	// the full output (not truncated).
+	const marker = "full log: "
+	idx := strings.Index(errMsg, marker)
+	if idx < 0 {
+		t.Fatalf("could not find %q in error: %s", marker, errMsg)
+	}
+	dumpPath := strings.TrimSuffix(errMsg[idx+len(marker):], ")")
+	defer os.Remove(dumpPath)
+
+	data, err := os.ReadFile(dumpPath)
+	if err != nil {
+		t.Fatalf("read dump file %q: %v", dumpPath, err)
+	}
+	if string(data) != fullOutput {
+		t.Errorf("dump file content mismatch: got %d bytes, want %d", len(data), len(fullOutput))
+	}
+}
+
+// TestRunBuildWithFullLog_SuccessReturnsEmpty ensures no dump file is
+// created and no error returned on a successful build.
+func TestRunBuildWithFullLog_SuccessReturnsEmpty(t *testing.T) {
+	origBuild := buildRunner
+	defer func() { buildRunner = origBuild }()
+
+	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		return nil, nil
+	}
+
+	req := BuildRequest{
+		CommitSHA: "abc1234",
+		Config: RepoConfig{
+			ComposePath: "/tmp",
+			Services:    []string{"svc"},
+		},
+	}
+
+	if errMsg := runBuildWithFullLog(context.Background(), req, []string{"compose", "build", "svc"}); errMsg != "" {
+		t.Errorf("expected empty error on success, got: %s", errMsg)
 	}
 }

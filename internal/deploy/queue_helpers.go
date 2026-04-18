@@ -29,6 +29,16 @@ func defaultRunCmd(ctx context.Context, dir, name string, args ...string) error 
 	return nil
 }
 
+// defaultBuildRunner runs `docker <args...>` and returns the full combined
+// stdout+stderr regardless of outcome. Callers (runBuildWithFullLog) dump
+// the full output to a temp file on failure so operators can inspect what
+// Docker actually complained about.
+func defaultBuildRunner(ctx context.Context, dir string, args []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "docker", args...) //nolint:gosec // trusted local config, not shell
+	cmd.Dir = dir
+	return cmd.CombinedOutput()
+}
+
 func serviceKey(services []string) string {
 	s := ""
 	for i, svc := range services {

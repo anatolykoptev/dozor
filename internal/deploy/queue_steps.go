@@ -93,6 +93,13 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) st
 		}
 		defer os.Remove(overridePath)
 		buildArgs = append(buildArgs, "-f", "docker-compose.yml", "-f", overridePath)
+
+		slog.Info("deploy: build context override",
+			"services", req.Config.Services,
+			"worktree", worktreePath,
+			"override_path", overridePath,
+			"overrides", overrides,
+		)
 	}
 
 	buildArgs = append(buildArgs, "build")
@@ -101,13 +108,49 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) st
 	}
 	buildArgs = append(buildArgs, req.Config.Services...)
 
-	if err := runCmd(ctx, req.Config.ComposePath, "docker", buildArgs...); err != nil {
-		return fmt.Sprintf("docker build: %v", err)
+	if errMsg := runBuildWithFullLog(ctx, req, buildArgs); errMsg != "" {
+		return errMsg
 	}
 
 	imagesAfter := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
 	logImageDiff(imagesBefore, imagesAfter, req.Config.Services, req.CommitSHA)
 	return ""
+}
+
+// buildRunner invokes `docker build` and returns the full combined output.
+// It is a package-level var so tests can substitute it. The default
+// implementation is in queue_helpers.go (defaultBuildRunner).
+var buildRunner = defaultBuildRunner
+
+// runBuildWithFullLog invokes docker build via buildRunner and, on failure,
+// dumps the full combined stderr to /tmp/dozor-build-<shortSHA>-<ts>.log.
+// runCmd truncates output to maxOutputLen, which previously masked Docker's
+// real complaint (e.g. the truncated "transferring dockerfile: 2B done"
+// that hid the subdir-context bug).
+func runBuildWithFullLog(ctx context.Context, req BuildRequest, buildArgs []string) string {
+	output, err := buildRunner(ctx, req.Config.ComposePath, buildArgs)
+	if err == nil {
+		return ""
+	}
+
+	dumpPath := fmt.Sprintf("/tmp/dozor-build-%s-%d.log", short(req.CommitSHA), time.Now().UnixMilli())
+	if werr := os.WriteFile(dumpPath, output, 0o600); werr != nil { //nolint:mnd // standard log-file mode
+		slog.Warn("deploy: failed to dump full build log", "path", dumpPath, "error", werr)
+		dumpPath = ""
+	}
+
+	slog.Error("deploy: docker build failed",
+		"services", req.Config.Services,
+		"commit", short(req.CommitSHA),
+		"err", err,
+		"stderr_tail", truncate(string(output), maxOutputLen),
+		"full_log_path", dumpPath,
+	)
+
+	if dumpPath != "" {
+		return fmt.Sprintf("docker build: %v (full log: %s)", err, dumpPath)
+	}
+	return fmt.Sprintf("docker build: %v: %s", err, truncate(string(output), maxOutputLen))
 }
 
 // BuildOverride describes the build.context rewrite for a single service in
