@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -92,7 +90,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	mx.Handle("/mcp", buildMCPHTTPHandler(mcpServer))
 	mx.Handle("/mcp/", buildMCPHTTPHandler(mcpServer))
 	mx.HandleFunc("GET /health", healthHandler("gateway"))
-	registerWebhookHandler(mx, msgBus)
+	registerWebhookHandler(mx, msgBus, notifyFn)
 	registerDeployWebhook(sigCtx, mx, notifyFn)
 
 	// 5. A2A protocol.
@@ -149,48 +147,6 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 300 * time.Second,
 	}, "gateway")
-}
-
-// registerWebhookHandler adds POST /webhook and POST /webhook/ to the mux.
-func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus) {
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, webhookBodyLimit))
-		if err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-
-		var payload struct {
-			Text    string `json:"text"`
-			Message string `json:"message"`
-		}
-		text := string(body)
-		if json.Unmarshal(body, &payload) == nil {
-			if payload.Text != "" {
-				text = payload.Text
-			} else if payload.Message != "" {
-				text = payload.Message
-			}
-		}
-
-		source := r.URL.Path
-		slog.Info("webhook received", slog.String("path", source), slog.Int("len", len(text))) //nolint:gosec // path is safe to log
-
-		msgBus.PublishInbound(bus.Message{
-			ID:        fmt.Sprintf("webhook-%d", time.Now().UnixMilli()),
-			Channel:   "internal",
-			SenderID:  "webhook",
-			ChatID:    "webhook",
-			Text:      "ALERT from external monitor (" + source + "):\n\n" + text,
-			Timestamp: time.Now(),
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"status":"accepted"}`)
-	}
-
-	mx.HandleFunc("POST /webhook", handler)
-	mx.HandleFunc("POST /webhook/", handler)
 }
 
 // registerDeployWebhook sets up the GitHub webhook handler for auto-rebuild.
