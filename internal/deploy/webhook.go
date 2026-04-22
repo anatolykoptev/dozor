@@ -61,14 +61,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if sig == "" {
 			sig = r.Header.Get("X-Hub-Signature")
 		}
-		// Temporarily disable signature verification for debugging
-		if sig != "" && !verifySignature(body, sig, h.config.Secret) {
-			slog.Warn("deploy/webhook: invalid signature",
+		if sig == "" {
+			slog.Warn("deploy/webhook: missing signature, rejecting",
+				"remote", r.RemoteAddr)
+			http.Error(w, "missing signature", http.StatusUnauthorized)
+			return
+		}
+		if !verifySignature(body, sig, h.config.Secret) {
+			slog.Warn("deploy/webhook: invalid signature, rejecting",
 				"remote", r.RemoteAddr,
 				"signature_header", r.Header.Get("X-Hub-Signature-256"),
 				"legacy_header", r.Header.Get("X-Hub-Signature"))
-			// Allow through for now to test webhook delivery
-			slog.Info("deploy/webhook: allowing through despite invalid signature")
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
 		}
 	}
 
