@@ -52,6 +52,11 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 	ctx, cancel := context.WithTimeout(ctx, buildTimeout)
 	defer cancel()
 
+	// Binary repos bypass the Docker Compose pipeline entirely.
+	if req.Config.resolvedKind() == KindBinary {
+		return executeBinaryBuild(ctx, req)
+	}
+
 	result := BuildResult{
 		Repo:     req.Repo,
 		Services: req.Config.Services,

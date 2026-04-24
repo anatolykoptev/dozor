@@ -1,4 +1,7 @@
-// Package deploy implements GitHub webhook-driven Docker service rebuilds.
+// Package deploy implements GitHub webhook-driven service rebuilds.
+// Supports two deploy kinds:
+//   - "compose" (default): docker compose build + up
+//   - "binary": git pull + go build + systemctl --user restart
 package deploy
 
 import (
@@ -10,15 +13,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// RepoConfig maps a GitHub repository to Docker Compose services.
+// DeployKind selects the build strategy for a repository.
+type DeployKind string
+
+const (
+	KindCompose DeployKind = "compose" // Docker Compose (default)
+	KindBinary  DeployKind = "binary"  // native Go binary + systemd user service
+)
+
+// RepoConfig maps a GitHub repository to its deploy strategy.
 type RepoConfig struct {
-	ComposePath string   `yaml:"compose_path"`
-	Services    []string `yaml:"services"`
-	SourcePath  string   `yaml:"source_path"`
-	NoCache     bool     `yaml:"no_cache"`
-	// SmokeURL is an optional HTTP endpoint probed after `compose up` — must return 2xx
-	// within smokeTimeout or the deploy is marked FAILED. Typically a /health or /readyz path.
+	// Kind selects the deploy strategy. Default: "compose".
+	Kind DeployKind `yaml:"kind,omitempty"`
+
+	// --- compose fields ---
+	ComposePath string `yaml:"compose_path,omitempty"`
+	NoCache     bool   `yaml:"no_cache,omitempty"`
+
+	// --- shared / binary fields ---
+	SourcePath string   `yaml:"source_path"`
+	Services   []string `yaml:"services,omitempty"` // docker compose service names
+
+	// --- binary-only fields ---
+	// BuildCmd is the command to build the binary, e.g. ["go", "build", "-o", "/path/bin", "./cmd/svc"].
+	// Runs in SourcePath.
+	BuildCmd []string `yaml:"build_cmd,omitempty"`
+	// UserServices lists systemd user-service names to restart after a successful build.
+	UserServices []string `yaml:"user_services,omitempty"`
+
+	// SmokeURL is probed after deploy — must return 2xx within smokeTimeout.
 	SmokeURL string `yaml:"smoke_url,omitempty"`
+}
+
+// resolvedKind returns the effective deploy kind (defaulting to KindCompose).
+func (rc RepoConfig) resolvedKind() DeployKind {
+	if rc.Kind == KindBinary {
+		return KindBinary
+	}
+	return KindCompose
 }
 
 // Config holds the full deploy webhook configuration.
@@ -46,13 +78,25 @@ func LoadConfig(path string) (*Config, error) {
 
 	cfg.Secret = os.Getenv("DOZOR_GITHUB_WEBHOOK_SECRET")
 
-	// Validate: each repo must have at least one service
 	for repo, rc := range cfg.Repos {
-		if len(rc.Services) == 0 {
-			return nil, fmt.Errorf("repo %q has no services", repo)
-		}
-		if rc.ComposePath == "" {
-			return nil, fmt.Errorf("repo %q has no compose_path", repo)
+		switch rc.resolvedKind() {
+		case KindBinary:
+			if rc.SourcePath == "" {
+				return nil, fmt.Errorf("binary repo %q has no source_path", repo)
+			}
+			if len(rc.BuildCmd) == 0 {
+				return nil, fmt.Errorf("binary repo %q has no build_cmd", repo)
+			}
+			if len(rc.UserServices) == 0 {
+				return nil, fmt.Errorf("binary repo %q has no user_services", repo)
+			}
+		default: // KindCompose
+			if len(rc.Services) == 0 {
+				return nil, fmt.Errorf("compose repo %q has no services", repo)
+			}
+			if rc.ComposePath == "" {
+				return nil, fmt.Errorf("compose repo %q has no compose_path", repo)
+			}
 		}
 	}
 

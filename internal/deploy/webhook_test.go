@@ -314,7 +314,7 @@ func TestHandler_NonPushEvent(t *testing.T) {
 	if resp["status"] != "ignored" {
 		t.Errorf("status = %q, want %q", resp["status"], "ignored")
 	}
-	if resp["reason"] != "not a push event" {
+	if resp["reason"] != "not a push or release event" {
 		t.Errorf("reason = %q, want %q", resp["reason"], "not a push event")
 	}
 }
