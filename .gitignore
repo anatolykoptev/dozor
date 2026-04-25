@@ -18,3 +18,6 @@ CLAUDE.md
 # Binary (root only, not cmd/dozor/ directory)
 /dozor
 /dozor-*
+
+# Subagent worktrees (claude-code-isolation runs)
+.claude/
