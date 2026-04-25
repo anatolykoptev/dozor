@@ -175,6 +175,26 @@ func (c *Channel) sendReply(msg bus.Message) {
 		}
 	}
 
+	// Photo attachment path: when bytes are present, send as a Telegram photo.
+	// Text becomes the caption (truncated to 1024 — Telegram's hard cap).
+	if len(msg.Photo) > 0 {
+		caption := msg.Text
+		if len(caption) > 1024 {
+			caption = caption[:1021] + "..."
+		}
+		photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "alert.png", Bytes: msg.Photo})
+		if caption != "" {
+			photo.Caption = caption
+		}
+		if _, err := c.bot.Send(photo); err != nil {
+			slog.Error("telegram: photo send failed, falling back to text", slog.Any("error", err))
+			// fall through to text path so the alert still reaches the operator
+		} else {
+			slog.Info("telegram: photo sent", slog.String("chat_id", msg.ChatID), slog.Int("photo_bytes", len(msg.Photo)))
+			return
+		}
+	}
+
 	text := msg.Text
 	if text == "" {
 		return

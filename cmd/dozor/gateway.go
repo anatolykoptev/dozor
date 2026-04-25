@@ -67,6 +67,47 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		})
 	}
 
+	// notifyAlertFn delivers a structured alert as a Telegram photo card,
+	// rendered via the satori-render sidecar (no LLM in the path). On any
+	// rendering failure (sidecar down, satori error, network) it falls back
+	// to the plain-text notifyFn so the operator never loses the alert.
+	// The textual content (caption when the card succeeds, full message on
+	// fallback) is the same FormatRemoteAlerts string the previous flow used.
+	notifyAlertFn := func(alerts []engine.Alert, fallbackText string) {
+		if adminChatID == "" {
+			return
+		}
+		if len(alerts) == 0 {
+			notifyFn(fallbackText)
+			return
+		}
+		card, err := engine.RenderAlertCard(context.Background(), alerts[0])
+		if err != nil {
+			slog.Warn("alert card render failed, falling back to text",
+				slog.Any("error", err),
+				slog.String("service", alerts[0].Service))
+			notifyFn(fallbackText)
+			return
+		}
+		caption := fallbackText
+		if len(caption) > 1024 {
+			caption = caption[:1021] + "..."
+		}
+		msgBus.PublishOutbound(bus.Message{
+			ID:        fmt.Sprintf("alert-%d", time.Now().UnixMilli()),
+			Channel:   "telegram",
+			SenderID:  "dozor",
+			ChatID:    adminChatID,
+			Text:      caption,
+			Photo:     card,
+			Timestamp: time.Now(),
+		})
+		slog.Info("alert card sent",
+			slog.String("service", alerts[0].Service),
+			slog.String("level", string(alerts[0].Level)),
+			slog.Int("png_bytes", len(card)))
+	}
+
 	// 3. MCP server + extensions.
 	execConfig := tools.NewExecConfig()
 	execOpts := tools.ExecOptions{Config: execConfig, Approvals: approvalsMgr, Notify: notifyFn}
@@ -140,7 +181,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 
 	// 9b. Fast remote server checks (independent of LLM pipeline).
 	if cfg.HasRemote() {
-		go runRemoteWatch(sigCtx, cfg, notifyFn)
+		go runRemoteWatch(sigCtx, cfg, notifyFn, notifyAlertFn)
 	}
 
 	// 9c. Vendor quota probes.

@@ -12,7 +12,12 @@ import (
 
 // runRemoteWatch runs fast, independent remote server checks on a short interval.
 // Sends CRITICAL/ERROR alerts directly to Telegram, bypassing the LLM pipeline.
-func runRemoteWatch(ctx context.Context, cfg engine.Config, notify func(string)) {
+//
+// notify is the plain-text fallback path; notifyAlert delivers structured alerts
+// as Telegram photo cards (via satori-render sidecar). When the card path fails,
+// notifyAlert internally delegates back to notify so the operator always receives
+// the alert in some form.
+func runRemoteWatch(ctx context.Context, cfg engine.Config, notify func(string), notifyAlert func([]engine.Alert, string)) {
 	interval := cfg.RemoteCheckInterval
 	slog.Info("remote watch started",
 		slog.String("interval", interval.String()),
@@ -31,7 +36,7 @@ func runRemoteWatch(ctx context.Context, cfg engine.Config, notify func(string))
 
 	time.Sleep(15 * time.Second) // let services boot
 
-	remoteCheckTick(ctx, cfg, notify, &lastAlertHash, &lastAlertTime, repeatInterval, ft, fd)
+	remoteCheckTick(ctx, cfg, notify, notifyAlert, &lastAlertHash, &lastAlertTime, repeatInterval, ft, fd)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -41,12 +46,12 @@ func runRemoteWatch(ctx context.Context, cfg engine.Config, notify func(string))
 			slog.Info("remote watch stopped")
 			return
 		case <-ticker.C:
-			remoteCheckTick(ctx, cfg, notify, &lastAlertHash, &lastAlertTime, repeatInterval, ft, fd)
+			remoteCheckTick(ctx, cfg, notify, notifyAlert, &lastAlertHash, &lastAlertTime, repeatInterval, ft, fd)
 		}
 	}
 }
 
-func remoteCheckTick(ctx context.Context, cfg engine.Config, notify func(string), lastHash *string, lastTime *time.Time, repeatAfter time.Duration, ft *engine.FailureTracker, fd *engine.FlapDetector) {
+func remoteCheckTick(ctx context.Context, cfg engine.Config, notify func(string), notifyAlert func([]engine.Alert, string), lastHash *string, lastTime *time.Time, repeatAfter time.Duration, ft *engine.FailureTracker, fd *engine.FlapDetector) {
 	checkCtx, cancel := context.WithTimeout(ctx, remoteCheckTimeoutSec*time.Second)
 	defer cancel()
 
@@ -103,5 +108,11 @@ func remoteCheckTick(ctx context.Context, cfg engine.Config, notify func(string)
 	*lastTime = now
 
 	slog.Warn("remote watch: alerting", slog.String("hash", hash))
-	notify(msg)
+	// Prefer the visual card path when we have alerts; falls back to plain
+	// text internally if the satori sidecar is unreachable.
+	if notifyAlert != nil && len(status.Alerts) > 0 {
+		notifyAlert(status.Alerts, msg)
+	} else {
+		notify(msg)
+	}
 }
