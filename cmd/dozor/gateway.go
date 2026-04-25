@@ -16,9 +16,11 @@ import (
 	"github.com/anatolykoptev/dozor/internal/bus"
 	"github.com/anatolykoptev/dozor/internal/deploy"
 	"github.com/anatolykoptev/dozor/internal/engine"
+	"github.com/anatolykoptev/dozor/internal/quotas"
 	"github.com/anatolykoptev/dozor/internal/session"
 	"github.com/anatolykoptev/dozor/internal/telegram"
 	"github.com/anatolykoptev/dozor/internal/tools"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
@@ -85,11 +87,12 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// 4. HTTP mux: MCP + health + webhook.
+	// 4. HTTP mux: MCP + health + webhook + metrics.
 	mx := http.NewServeMux()
 	mx.Handle("/mcp", buildMCPHTTPHandler(mcpServer))
 	mx.Handle("/mcp/", buildMCPHTTPHandler(mcpServer))
 	mx.HandleFunc("GET /health", healthHandler("gateway"))
+	mx.Handle("/metrics", promhttp.Handler())
 	registerWebhookHandler(mx, msgBus, notifyFn)
 	registerDeployWebhook(sigCtx, mx, notifyFn)
 
@@ -139,6 +142,9 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	if cfg.HasRemote() {
 		go runRemoteWatch(sigCtx, cfg, notifyFn)
 	}
+
+	// 9c. Vendor quota probes.
+	go runQuotasWatch(sigCtx, quotas.LoadConfig(), notifyFn)
 
 	// 10. HTTP server (blocks until shutdown).
 	startHTTPServer(sigCtx, &http.Server{
