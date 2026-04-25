@@ -11,7 +11,10 @@ import (
 	"regexp"
 )
 
-const maxWebhookBody = 64 * 1024 // 64KB
+// maxWebhookBody bounds the request body. Push events with many commits and
+// large file lists can grow well beyond the original 64 KB cap, so we allow up
+// to 5 MB. GitHub itself caps webhook payloads at ~25 MB.
+const maxWebhookBody = 5 * 1024 * 1024 // 5 MiB
 
 // pushEvent is the subset of GitHub's push webhook payload we need.
 type pushEvent struct {
@@ -23,21 +26,42 @@ type pushEvent struct {
 		ID      string `json:"id"`
 		Message string `json:"message"`
 	} `json:"head_commit"`
+	// Commits carry the per-commit changed-file lists used by the path
+	// filter. GitHub omits these fields for force pushes / very large pushes,
+	// in which case the filter is bypassed (build proceeds as before).
+	Commits []struct {
+		ID       string   `json:"id"`
+		Added    []string `json:"added"`
+		Removed  []string `json:"removed"`
+		Modified []string `json:"modified"`
+	} `json:"commits"`
 }
 
 // Handler processes GitHub webhook push events.
 type Handler struct {
-	config *Config
-	queue  *Queue
-	notify func(string)
+	config    *Config
+	queue     *Queue
+	notify    func(string)
+	debouncer *Debouncer
 }
 
-// NewHandler creates a GitHub webhook handler.
+// NewHandler creates a GitHub webhook handler. The handler unconditionally
+// uses a Debouncer; per-repo dispatch falls back to immediate Submit when the
+// configured debounce window is zero.
 func NewHandler(config *Config, queue *Queue, notify func(string)) *Handler {
-	return &Handler{
+	h := &Handler{
 		config: config,
 		queue:  queue,
 		notify: notify,
+	}
+	h.debouncer = NewDebouncer(nil, h.dispatch)
+	return h
+}
+
+// Close releases the handler's debouncer goroutines. Safe to call once.
+func (h *Handler) Close() {
+	if h.debouncer != nil {
+		h.debouncer.Stop(nil)
 	}
 }
 
@@ -171,17 +195,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Submit to build queue (async).
-	submitted := h.queue.Submit(BuildRequest{
-		Repo:      push.Repository.FullName,
-		CommitSHA: push.HeadCommit.ID,
-		Config:    *rc,
-	})
-
-	status := "queued"
-	if !submitted {
-		status = "deduplicated"
+	// Apply BuildPaths filter (no-op when not configured). On skip, respond now.
+	if h.skipByPathFilter(push, rc) {
+		slog.Info("deploy skipped: no build-relevant files changed",
+			"repo", push.Repository.FullName,
+			"commit", short(push.HeadCommit.ID),
+			"build_paths", rc.BuildPaths,
+		)
+		respondJSON(w, http.StatusOK, map[string]string{
+			"status": "skipped",
+			"reason": "no_relevant_paths",
+			"repo":   push.Repository.FullName,
+			"commit": short(push.HeadCommit.ID),
+		})
+		return
 	}
+
+	status := h.dispatchPush(push, rc)
 
 	slog.Info("deploy/webhook: processed",
 		"repo", push.Repository.FullName,

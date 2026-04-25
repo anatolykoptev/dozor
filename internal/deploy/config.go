@@ -75,6 +75,36 @@ type RepoConfig struct {
 	// every 5s) after the initial hit before the remaining services are restarted.
 	// Default: 30s.
 	CanarySmokeWindow Duration `yaml:"canary_smoke_window,omitempty"`
+
+	// BuildPaths is a whitelist of glob patterns. If non-empty, the webhook
+	// triggers a rebuild only when at least one changed file matches one of
+	// these patterns. Empty (the default) preserves backward-compat behaviour:
+	// every push to main rebuilds.
+	//
+	// Globbing is minimal-doublestar (see path_filter.go):
+	//   "memdb-go/**"  matches every file under memdb-go/
+	//   "*.md"         matches a top-level *.md (does not cross '/')
+	//   "**/*.md"      matches *.md at any depth
+	//   "go.mod"       matches the literal file
+	BuildPaths []string `yaml:"build_paths,omitempty"`
+
+	// SkipPaths is a documentation-only list of paths the operator wants to
+	// be sure never trigger a rebuild. Today it is purely informational —
+	// BuildPaths is the source of truth for the filter decision.
+	SkipPaths []string `yaml:"skip_paths,omitempty"`
+
+	// DebounceSeconds coalesces a burst of webhooks for the same repo+service
+	// into a single rebuild dispatched after this many seconds of silence
+	// from the last event. 0 (default) disables debouncing.
+	DebounceSeconds int `yaml:"debounce_seconds,omitempty"`
+}
+
+// DebounceWindow returns the configured debounce duration, or 0 if disabled.
+func (rc RepoConfig) DebounceWindow() time.Duration {
+	if rc.DebounceSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(rc.DebounceSeconds) * time.Second
 }
 
 // resolvedKind returns the effective deploy kind (defaulting to KindCompose).
