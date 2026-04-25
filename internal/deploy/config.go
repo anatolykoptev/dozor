@@ -9,9 +9,31 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// Duration wraps time.Duration to support YAML unmarshaling from strings like "30s".
+type Duration struct{ D time.Duration }
+
+// UnmarshalYAML implements yaml.Unmarshaler so "30s" in YAML becomes 30*time.Second.
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	dur, err := time.ParseDuration(value.Value)
+	if err != nil {
+		return fmt.Errorf("parse duration %q: %w", value.Value, err)
+	}
+	d.D = dur
+	return nil
+}
+
+// OrDefault returns d.D if non-zero, otherwise the fallback.
+func (d Duration) OrDefault(fallback time.Duration) time.Duration {
+	if d.D <= 0 {
+		return fallback
+	}
+	return d.D
+}
 
 // DeployKind selects the build strategy for a repository.
 type DeployKind string
@@ -39,10 +61,20 @@ type RepoConfig struct {
 	// Runs in SourcePath.
 	BuildCmd []string `yaml:"build_cmd,omitempty"`
 	// UserServices lists systemd user-service names to restart after a successful build.
+	// The first entry is the canary: it is restarted and smoke-tested before the rest.
 	UserServices []string `yaml:"user_services,omitempty"`
 
 	// SmokeURL is probed after deploy — must return 2xx within smokeTimeout.
 	SmokeURL string `yaml:"smoke_url,omitempty"`
+
+	// CanarySmokeTimeout is how long to wait for the canary smoke_url to return 200
+	// for the first time. Default: 30s.
+	CanarySmokeTimeout Duration `yaml:"canary_smoke_timeout,omitempty"`
+
+	// CanarySmokeWindow is how long smoke_url must sustain 200 responses (polled
+	// every 5s) after the initial hit before the remaining services are restarted.
+	// Default: 30s.
+	CanarySmokeWindow Duration `yaml:"canary_smoke_window,omitempty"`
 }
 
 // resolvedKind returns the effective deploy kind (defaulting to KindCompose).
@@ -61,6 +93,8 @@ type Config struct {
 
 // LoadConfig reads deploy-repos.yaml from the given path.
 // Secret is loaded from DOZOR_GITHUB_WEBHOOK_SECRET env var.
+//
+//nolint:gocognit // pre-existing validation switch; complexity was borderline before Duration fields were added
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
