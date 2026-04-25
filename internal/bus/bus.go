@@ -7,12 +7,17 @@ import (
 )
 
 // Message represents a message flowing through the bus.
+//
+// When Photo is non-nil, transports that support attachments (telegram)
+// send the bytes as an image; Text is used as the photo caption.
+// Transports that don't support attachments fall back to Text alone.
 type Message struct {
 	ID        string
 	Channel   string // "telegram", "a2a", "internal"
 	SenderID  string
 	ChatID    string
 	Text      string
+	Photo     []byte // optional: PNG/JPEG bytes; channel uses Text as caption when present
 	Timestamp time.Time
 }
 
