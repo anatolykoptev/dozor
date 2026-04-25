@@ -171,6 +171,12 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 	handler := deploy.NewHandler(cfg, queue, deployLog)
 	mx.Handle("POST /deploy/github", handler)
 
+	// Tear down debouncer goroutines when the gateway shuts down.
+	go func() {
+		<-ctx.Done()
+		handler.Close()
+	}()
+
 	slog.Info("deploy webhook active",
 		slog.String("path", "/deploy/github"),
 		slog.Int("repos", len(cfg.Repos)),
