@@ -93,6 +93,18 @@ type RepoConfig struct {
 	// BuildPaths is the source of truth for the filter decision.
 	SkipPaths []string `yaml:"skip_paths,omitempty"`
 
+	// Profile selects a built-in preset for BuildPaths/SkipPaths. Known values:
+	// "go-flat", "go-cmd", "rust". Empty (default) means no preset.
+	Profile string `yaml:"profile,omitempty"`
+
+	// BuildPathsExtra is appended to the profile's default build_paths.
+	// Meaningless (and a load-time error) without Profile set.
+	BuildPathsExtra []string `yaml:"build_paths_extra,omitempty"`
+
+	// SkipPathsExtra is appended to the profile's default skip_paths.
+	// Meaningless (and a load-time error) without Profile set.
+	SkipPathsExtra []string `yaml:"skip_paths_extra,omitempty"`
+
 	// DebounceSeconds coalesces a burst of webhooks for the same repo+service
 	// into a single rebuild dispatched after this many seconds of silence
 	// from the last event. 0 (default) disables debouncing.
@@ -113,6 +125,81 @@ func (rc RepoConfig) resolvedKind() DeployKind {
 		return KindBinary
 	}
 	return KindCompose
+}
+
+// profileDefaults defines built-in build_paths/skip_paths presets, versioned
+// with the binary so all servers behave identically. Repo configs select a
+// preset via `profile:` and may append entries via `build_paths_extra` /
+// `skip_paths_extra`. An explicit `build_paths` (or `skip_paths`) overrides
+// the corresponding preset list entirely.
+var profileDefaults = map[string]struct {
+	BuildPaths []string
+	SkipPaths  []string
+}{
+	"go-flat": {
+		BuildPaths: []string{"*.go", "internal/**", "go.mod", "go.sum", "vendor/**", "Dockerfile", "Makefile"},
+		SkipPaths:  []string{"docs/**", "*.md", "bin/**", "deploy/**"},
+	},
+	"go-cmd": {
+		BuildPaths: []string{"cmd/**", "internal/**", "go.mod", "go.sum", "vendor/**", "Dockerfile", "Makefile"},
+		SkipPaths:  []string{"docs/**", "*.md", "bin/**"},
+	},
+	"rust": {
+		BuildPaths: []string{"src/**", "crates/**", "tests/**", "Cargo.toml", "Cargo.lock", "Dockerfile", "Makefile"},
+		SkipPaths:  []string{"docs/**", "*.md", "target/**"},
+	},
+}
+
+// knownProfileNames returns sorted profile names for error messages.
+func knownProfileNames() []string {
+	names := make([]string, 0, len(profileDefaults))
+	for n := range profileDefaults {
+		names = append(names, n)
+	}
+	// Stable order for deterministic error messages.
+	for i := 1; i < len(names); i++ {
+		for j := i; j > 0 && names[j-1] > names[j]; j-- {
+			names[j-1], names[j] = names[j], names[j-1]
+		}
+	}
+	return names
+}
+
+// resolveProfile expands Profile + *Extra into BuildPaths / SkipPaths once at
+// load time. Explicit BuildPaths/SkipPaths in YAML override the preset for
+// that list independently. Returns an error for unknown profiles, extras
+// without a profile, or a profile that resolves to an empty BuildPaths.
+func resolveProfile(repo string, rc *RepoConfig) error {
+	hasExtras := len(rc.BuildPathsExtra) > 0 || len(rc.SkipPathsExtra) > 0
+	if rc.Profile == "" {
+		if hasExtras {
+			return fmt.Errorf("repo %q sets build_paths_extra/skip_paths_extra without a profile", repo)
+		}
+		return nil
+	}
+
+	preset, ok := profileDefaults[rc.Profile]
+	if !ok {
+		return fmt.Errorf("unknown profile %q in repo %q; known: %v", rc.Profile, repo, knownProfileNames())
+	}
+
+	if len(rc.BuildPaths) == 0 {
+		merged := make([]string, 0, len(preset.BuildPaths)+len(rc.BuildPathsExtra))
+		merged = append(merged, preset.BuildPaths...)
+		merged = append(merged, rc.BuildPathsExtra...)
+		rc.BuildPaths = merged
+	}
+	if len(rc.SkipPaths) == 0 {
+		merged := make([]string, 0, len(preset.SkipPaths)+len(rc.SkipPathsExtra))
+		merged = append(merged, preset.SkipPaths...)
+		merged = append(merged, rc.SkipPathsExtra...)
+		rc.SkipPaths = merged
+	}
+
+	if len(rc.BuildPaths) == 0 {
+		return fmt.Errorf("repo %q profile %q resolved to empty build_paths", repo, rc.Profile)
+	}
+	return nil
 }
 
 // Config holds the full deploy webhook configuration.
@@ -143,6 +230,11 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.Secret = os.Getenv("DOZOR_GITHUB_WEBHOOK_SECRET")
 
 	for repo, rc := range cfg.Repos {
+		if err := resolveProfile(repo, &rc); err != nil {
+			return nil, err
+		}
+		cfg.Repos[repo] = rc
+
 		switch rc.resolvedKind() {
 		case KindBinary:
 			if rc.SourcePath == "" {
