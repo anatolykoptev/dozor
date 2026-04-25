@@ -1,6 +1,7 @@
 package quotas
 
 import (
+	"log/slog"
 	"os"
 	"time"
 )
@@ -27,6 +28,11 @@ func LoadConfig() Config {
 	if raw := os.Getenv("QUOTAS_PROBE_INTERVAL"); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil {
 			interval = d
+		} else {
+			slog.Warn("quotas: invalid QUOTAS_PROBE_INTERVAL, using default",
+				slog.String("raw", raw),
+				slog.Any("err", err),
+				slog.Duration("default", interval))
 		}
 	}
 	return Config{

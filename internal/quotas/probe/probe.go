@@ -32,18 +32,4 @@ const (
 	ProbeTimeout = 15 * time.Second
 	// reasonHTTPErr is the Prometheus label value for HTTP errors.
 	reasonHTTPErr = "http_err"
-	// httpServerErrorMin is the minimum HTTP status code considered a server error.
-	httpServerErrorMin = 500
 )
-
-// ReasonFromStatus converts an HTTP status to a failure reason label.
-func ReasonFromStatus(status int) string {
-	switch {
-	case status == 401 || status == 403:
-		return "auth_fail"
-	case status >= httpServerErrorMin:
-		return reasonHTTPErr
-	default:
-		return reasonHTTPErr
-	}
-}

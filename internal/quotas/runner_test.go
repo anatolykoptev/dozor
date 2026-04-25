@@ -2,6 +2,7 @@ package quotas
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/anatolykoptev/dozor/internal/quotas/probe"
@@ -19,12 +20,34 @@ func (s *stubProber) Probe(_ context.Context) ([]probe.Reading, error) {
 	return s.readings, s.err
 }
 
+// fakeProber records actual Probe invocations via an onCall hook.
+type fakeProber struct {
+	nameStr  string
+	readings []probe.Reading
+	onCall   func()
+}
+
+func (f *fakeProber) Vendor() string { return f.nameStr }
+func (f *fakeProber) Probe(_ context.Context) ([]probe.Reading, error) {
+	if f.onCall != nil {
+		f.onCall()
+	}
+	return f.readings, nil
+}
+
 func TestRunner_TickCallsAllProbers(t *testing.T) {
 	var called []string
-	p1 := &stubProber{vendor: "a", readings: []probe.Reading{{Product: "x", Remaining: 80}}}
-	p2 := &stubProber{vendor: "b", readings: []probe.Reading{{Product: "y", Remaining: 50}}}
+	p1 := &fakeProber{
+		nameStr:  "a",
+		readings: []probe.Reading{{Product: "x", Remaining: 80}},
+		onCall:   func() { called = append(called, "a") },
+	}
+	p2 := &fakeProber{
+		nameStr:  "b",
+		readings: []probe.Reading{{Product: "y", Remaining: 50}},
+		onCall:   func() { called = append(called, "b") },
+	}
 
-	// Patch notify to capture calls.
 	alerts := make([]string, 0)
 	notify := func(msg string) { alerts = append(alerts, msg) }
 
@@ -36,10 +59,8 @@ func TestRunner_TickCallsAllProbers(t *testing.T) {
 
 	r.Tick(context.Background())
 
-	// Both probers ran.
-	called = append(called, "a", "b")
-	if len(called) != 2 {
-		t.Errorf("expected 2 probers called, got %d", len(called))
+	if !slices.Equal(called, []string{"a", "b"}) {
+		t.Fatalf("want [a b], got %v", called)
 	}
 	// No alerts for 80%/50%.
 	if len(alerts) != 0 {

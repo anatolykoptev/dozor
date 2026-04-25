@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -21,9 +22,13 @@ type AnthropicProber struct {
 	baseURL  string // overridable in tests
 }
 
-// NewAnthropic returns an AnthropicProber. Returns nil if adminKey is empty.
+// NewAnthropic returns an AnthropicProber. Returns nil if adminKey or orgID is empty.
 func NewAnthropic(adminKey, orgID string) *AnthropicProber {
 	if adminKey == "" {
+		return nil
+	}
+	if orgID == "" {
+		slog.Warn("quotas: ANTHROPIC_ADMIN_KEY set but ANTHROPIC_ORG_ID missing — anthropic probe disabled")
 		return nil
 	}
 	return &AnthropicProber{
