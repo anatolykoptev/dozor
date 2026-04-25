@@ -131,6 +131,77 @@ func TestHandler_PathFilter_NoCommitsBypassesFilter(t *testing.T) {
 	}
 }
 
+func TestHandler_PathFilter_ProfileGoFlat_SkipsDocsOnlyPush(t *testing.T) {
+	t.Parallel()
+
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+    profile: go-flat
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/svc", "refs/heads/main", "abc1234567890",
+		[]string{"docs/foo.md"})
+
+	w := postPush(h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "skipped" {
+		t.Errorf("response = %+v, want status=skipped", resp)
+	}
+}
+
+func TestHandler_PathFilter_ProfileGoFlat_BuildsOnExtraMatch(t *testing.T) {
+	t.Parallel()
+
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+    profile: go-flat
+    build_paths_extra: [migrations/**]
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/svc", "refs/heads/main", "abc1234567890",
+		[]string{"migrations/0001.sql"})
+
+	w := postPush(h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "queued" {
+		t.Errorf("response = %+v, want status=queued", resp)
+	}
+}
+
 func TestHandler_DebounceCoalescesBurst(t *testing.T) {
 	t.Parallel()
 

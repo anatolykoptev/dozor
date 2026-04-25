@@ -151,6 +151,178 @@ func TestConfig_Lookup(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_ProfileGoFlat_NoOverrides(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+    profile: go-flat
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rc := cfg.Repos["anatolykoptev/svc"]
+	want := profileDefaults["go-flat"].BuildPaths
+	if len(rc.BuildPaths) != len(want) {
+		t.Fatalf("BuildPaths len = %d, want %d (%v)", len(rc.BuildPaths), len(want), rc.BuildPaths)
+	}
+	for i, p := range want {
+		if rc.BuildPaths[i] != p {
+			t.Errorf("BuildPaths[%d] = %q, want %q", i, rc.BuildPaths[i], p)
+		}
+	}
+	wantSkip := profileDefaults["go-flat"].SkipPaths
+	if len(rc.SkipPaths) != len(wantSkip) {
+		t.Errorf("SkipPaths = %v, want %v", rc.SkipPaths, wantSkip)
+	}
+}
+
+func TestLoadConfig_ProfileGoFlat_BuildExtras(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+    profile: go-flat
+    build_paths_extra: [migrations/**]
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rc := cfg.Repos["anatolykoptev/svc"]
+	defaults := profileDefaults["go-flat"].BuildPaths
+	if len(rc.BuildPaths) != len(defaults)+1 {
+		t.Fatalf("BuildPaths len = %d, want %d", len(rc.BuildPaths), len(defaults)+1)
+	}
+	if rc.BuildPaths[len(rc.BuildPaths)-1] != "migrations/**" {
+		t.Errorf("last entry = %q, want migrations/**", rc.BuildPaths[len(rc.BuildPaths)-1])
+	}
+	for i, p := range defaults {
+		if rc.BuildPaths[i] != p {
+			t.Errorf("BuildPaths[%d] = %q, want %q (defaults must come first)", i, rc.BuildPaths[i], p)
+		}
+	}
+}
+
+func TestLoadConfig_ProfileWithExplicitBuildPaths_Override(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+    profile: go-flat
+    build_paths: [foo/**]
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rc := cfg.Repos["anatolykoptev/svc"]
+	if len(rc.BuildPaths) != 1 || rc.BuildPaths[0] != "foo/**" {
+		t.Errorf("BuildPaths = %v, want [foo/**] (explicit overrides profile)", rc.BuildPaths)
+	}
+	// SkipPaths should still come from profile since not set.
+	if len(rc.SkipPaths) == 0 {
+		t.Error("SkipPaths empty, want profile defaults")
+	}
+}
+
+func TestLoadConfig_UnknownProfile_Error(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+    profile: go-foo
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected error for unknown profile")
+	}
+	if !strings.Contains(err.Error(), "unknown profile") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadConfig_ExtrasWithoutProfile_Error(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+    build_paths_extra: [migrations/**]
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected error for extras without profile")
+	}
+	if !strings.Contains(err.Error(), "build_paths_extra") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadConfig_ProfileRust_SkipExtras(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+    profile: rust
+    skip_paths_extra: [node_modules/**]
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rc := cfg.Repos["anatolykoptev/svc"]
+	defaults := profileDefaults["rust"].SkipPaths
+	if len(rc.SkipPaths) != len(defaults)+1 {
+		t.Fatalf("SkipPaths len = %d, want %d (%v)", len(rc.SkipPaths), len(defaults)+1, rc.SkipPaths)
+	}
+	if rc.SkipPaths[len(rc.SkipPaths)-1] != "node_modules/**" {
+		t.Errorf("last skip = %q, want node_modules/**", rc.SkipPaths[len(rc.SkipPaths)-1])
+	}
+}
+
+func TestLoadConfig_NoProfile_BackwardCompat(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+    build_paths: [memdb-go/**, go.mod]
+    skip_paths: ["*.md"]
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rc := cfg.Repos["anatolykoptev/svc"]
+	if len(rc.BuildPaths) != 2 || rc.BuildPaths[0] != "memdb-go/**" {
+		t.Errorf("BuildPaths = %v, want [memdb-go/** go.mod]", rc.BuildPaths)
+	}
+	if len(rc.SkipPaths) != 1 || rc.SkipPaths[0] != "*.md" {
+		t.Errorf("SkipPaths = %v, want [*.md]", rc.SkipPaths)
+	}
+}
+
 func TestDefaultConfigPath(t *testing.T) {
 	// With DOZOR_WORKSPACE
 	t.Setenv("DOZOR_WORKSPACE", "/custom/workspace")
