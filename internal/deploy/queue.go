@@ -142,6 +142,22 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest) {
 	result := q.executeBuild(ctx, req)
 	result.Duration = time.Since(start)
 
+	// Record build result metrics for each service.
+	status := "success"
+	if !result.Success {
+		// Distinguish timeout from other failures for better observability.
+		if strings.Contains(strings.ToLower(result.Error), "context deadline exceeded") ||
+			strings.Contains(strings.ToLower(result.Error), "timeout") ||
+			result.Duration >= buildTimeout {
+			status = "timeout"
+		} else {
+			status = "failure"
+		}
+	}
+	for _, svc := range req.Config.Services {
+		BuildResultTotal.WithLabelValues(req.Repo, svc, status).Inc()
+	}
+
 	if result.Success {
 		q.notify(fmt.Sprintf(
 			"\u2705 [%s] Deployed (%s)", services, result.Duration.Round(time.Second)))
