@@ -80,6 +80,13 @@ func (q *Queue) Submit(req BuildRequest) bool {
 		slog.Info("deploy: deduplicated",
 			"services", req.Config.Services,
 			"commit", short(req.CommitSHA))
+		// Make the silent path observable. Dashboard / alert on this can
+		// catch the case where a fix-PR's commit was absorbed against an
+		// earlier build of the same service — the operator has to
+		// manually retrigger in that case.
+		for _, svc := range req.Config.Services {
+			DeduplicatedTotal.WithLabelValues(req.Repo, svc).Inc()
+		}
 		return false
 	}
 

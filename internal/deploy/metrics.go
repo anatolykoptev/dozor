@@ -30,6 +30,19 @@ var (
 		Help: "Deploys dispatched to the build queue after path filtering and debounce.",
 	}, []string{"repo", "service"})
 
+	// DeduplicatedTotal counts deploys that fired correctly (passed debounce +
+	// path filtering) but were dropped at queue admission because a build for
+	// the same service set was already queued or in-flight. The newer commit
+	// is silently absorbed — by design, to keep CPU off the build host when
+	// bursts of webhooks arrive during an existing build. This counter makes
+	// the silent path observable so a dashboard or alert can flag when a fix
+	// commit was dedup'd against an earlier build of the same service (the
+	// operator has to manually retrigger in that case).
+	DeduplicatedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_deploy_deduplicated_total",
+		Help: "Fired deploys dropped at queue admission because the same service was already queued or building. Newer commit absorbed by design.",
+	}, []string{"repo", "service"})
+
 	// BuildResultTotal counts completed builds by status (success, failure, timeout).
 	// Labels: repo (anatolykoptev/repo-name), service (service name), status (success|failure|timeout).
 	BuildResultTotal = promauto.NewCounterVec(prometheus.CounterOpts{
