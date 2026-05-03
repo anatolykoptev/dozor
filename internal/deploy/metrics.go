@@ -29,4 +29,11 @@ var (
 		Name: "dozor_deploy_fired_total",
 		Help: "Deploys dispatched to the build queue after path filtering and debounce.",
 	}, []string{"repo", "service"})
+
+	// BuildResultTotal counts completed builds by status (success, failure, timeout).
+	// Labels: repo (anatolykoptev/repo-name), service (service name), status (success|failure|timeout).
+	BuildResultTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_build_result_total",
+		Help: "Build results by repository, service, and outcome status.",
+	}, []string{"repo", "service", "status"})
 )
