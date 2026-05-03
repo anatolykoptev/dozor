@@ -40,7 +40,17 @@ var (
 	// operator has to manually retrigger in that case).
 	DeduplicatedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_deploy_deduplicated_total",
-		Help: "Fired deploys dropped at queue admission because the same service was already queued or building. Newer commit absorbed by design.",
+		Help: "Fired deploys dropped at queue admission because an exact-SHA duplicate was already queued or in-flight (e.g. webhook retry).",
+	}, []string{"repo", "service"})
+
+	// SupersededTotal counts pending builds that were replaced by a newer commit
+	// before they ran. Newest-wins coalescing: when a webhook arrives for a service
+	// that already has a different SHA pending, the older one is dropped. This is
+	// expected behaviour for cascading merges; high rate suggests a debounce
+	// window that's too short for the merge pace.
+	SupersededTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_deploy_superseded_total",
+		Help: "Pending builds replaced by a newer commit before they ran (newest-wins coalescing).",
 	}, []string{"repo", "service"})
 
 	// BuildResultTotal counts completed builds by status (success, failure, timeout).

@@ -56,12 +56,6 @@ func TestQueue_Deduplication(t *testing.T) {
 	q := NewQueue(ctx, notify)
 	defer q.Close()
 
-	// Block the worker by filling it with a request that takes time.
-	// We mark a key as "building" manually to test dedup.
-	q.mu.Lock()
-	q.building["ox-browser"] = true
-	q.mu.Unlock()
-
 	req := BuildRequest{
 		Repo:      "anatolykoptev/ox-browser",
 		CommitSHA: "abc1234",
@@ -71,20 +65,84 @@ func TestQueue_Deduplication(t *testing.T) {
 		},
 	}
 
-	ok := q.Submit(req)
-	if ok {
-		t.Fatal("expected Submit to return false (deduplicated by building)")
-	}
-
-	// Also test dedup by queued flag
+	// Simulate currently-building same SHA → real duplicate (e.g. webhook retry).
 	q.mu.Lock()
-	delete(q.building, "ox-browser")
-	q.queued["ox-browser"] = true
+	q.busySHA["ox-browser"] = req.CommitSHA
+	q.building["ox-browser"] = true
 	q.mu.Unlock()
 
-	ok = q.Submit(req)
-	if ok {
-		t.Fatal("expected Submit to return false (deduplicated by queued)")
+	if q.Submit(req) {
+		t.Fatal("expected Submit to return false (deduplicated by currently-building same SHA)")
+	}
+
+	// Same key, DIFFERENT SHA: must be enqueued (newest-wins), not dropped.
+	newer := req
+	newer.CommitSHA = "def9876"
+	if !q.Submit(newer) {
+		t.Fatal("expected Submit to return true (different SHA must queue, not dedup)")
+	}
+	q.mu.Lock()
+	got, has := q.pending["ox-browser"]
+	q.mu.Unlock()
+	if !has || got.CommitSHA != newer.CommitSHA {
+		t.Fatalf("expected pending to hold newer SHA %q, got has=%v sha=%q", newer.CommitSHA, has, got.CommitSHA)
+	}
+
+	// Also test dedup by pending same-SHA flag.
+	q.mu.Lock()
+	delete(q.busySHA, "ox-browser")
+	delete(q.building, "ox-browser")
+	q.pending["ox-browser"] = req
+	q.mu.Unlock()
+
+	if q.Submit(req) {
+		t.Fatal("expected Submit to return false (deduplicated by pending same SHA)")
+	}
+}
+
+// TestQueue_NewestWinsCoalescing reproduces the 2026-05-03 dozor dedup bug:
+// two webhooks for the SAME service arrive in quick succession with DIFFERENT
+// SHAs while a build is in flight. The older code dedup'd the second by
+// service name and dropped the newer commit, leaving prod on the stale SHA.
+// Correct behaviour: newer SHA replaces older pending, and gets built once
+// the in-flight build completes.
+func TestQueue_NewestWinsCoalescing(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	q := NewQueue(ctx, func(string) {})
+	defer q.Close()
+
+	// Pretend a build is already in flight for SHA-A.
+	q.mu.Lock()
+	q.busySHA["svc"] = "aaaaaaa"
+	q.building["svc"] = true
+	q.mu.Unlock()
+
+	older := BuildRequest{
+		Repo: "r", CommitSHA: "bbbbbbb",
+		Config: RepoConfig{Services: []string{"svc"}},
+	}
+	newer := BuildRequest{
+		Repo: "r", CommitSHA: "ccccccc",
+		Config: RepoConfig{Services: []string{"svc"}},
+	}
+
+	if !q.Submit(older) {
+		t.Fatal("older submit must enqueue (different SHA from in-flight)")
+	}
+	if !q.Submit(newer) {
+		t.Fatal("newer submit must enqueue (replacing older pending)")
+	}
+
+	q.mu.Lock()
+	got, has := q.pending["svc"]
+	q.mu.Unlock()
+	if !has {
+		t.Fatal("pending must hold one entry, got none")
+	}
+	if got.CommitSHA != newer.CommitSHA {
+		t.Fatalf("pending must be newer SHA %q, got %q (older was not superseded)", newer.CommitSHA, got.CommitSHA)
 	}
 }
 
