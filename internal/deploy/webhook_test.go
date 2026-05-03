@@ -93,9 +93,10 @@ type testQueue struct{}
 func newTestQueue() (*Queue, *testQueue) {
 	tq := &testQueue{}
 	q := &Queue{
-		ch:       make(chan BuildRequest, queueSize),
-		queued:   make(map[string]bool),
+		pending:  make(map[string]BuildRequest),
+		busySHA:  make(map[string]string),
 		building: make(map[string]bool),
+		signal:   make(chan struct{}, 1),
 	}
 	return q, tq
 }
