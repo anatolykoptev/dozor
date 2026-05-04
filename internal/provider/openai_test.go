@@ -11,13 +11,28 @@ import (
 	"time"
 )
 
+// apiToolCall is a test-only fixture for building tool_calls JSON in
+// the OpenAI/Anthropic-compatible wire shape. Production uses
+// kitllm.ToolCall; tests construct JSON directly so they exercise
+// kitllm.Client's decode path end-to-end.
+type apiToolCall struct {
+	ID       string      `json:"id"`
+	Type     string      `json:"type"`
+	Function apiFunction `json:"function"`
+}
+
+type apiFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
 // chatCompletion builds a minimal valid OpenAI chat completion JSON response.
 func chatCompletion(content, finishReason string) []byte {
-	resp := chatCompletionResponse{
-		Choices: []chatChoice{
+	resp := map[string]any{
+		"choices": []map[string]any{
 			{
-				Message:      chatMessage{Role: "assistant", Content: content},
-				FinishReason: finishReason,
+				"message":       map[string]any{"role": "assistant", "content": content},
+				"finish_reason": finishReason,
 			},
 		},
 	}
@@ -27,11 +42,12 @@ func chatCompletion(content, finishReason string) []byte {
 
 // chatCompletionWithTools builds a chat completion JSON response that includes tool_calls.
 func chatCompletionWithTools(content string, calls []apiToolCall) []byte {
-	resp := chatCompletionResponse{
-		Choices: []chatChoice{
+	msg := map[string]any{"role": "assistant", "content": content, "tool_calls": calls}
+	resp := map[string]any{
+		"choices": []map[string]any{
 			{
-				Message:      chatMessage{Role: "assistant", Content: content, ToolCalls: calls},
-				FinishReason: "tool_calls",
+				"message":       msg,
+				"finish_reason": "tool_calls",
 			},
 		},
 	}
