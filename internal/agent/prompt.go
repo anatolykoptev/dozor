@@ -25,6 +25,29 @@ var bootstrapFiles = []string{"IDENTITY.md", "AGENTS.md"}
 // and (optionally) a startup memory snapshot pulled from MemDB via the given
 // KBSearcher.
 //
+// # Byte-stability invariant (W2.12)
+//
+// The returned string MUST be deterministic for a given dozor process —
+// same inputs in, same exact bytes out. This invariant enables OpenAI's
+// automatic prompt caching (which keys on identical prefix bytes >=1024
+// tokens) and Anthropic's explicit cache_control breakpoints (which
+// require the prefix UP TO the breakpoint to be byte-identical across
+// turns).
+//
+// What stays stable:
+//   - bootstrapFiles content (file reads at boot, not per call).
+//   - skillsLoader.BuildSummary() — skills are sort.Slice'd by name in
+//     ListSkills, so the iteration order is deterministic.
+//   - BuildStartupSnapshot — runs ONCE at boot; the resulting string is
+//     embedded as-is into every subsequent agent.Loop.Process call.
+//   - parts concatenated by strings.Join — no map iteration, no
+//     time.Now(), no random IDs, no per-call mutation.
+//
+// If a future change introduces per-call variation in this function
+// (e.g., injecting current time or a session-id), wrap the variable
+// part in a separate trailing message so the system-prompt prefix
+// stays cacheable.
+//
 // Sections, in order:
 //  1. Bootstrap files (IDENTITY.md, AGENTS.md).
 //  2. Fallback identity if no bootstrap file was found.

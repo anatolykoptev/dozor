@@ -16,8 +16,16 @@ import (
 	"github.com/anatolykoptev/go-kit/tracing/httpmw"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"sync"
 )
 
+
+// cacheHitLogOnce gates a single ops-visible log line on the first
+// observed prompt-cache hit (cached_tokens > 0 in usage). Confirms
+// caching is working without spamming the journal at request rate.
+// Per-call cached_tokens still lands on the llm.chat span attributes
+// for full visibility in Jaeger.
+var cacheHitLogOnce sync.Once
 // OpenAI is an OpenAI-compatible HTTP provider.
 type OpenAI struct {
 	apiURL   string
@@ -211,6 +219,13 @@ func (o *OpenAI) doChatCtx(ctx context.Context, messages []Message, tools []Tool
 				attribute.Int("llm.cache.creation_tokens", resp.Usage.CacheCreationTokens),
 			)
 		}
+		cacheHitLogOnce.Do(func() {
+			slog.Info("LLM prompt cache active",
+				slog.Int("cache.read_tokens", resp.Usage.CachedTokens),
+				slog.Int("cache.creation_tokens", resp.Usage.CacheCreationTokens),
+				slog.Int("prompt.tokens", resp.Usage.PromptTokens),
+				slog.String("model", o.model))
+		})
 	}
 
 	out := fromKitResponse(resp)
