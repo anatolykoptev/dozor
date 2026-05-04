@@ -21,6 +21,10 @@ import (
 	"github.com/anatolykoptev/dozor/internal/telegram"
 	"github.com/anatolykoptev/dozor/internal/tools"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/anatolykoptev/go-kit/tracing"
+	"github.com/anatolykoptev/go-kit/tracing/httpmw"
+	"github.com/anatolykoptev/go-kit/tracing/slogh"
+
 )
 
 const (
@@ -35,7 +39,7 @@ const (
 // runGateway starts the full agent: MCP + A2A + Telegram + LLM.
 func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	defer eng.Close()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slogh.NewHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))))
 
 	port := cfg.MCPPort
 	if p := getFlagValue("--port"); p != "" {
@@ -128,6 +132,19 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// OTel tracing. If OTEL_EXPORTER_OTLP_ENDPOINT is unset, Setup returns a
+	// no-op shutdown and Start emits no-op spans — context still propagates so
+	// trace_id stays stable across services if upstream sends it.
+	traceShutdown, err := tracing.Setup(sigCtx, "dozor", tracing.WithSampleRatio(1.0))
+	if err != nil {
+		slog.Warn("tracing setup failed", slog.Any("error", err))
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = traceShutdown(shutdownCtx)
+	}()
+
 	// 4. HTTP mux: MCP + health + webhook + metrics.
 	mx := http.NewServeMux()
 	mx.Handle("/mcp", buildMCPHTTPHandler(mcpServer))
@@ -190,7 +207,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	// 10. HTTP server (blocks until shutdown).
 	startHTTPServer(sigCtx, &http.Server{
 		Addr:         ":" + port,
-		Handler:      recoveryMiddleware(mx),
+		Handler:      recoveryMiddleware(httpmw.Handler("dozor", mx)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 300 * time.Second,
 	}, "gateway")
