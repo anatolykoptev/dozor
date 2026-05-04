@@ -15,6 +15,8 @@ import (
 	"github.com/anatolykoptev/dozor/internal/toolreg"
 	"github.com/anatolykoptev/go-kit/tracing"
 	"go.opentelemetry.io/otel/attribute"
+	kitllm "github.com/anatolykoptev/go-kit/llm"
+	"time"
 )
 
 const (
@@ -152,7 +154,11 @@ func (l *Loop) buildMessages(sessionKey, message string) []provider.Message {
 		messages = append(messages, l.sessions.Get(sessionKey)...)
 	}
 
-	messages = append(messages, provider.Message{Role: "user", Content: message})
+	messages = append(messages, provider.Message{
+		Role:     "user",
+		Content:  message,
+		ChatTime: kitllm.FormatChatTime(time.Now()),
+	})
 	return messages
 }
 

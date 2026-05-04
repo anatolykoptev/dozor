@@ -177,7 +177,12 @@ func (o *OpenAI) doChatCtx(ctx context.Context, messages []Message, tools []Tool
 		kitllm.WithMaxRetries(1), // dozor owns retry; 1 = single attempt
 	)
 
-	var opts []kitllm.ChatOption
+	// WithMessageTimestamps materialises Message.ChatTime as a bracketed
+	// "[YYYY-MM-DD HH:MM UTC] " prefix on user/assistant text so the model
+	// can reason about message recency. System messages have empty
+	// ChatTime and are not modified — keeps the prompt-cache prefix
+	// stable across turns.
+	opts := []kitllm.ChatOption{kitllm.WithMessageTimestamps()}
 	if len(tools) > 0 {
 		opts = append(opts, kitllm.WithTools(toKitTools(tools)))
 		opts = append(opts, kitllm.WithToolChoice("auto"))

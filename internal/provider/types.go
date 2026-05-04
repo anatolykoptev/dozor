@@ -1,11 +1,27 @@
 package provider
 
 // Message represents a chat message in the LLM conversation.
+//
+// ChatTime, MessageID, and Name mirror the MemDB ingest schema (memdb-go
+// api/openapi.yaml: ChatCompletion*MessageParam). Empty strings are
+// invisible on the wire (omitempty); pair Message.ChatTime with the
+// kitllm.WithMessageTimestamps option in openai.go to surface the
+// timestamp inside the LLM's actual context.
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+
+	// ChatTime is RFC3339-UTC. Use kitllm.FormatChatTime(time.Time) to
+	// produce values that round-trip cleanly to MemDB.
+	ChatTime string `json:"chat_time,omitempty"`
+
+	// MessageID is a stable per-message identifier for MemDB dedup.
+	MessageID string `json:"message_id,omitempty"`
+
+	// Name is an optional speaker label (OpenAI- and MemDB-honoured).
+	Name string `json:"name,omitempty"`
 }
 
 // ToolCall represents an LLM-requested tool invocation.

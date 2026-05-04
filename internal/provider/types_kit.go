@@ -20,6 +20,9 @@ func toKitMessages(msgs []Message) []kitllm.Message {
 			Content:    m.Content,
 			ToolCallID: m.ToolCallID,
 			ToolCalls:  toKitToolCalls(m.ToolCalls),
+			ChatTime:   m.ChatTime,
+			MessageID:  m.MessageID,
+			Name:       m.Name,
 		}
 	}
 	return out
