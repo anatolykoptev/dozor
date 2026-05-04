@@ -282,11 +282,15 @@ func (s *KBSearcher) Save(ctx context.Context, content string) error {
 		return ErrKBUnavailable
 	}
 
+	attempts := 1 // first call counts as attempt 1; OnRetry fires AFTER each failed attempt
 	_, err := kitretry.Do(ctx, kitretry.Options{
 		MaxAttempts:  kbSaveMaxAttempts,
 		InitialDelay: kbSaveInitialBackoff,
 		MaxDelay:     kbSaveMaxBackoff,
 		Jitter:       true,
+		OnRetry: func(attempt int, _ error) {
+			attempts = attempt + 1 // OnRetry's attempt is 0-indexed for the next try
+		},
 	}, func() (struct{}, error) {
 		_, callErr := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SaveTool, map[string]any{
 			"user_id":        s.cfg.PersonID,
@@ -306,9 +310,9 @@ func (s *KBSearcher) Save(ctx context.Context, content string) error {
 		s.cb.RecordFailure()
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("memdb save cancelled: %w", err)
+		return fmt.Errorf("memdb save cancelled after %d attempts: %w", attempts, err)
 	}
-	return fmt.Errorf("memdb save failed after %d attempts: %w", kbSaveMaxAttempts, err)
+	return fmt.Errorf("memdb save failed after %d attempts: %w", attempts, err)
 }
 
 // formatSearchResult extracts readable memories from the raw MCP JSON response.

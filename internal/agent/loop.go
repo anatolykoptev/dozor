@@ -7,13 +7,14 @@ import (
 	"log/slog"
 	"strings"
 
+	"crypto/sha256"
+
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/provider"
 	"github.com/anatolykoptev/dozor/internal/skills"
 	"github.com/anatolykoptev/dozor/internal/toolreg"
 	"github.com/anatolykoptev/go-kit/tracing"
 	"go.opentelemetry.io/otel/attribute"
-	"crypto/sha256"
 )
 
 const (
