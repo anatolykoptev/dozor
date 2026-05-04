@@ -5,76 +5,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	kitenv "github.com/anatolykoptev/go-kit/env"
 )
 
-func env(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func envInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-func envFloat(key string, def float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
-		}
-	}
-	return def
-}
-
-func envBool(key string, def bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	return strings.ToLower(v) == "true" || v == "1"
-}
-
-func envList(key, def string) []string {
-	v := env(key, def)
-	if v == "" {
-		return nil
-	}
-	parts := strings.Split(v, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// envDuration parses seconds from env.
-func envDuration(key string, def time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if secs, err := strconv.Atoi(v); err == nil {
-			return time.Duration(secs) * time.Second
-		}
-	}
-	return def
-}
-
-// envDurationStr parses Go duration string or "4h" from env.
-func envDurationStr(key string, def time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return def
-}
+// Thin aliases over go-kit/env. Behaviour matches the prior in-process
+// implementations exactly: kitenv.Bool accepts "true"/"1"/"yes"
+// (superset of prior "true"/"1"); kitenv.Duration accepts Go duration
+// strings AND float-seconds fallback, so it serves both envDuration
+// (seconds-as-int) and envDurationStr (Go format) call sites.
+func env(key, def string) string                                     { return kitenv.Str(key, def) }
+func envInt(key string, def int) int                                 { return kitenv.Int(key, def) }
+func envFloat(key string, def float64) float64                       { return kitenv.Float(key, def) }
+func envBool(key string, def bool) bool                              { return kitenv.Bool(key, def) }
+func envList(key, def string) []string                               { return kitenv.List(key, def) }
+func envDuration(key string, def time.Duration) time.Duration        { return kitenv.Duration(key, def) }
+func envDurationStr(key string, def time.Duration) time.Duration     { return kitenv.Duration(key, def) }
 
 // expandHome replaces leading ~/ with user's home directory.
 func expandHome(path string) string {
