@@ -4,8 +4,8 @@ github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERo
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/a2aproject/a2a-go v0.3.13 h1:WpIcSHgCySIxD7OQEdV7U7WJc/HL/G2QQj0RJ0YhPi0=
 github.com/a2aproject/a2a-go v0.3.13/go.mod h1:I7Cm+a1oL+UT6zMoP+roaRE5vdfUa1iQGVN8aSOuZ0I=
-github.com/anatolykoptev/go-kit v0.42.0 h1:Crt6yRzJAYqqW1XJ5yle10xCWB5oEPqYvJx/R3xIB7Y=
-github.com/anatolykoptev/go-kit v0.42.0/go.mod h1:D0qQqFqNkeBeKuajrdvpIhgNxBZ/nr/lTcjessF09Bg=
+github.com/anatolykoptev/go-kit v0.43.0 h1:rm4O+avQH0Ugwc4qMdxZAs2v2jA/eiPLSrGf7HqOb7E=
+github.com/anatolykoptev/go-kit v0.43.0/go.mod h1:D0qQqFqNkeBeKuajrdvpIhgNxBZ/nr/lTcjessF09Bg=
 github.com/anatolykoptev/go-session v0.4.0 h1:cOsqNF7pJtxxLOCaZeg8dk0uld+cTqqNxvUjV/g65bA=
 github.com/anatolykoptev/go-session v0.4.0/go.mod h1:OQTJLr00UOaNlrc31agxs+ycPapaCoP8OAcX1FGgxGg=
 github.com/anatolykoptev/go-stt v0.2.0 h1:mQMAM7KePAaaWulfF0V+UlheJTuNsMOVjars1Q6ltlc=
