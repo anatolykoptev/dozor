@@ -233,7 +233,6 @@ func LoadConfig(path string) (*Config, error) {
 		if err := resolveProfile(repo, &rc); err != nil {
 			return nil, err
 		}
-		cfg.Repos[repo] = rc
 
 		switch rc.resolvedKind() {
 		case KindBinary:
@@ -246,6 +245,16 @@ func LoadConfig(path string) (*Config, error) {
 			if len(rc.UserServices) == 0 {
 				return nil, fmt.Errorf("binary repo %q has no user_services", repo)
 			}
+			// Binary repos use UserServices for restart targets; the
+			// queue keys/logs/debounce paths all reach for Services. If
+			// the operator didn't set Services explicitly, mirror it from
+			// UserServices so the queue key is non-empty (empty key would
+			// collide with drainPending's "no work pending" sentinel and
+			// leave the entry stuck forever) and log lines show the
+			// systemd unit names being restarted.
+			if len(rc.Services) == 0 {
+				rc.Services = append([]string(nil), rc.UserServices...)
+			}
 		default: // KindCompose
 			if len(rc.Services) == 0 {
 				return nil, fmt.Errorf("compose repo %q has no services", repo)
@@ -254,6 +263,8 @@ func LoadConfig(path string) (*Config, error) {
 				return nil, fmt.Errorf("compose repo %q has no compose_path", repo)
 			}
 		}
+
+		cfg.Repos[repo] = rc
 	}
 
 	return &cfg, nil
