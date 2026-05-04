@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	session "github.com/anatolykoptev/go-session"
+	session "github.com/anatolykoptev/go-kit/session"
 	"github.com/anatolykoptev/dozor/internal/provider"
 )
 
