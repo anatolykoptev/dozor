@@ -15,6 +15,7 @@ import (
 	"time"
 	"github.com/anatolykoptev/go-kit/tracing"
 	"go.opentelemetry.io/otel/attribute"
+	"github.com/anatolykoptev/go-kit/tracing/httpmw"
 )
 
 // OpenAI is an OpenAI-compatible HTTP provider.
@@ -51,7 +52,7 @@ func NewOpenAI() *OpenAI {
 		apiKey:   os.Getenv("DOZOR_LLM_API_KEY"),
 		model:    model,
 		maxIters: maxIters,
-		client:   &http.Client{Timeout: 300 * time.Second},
+		client:   &http.Client{Timeout: 300 * time.Second, Transport: httpmw.WrapTransport(http.DefaultTransport)},
 	}
 }
 
