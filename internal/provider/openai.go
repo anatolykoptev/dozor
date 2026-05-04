@@ -1,12 +1,9 @@
 package provider
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -14,9 +11,11 @@ import (
 	"strconv"
 	"time"
 
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 	"github.com/anatolykoptev/go-kit/tracing"
 	"github.com/anatolykoptev/go-kit/tracing/httpmw"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // OpenAI is an OpenAI-compatible HTTP provider.
@@ -67,8 +66,6 @@ const (
 	chatMaxDelay     = 30 * time.Second
 	// chatJitterDivisor is the divisor for jitter calculation in exponential backoff.
 	chatJitterDivisor = 4
-	// chatLogTruncLen is the maximum length of raw response data logged for debugging.
-	chatLogTruncLen = 500
 )
 
 // Chat sends a chat completion request and returns the response.
@@ -167,123 +164,63 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// doChatCtx delegates HTTP/JSON mechanics to kitllm.Client.Chat. The
+// retry/classification policy lives in chatWithRetry (Phase 3 will move
+// it into a kitllm.Middleware).
+//
+// kitllm's internal retry is disabled (WithMaxRetries(1) = single
+// attempt) because dozor owns the retry loop with its own backoff,
+// jitter, and ProviderError-aware classification.
 func (o *OpenAI) doChatCtx(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
-	body := map[string]any{
-		"model":    o.model,
-		"messages": messages,
-	}
+	client := kitllm.NewClient(o.apiURL, o.apiKey, o.model,
+		kitllm.WithHTTPClient(o.client),
+		kitllm.WithMaxRetries(1), // dozor owns retry; 1 = single attempt
+	)
+
+	var opts []kitllm.ChatOption
 	if len(tools) > 0 {
-		body["tools"] = tools
-		body["tool_choice"] = "auto"
+		opts = append(opts, kitllm.WithTools(toKitTools(tools)))
+		opts = append(opts, kitllm.WithToolChoice("auto"))
 	}
 
-	payload, err := json.Marshal(body)
+	resp, err := client.Chat(ctx, toKitMessages(messages), opts...)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.apiURL+"/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if o.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.apiKey)
-	}
-
-	resp, err := o.client.Do(req) //nolint:gosec // configured API address
-	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, parseProviderError(resp.StatusCode, data)
-	}
-
-	var result chatCompletionResponse
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w", err)
-	}
-
-	if len(result.Choices) == 0 {
-		if result.PromptFeedback != nil && result.PromptFeedback.BlockReason != "" {
-			slog.Warn("LLM response blocked by safety filter",
-				slog.String("block_reason", result.PromptFeedback.BlockReason),
-				slog.String("raw", truncate(string(data), chatLogTruncLen)))
-			return nil, fmt.Errorf("LLM response blocked: %s", result.PromptFeedback.BlockReason)
+		// Map kitllm.APIError -> dozor.ProviderError so shouldRetry can
+		// classify auth/rate-limit/server semantics. Non-API errors
+		// (transport, empty-choices, JSON decode) flow through as-is —
+		// shouldRetry treats them as network-class transient errors.
+		var apiErr *kitllm.APIError
+		if errors.As(err, &apiErr) {
+			return nil, parseProviderError(apiErr.StatusCode, []byte(apiErr.Body))
 		}
-		slog.Warn("empty choices in LLM response", slog.String("raw", truncate(string(data), chatLogTruncLen)))
-		return nil, errors.New("empty choices in LLM response")
+		return nil, err
 	}
 
-	choice := result.Choices[0]
-	out := &Response{
-		Content:      choice.Message.Content,
-		FinishReason: choice.FinishReason,
-	}
-
-	for _, tc := range choice.Message.ToolCalls {
-		call := ToolCall{
-			ID:   tc.ID,
-			Type: tc.Type,
-			Function: &FunctionCall{
-				Name:      tc.Function.Name,
-				Arguments: tc.Function.Arguments,
-			},
+	// Surface cache-hit token counts on the active llm.chat span so we
+	// can verify prompt caching from Jaeger. Zero is normal (cold start
+	// or non-cacheable provider) and not worth a span event.
+	if resp.Usage != nil && resp.Usage.CachedTokens > 0 {
+		if span := trace.SpanFromContext(ctx); span != nil {
+			span.SetAttributes(
+				attribute.Int("llm.cache.read_tokens", resp.Usage.CachedTokens),
+				attribute.Int("llm.cache.creation_tokens", resp.Usage.CacheCreationTokens),
+			)
 		}
-		// Pre-parse arguments for convenience.
+	}
+
+	out := fromKitResponse(resp)
+	// Pre-parse tool call arguments and populate the legacy Name field
+	// for downstream code in internal/agent that reads call.Args.
+	for i := range out.ToolCalls {
+		if out.ToolCalls[i].Function == nil {
+			continue
+		}
+		out.ToolCalls[i].Name = out.ToolCalls[i].Function.Name
 		var args map[string]any
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err == nil {
-			call.Args = args
+		if err := json.Unmarshal([]byte(out.ToolCalls[i].Function.Arguments), &args); err == nil {
+			out.ToolCalls[i].Args = args
 		}
-		call.Name = tc.Function.Name
-		out.ToolCalls = append(out.ToolCalls, call)
 	}
-
 	return out, nil
 }
 
-// OpenAI API response types.
-type chatCompletionResponse struct {
-	Choices        []chatChoice    `json:"choices"`
-	PromptFeedback *promptFeedback `json:"promptFeedback,omitempty"`
-}
-
-type promptFeedback struct {
-	BlockReason string `json:"blockReason,omitempty"`
-}
-
-type chatChoice struct {
-	Message      chatMessage `json:"message"`
-	FinishReason string      `json:"finish_reason"`
-}
-
-type chatMessage struct {
-	Role      string        `json:"role"`
-	Content   string        `json:"content"`
-	ToolCalls []apiToolCall `json:"tool_calls,omitempty"`
-}
-
-type apiToolCall struct {
-	ID       string      `json:"id"`
-	Type     string      `json:"type"`
-	Function apiFunction `json:"function"`
-}
-
-type apiFunction struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
