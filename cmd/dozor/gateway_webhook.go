@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -38,20 +39,26 @@ var webhookLimiter = kitratelimit.NewKeyLimiter(10, 30)
 
 func init() {
 	webhookLimiter.StartCleanup(10*time.Minute, 30*time.Minute)
+	trustProxy = os.Getenv("DOZOR_TRUST_PROXY") == "1"
 }
 
-// webhookSourceKey derives the rate-limit key from the request. Falls back
-// to "unknown" when RemoteAddr can't be split (test harness, proxied calls
-// without a Forwarded header).
+// webhookSourceKey derives the rate-limit key from the request. Defaults
+// to net.SplitHostPort(RemoteAddr); X-Forwarded-For is consulted ONLY when
+// DOZOR_TRUST_PROXY=1, because dozor's HTTP server binds *:8765 (publicly
+// listenable) and trusting XFF without a real ingress lets any client pin
+// itself to a fresh bucket per request, defeating the rate limit entirely.
+//
+// Set DOZOR_TRUST_PROXY=1 only when dozor is fronted by a proxy that
+// strips and re-injects XFF (e.g. Caddy, nginx with `proxy_set_header
+// X-Forwarded-For $proxy_add_x_forwarded_for`).
 func webhookSourceKey(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Trust the first hop: it is set by our own ingress, not the
-		// arbitrary client. If we ever expose this beyond the WG/local
-		// network, replace with a strict trusted-proxy list.
-		if comma := strings.IndexByte(xff, ','); comma > 0 {
-			return xff[:comma]
+	if trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if comma := strings.IndexByte(xff, ','); comma > 0 {
+				return strings.TrimSpace(xff[:comma])
+			}
+			return strings.TrimSpace(xff)
 		}
-		return xff
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil || host == "" {
@@ -59,6 +66,10 @@ func webhookSourceKey(r *http.Request) string {
 	}
 	return host
 }
+
+// trustProxy is set at package init from DOZOR_TRUST_PROXY. Default false
+// so the publicly-bound default deployment is safe out of the box.
+var trustProxy = false
 
 // registerWebhookHandler adds POST /webhook and POST /webhook/ to the mux.
 //

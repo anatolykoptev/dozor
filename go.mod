@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/a2aproject/a2a-go v0.3.13
-	github.com/anatolykoptev/go-kit v0.40.0
+	github.com/anatolykoptev/go-kit v0.40.1
 	github.com/anatolykoptev/go-session v0.4.0
 	github.com/anatolykoptev/go-stt v0.2.0
 	github.com/docker/docker v28.5.2+incompatible
@@ -12,6 +12,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/prometheus/client_golang v1.23.2
+	go.opentelemetry.io/otel v1.43.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -48,7 +49,6 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 // indirect
-	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect

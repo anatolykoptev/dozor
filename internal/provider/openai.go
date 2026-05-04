@@ -52,7 +52,7 @@ func NewOpenAI() *OpenAI {
 		apiKey:   os.Getenv("DOZOR_LLM_API_KEY"),
 		model:    model,
 		maxIters: maxIters,
-		client:   &http.Client{Timeout: 300 * time.Second, Transport: httpmw.WrapTransport(http.DefaultTransport)},
+		client:   &http.Client{Timeout: 300 * time.Second, Transport: httpmw.WrapTransport(&http.Transport{})},
 	}
 }
 
