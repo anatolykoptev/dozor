@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/bus"
+	kitratelimit "github.com/anatolykoptev/go-kit/ratelimit"
 )
 
 // webhookPayload is the union of fields dozor accepts from external monitors
@@ -23,6 +27,49 @@ type webhookPayload struct {
 	Text        string `json:"text"`
 	Message     string `json:"message"`
 }
+
+
+// webhookLimiter caps inbound webhook rate per source host. The dangerous
+// path is the legacy (no-`event`) branch which posts to the LLM-bearing
+// agent loop — a misbehaving sender there could rack up Telegram noise and
+// LLM cost. 10 RPS sustained, burst 30 = comfortably above any healthy
+// monitor (xray-update fires weekly, awg-watchdog every 30s, Reality
+// rotates twice a week) but caps a stuck-in-loop sender.
+var webhookLimiter = kitratelimit.NewKeyLimiter(10, 30)
+
+func init() {
+	webhookLimiter.StartCleanup(10*time.Minute, 30*time.Minute)
+	trustProxy = os.Getenv("DOZOR_TRUST_PROXY") == "1"
+}
+
+// webhookSourceKey derives the rate-limit key from the request. Defaults
+// to net.SplitHostPort(RemoteAddr); X-Forwarded-For is consulted ONLY when
+// DOZOR_TRUST_PROXY=1, because dozor's HTTP server binds *:8765 (publicly
+// listenable) and trusting XFF without a real ingress lets any client pin
+// itself to a fresh bucket per request, defeating the rate limit entirely.
+//
+// Set DOZOR_TRUST_PROXY=1 only when dozor is fronted by a proxy that
+// strips and re-injects XFF (e.g. Caddy, nginx with `proxy_set_header
+// X-Forwarded-For $proxy_add_x_forwarded_for`).
+func webhookSourceKey(r *http.Request) string {
+	if trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if comma := strings.IndexByte(xff, ','); comma > 0 {
+				return strings.TrimSpace(xff[:comma])
+			}
+			return strings.TrimSpace(xff)
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || host == "" {
+		return "unknown"
+	}
+	return host
+}
+
+// trustProxy is set at package init from DOZOR_TRUST_PROXY. Default false
+// so the publicly-bound default deployment is safe out of the box.
+var trustProxy = false
 
 // registerWebhookHandler adds POST /webhook and POST /webhook/ to the mux.
 //
@@ -39,6 +86,14 @@ type webhookPayload struct {
 //     so a typo or new source can't re-flood the agent)
 func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(string)) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
+		key := webhookSourceKey(r)
+		if !webhookLimiter.Allow(key) {
+			slog.Warn("webhook rate-limited",
+				slog.String("source", key),
+				slog.String("path", r.URL.Path))
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, webhookBodyLimit))
 		if err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)

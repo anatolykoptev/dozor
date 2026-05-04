@@ -15,6 +15,7 @@ import (
 	"github.com/anatolykoptev/dozor/internal/bus"
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/session"
+	"github.com/anatolykoptev/go-kit/toolutil"
 )
 
 const (
@@ -60,6 +61,7 @@ type messageLoopDeps struct {
 
 // runMessageLoop processes inbound messages through the agent loop and routes responses.
 func runMessageLoop(ctx context.Context, deps messageLoopDeps) {
+	defer toolutil.RecoverLog("runMessageLoop")
 	for {
 		msg, ok := deps.msgBus.ConsumeInbound(ctx)
 		if !ok {

@@ -12,6 +12,7 @@ import (
 	"github.com/anatolykoptev/dozor/internal/bus"
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
+	"github.com/anatolykoptev/go-kit/toolutil"
 )
 
 const (
@@ -33,6 +34,8 @@ type watchDeps struct {
 
 // runGatewayWatch runs periodic triage and feeds results through the message bus.
 func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.Bus, interval time.Duration, cfg engine.Config, kbSearcher *mcpclient.KBSearcher, notify func(string)) {
+	defer toolutil.RecoverLog("runGatewayWatch")
+
 	slog.Info("gateway watch started", slog.String("interval", interval.String())) //nolint:gosec // derived from duration
 	time.Sleep(30 * time.Second)                                                   // let everything boot
 

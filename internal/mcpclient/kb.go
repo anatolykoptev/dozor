@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 	"strings"
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/toolreg"
+	kitretry "github.com/anatolykoptev/go-kit/retry"
 )
 
 // kbSaveMaxAttempts bounds the retry loop for transient MemDB failures.
@@ -25,9 +25,6 @@ const kbSaveInitialBackoff = 200 * time.Millisecond
 // does not hold the save goroutine for too long.
 const kbSaveMaxBackoff = 2 * time.Second
 
-// kbSaveJitterDivisor controls jitter magnitude: jitter = rand(backoff / kbSaveJitterDivisor).
-// A divisor of 5 gives ±20% jitter relative to the current backoff window.
-const kbSaveJitterDivisor = 5
 
 const (
 	// defaultKBUserID is the default user ID for the knowledge base.
@@ -285,45 +282,33 @@ func (s *KBSearcher) Save(ctx context.Context, content string) error {
 		return ErrKBUnavailable
 	}
 
-	var lastErr error
-	backoff := kbSaveInitialBackoff
-	for attempt := 1; attempt <= kbSaveMaxAttempts; attempt++ {
-		_, err := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SaveTool, map[string]any{
+	_, err := kitretry.Do(ctx, kitretry.Options{
+		MaxAttempts:  kbSaveMaxAttempts,
+		InitialDelay: kbSaveInitialBackoff,
+		MaxDelay:     kbSaveMaxBackoff,
+		Jitter:       true,
+	}, func() (struct{}, error) {
+		_, callErr := s.mgr.Call(ctx, s.cfg.ServerID, s.cfg.SaveTool, map[string]any{
 			"user_id":        s.cfg.PersonID,
 			"mem_cube_id":    s.cfg.CubeID,
 			"memory_content": content,
 		})
-		if err == nil {
-			if s.cb != nil {
-				s.cb.RecordSuccess()
-			}
-			return nil
-		}
-		lastErr = err
-		if attempt == kbSaveMaxAttempts {
-			break
-		}
-		// Exponential backoff with ±20% jitter. math/rand is intentional —
-		// jitter does not require cryptographic randomness.
-		jitter := time.Duration(rand.Int63n(int64(backoff) / kbSaveJitterDivisor)) //nolint:gosec
-		select {
-		case <-ctx.Done():
-			if s.cb != nil {
-				s.cb.RecordFailure()
-			}
-			return fmt.Errorf("memdb save cancelled after %d attempts: %w", attempt, ctx.Err())
-		case <-time.After(backoff + jitter):
-		}
-		backoff *= 2
-		if backoff > kbSaveMaxBackoff {
-			backoff = kbSaveMaxBackoff
-		}
-	}
+		return struct{}{}, callErr
+	})
 
+	if err == nil {
+		if s.cb != nil {
+			s.cb.RecordSuccess()
+		}
+		return nil
+	}
 	if s.cb != nil {
 		s.cb.RecordFailure()
 	}
-	return fmt.Errorf("memdb save failed after %d attempts: %w", kbSaveMaxAttempts, lastErr)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("memdb save cancelled: %w", err)
+	}
+	return fmt.Errorf("memdb save failed after %d attempts: %w", kbSaveMaxAttempts, err)
 }
 
 // formatSearchResult extracts readable memories from the raw MCP JSON response.

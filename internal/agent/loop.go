@@ -11,6 +11,9 @@ import (
 	"github.com/anatolykoptev/dozor/internal/provider"
 	"github.com/anatolykoptev/dozor/internal/skills"
 	"github.com/anatolykoptev/dozor/internal/toolreg"
+	"github.com/anatolykoptev/go-kit/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"crypto/sha256"
 )
 
 const (
@@ -55,6 +58,11 @@ func NewLoop(p provider.Provider, r *toolreg.Registry, maxIters int, workspacePa
 // When sessionKey is non-empty and a SessionStore is attached, conversation history
 // is injected before the current message and persisted after the response.
 func (l *Loop) Process(ctx context.Context, sessionKey, message string) (string, error) {
+	ctx, span := tracing.Start(ctx, "agent.process",
+		attribute.String("session.id", hashSessionKey(sessionKey)),
+		attribute.Int("message.length", len(message)))
+	defer span.End()
+
 	messages := l.buildMessages(sessionKey, message)
 
 	// Track repeated identical tool failures to break infinite loops.
@@ -83,6 +91,9 @@ func (l *Loop) Process(ctx context.Context, sessionKey, message string) (string,
 				return "", fmt.Errorf("empty model response after %d iterations", iteration)
 			}
 			l.persistExchange(sessionKey, message, content)
+			span.SetAttributes(
+				attribute.Int("agent.iterations", iteration),
+				attribute.Int("response.length", len(content)))
 			return content, nil
 		}
 
@@ -221,4 +232,17 @@ func parseToolCall(tc provider.ToolCall) (name string, args map[string]any) {
 	}
 
 	return name, args
+}
+
+// hashSessionKey returns a stable 16-hex-char digest of a session key for
+// use as a span attribute. The raw key (e.g. "tg:<chat_id>") is
+// user-correlatable PII when traces are exported, so we hash it. Empty
+// keys are mapped to "anonymous" so unrelated empty-key processes don't
+// collide on the same hash bucket in trace UIs.
+func hashSessionKey(key string) string {
+	if key == "" {
+		return "anonymous"
+	}
+	sum := sha256.Sum256([]byte(key))
+	return fmt.Sprintf("%x", sum)[:16]
 }

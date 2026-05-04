@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/anatolykoptev/dozor/internal/provider"
+	"github.com/anatolykoptev/go-kit/tracing"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Tool is the interface that all agent-callable tools implement.
@@ -44,11 +46,24 @@ func (r *Registry) Get(name string) (Tool, bool) {
 
 // Execute runs a tool by name with the given arguments.
 func (r *Registry) Execute(ctx context.Context, name string, args map[string]any) (string, error) {
+	ctx, span := tracing.Start(ctx, "tool.execute",
+		attribute.String("tool.name", name),
+		attribute.Int("tool.args.count", len(args)))
+	defer span.End()
+
 	t, ok := r.Get(name)
 	if !ok {
-		return "", fmt.Errorf("unknown tool: %s", name)
+		err := fmt.Errorf("unknown tool: %s", name)
+		tracing.RecordError(span, err)
+		return "", err
 	}
-	return t.Execute(ctx, args)
+	result, err := t.Execute(ctx, args)
+	if err != nil {
+		tracing.RecordError(span, err)
+	} else {
+		span.SetAttributes(attribute.Int("tool.result.length", len(result)))
+	}
+	return result, err
 }
 
 // List returns all tool names.

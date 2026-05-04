@@ -13,6 +13,9 @@ import (
 	"os"
 	"strconv"
 	"time"
+	"github.com/anatolykoptev/go-kit/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"github.com/anatolykoptev/go-kit/tracing/httpmw"
 )
 
 // OpenAI is an OpenAI-compatible HTTP provider.
@@ -49,7 +52,7 @@ func NewOpenAI() *OpenAI {
 		apiKey:   os.Getenv("DOZOR_LLM_API_KEY"),
 		model:    model,
 		maxIters: maxIters,
-		client:   &http.Client{Timeout: 300 * time.Second},
+		client:   &http.Client{Timeout: 300 * time.Second, Transport: httpmw.WrapTransport(&http.Transport{})},
 	}
 }
 
@@ -74,10 +77,22 @@ func (o *OpenAI) Chat(messages []Message, tools []ToolDefinition) (*Response, er
 }
 
 func (o *OpenAI) chatWithRetry(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
+	ctx, span := tracing.Start(ctx, "llm.chat",
+		attribute.String("llm.model", o.model),
+		attribute.String("llm.url", o.apiURL),
+		attribute.Int("llm.messages.count", len(messages)),
+		attribute.Int("llm.tools.count", len(tools)))
+	defer span.End()
+
 	var lastErr error
 	for attempt := 0; attempt <= chatMaxRetries; attempt++ {
 		resp, err := o.doChatCtx(ctx, messages, tools)
 		if err == nil {
+			span.SetAttributes(
+				attribute.Int("llm.attempts", attempt+1),
+				attribute.String("llm.finish_reason", resp.FinishReason),
+				attribute.Int("llm.response.length", len(resp.Content)),
+				attribute.Int("llm.tool_calls.count", len(resp.ToolCalls)))
 			return resp, nil
 		}
 		lastErr = err
@@ -90,6 +105,7 @@ func (o *OpenAI) chatWithRetry(ctx context.Context, messages []Message, tools []
 			return nil, lastErr
 		}
 	}
+	tracing.RecordError(span, lastErr)
 	return nil, lastErr
 }
 
