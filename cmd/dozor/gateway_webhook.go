@@ -28,7 +28,6 @@ type webhookPayload struct {
 	Message     string `json:"message"`
 }
 
-
 // webhookLimiter caps inbound webhook rate per source host. The dangerous
 // path is the legacy (no-`event`) branch which posts to the LLM-bearing
 // agent loop — a misbehaving sender there could rack up Telegram noise and

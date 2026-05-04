@@ -20,11 +20,10 @@ import (
 	"github.com/anatolykoptev/dozor/internal/session"
 	"github.com/anatolykoptev/dozor/internal/telegram"
 	"github.com/anatolykoptev/dozor/internal/tools"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/anatolykoptev/go-kit/tracing"
 	"github.com/anatolykoptev/go-kit/tracing/httpmw"
 	"github.com/anatolykoptev/go-kit/tracing/slogh"
-
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
@@ -144,6 +143,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		defer shutdownCancel()
 		_ = traceShutdown(shutdownCtx)
 	}()
+	defer webhookLimiter.Close()
 
 	// 4. HTTP mux: MCP + health + webhook + metrics.
 	mx := http.NewServeMux()

@@ -13,9 +13,10 @@ import (
 	"os"
 	"strconv"
 	"time"
+
 	"github.com/anatolykoptev/go-kit/tracing"
-	"go.opentelemetry.io/otel/attribute"
 	"github.com/anatolykoptev/go-kit/tracing/httpmw"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // OpenAI is an OpenAI-compatible HTTP provider.
@@ -264,9 +265,9 @@ type chatChoice struct {
 }
 
 type chatMessage struct {
-	Role      string         `json:"role"`
-	Content   string         `json:"content"`
-	ToolCalls []apiToolCall  `json:"tool_calls,omitempty"`
+	Role      string        `json:"role"`
+	Content   string        `json:"content"`
+	ToolCalls []apiToolCall `json:"tool_calls,omitempty"`
 }
 
 type apiToolCall struct {
