@@ -190,7 +190,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	// 10. HTTP server (blocks until shutdown).
 	startHTTPServer(sigCtx, &http.Server{
 		Addr:         ":" + port,
-		Handler:      mx,
+		Handler:      recoveryMiddleware(mx),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 300 * time.Second,
 	}, "gateway")

@@ -6,12 +6,15 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/quotas"
+	"github.com/anatolykoptev/go-kit/toolutil"
 )
 
 // runQuotasWatch polls vendor APIs on cfg.Interval and exposes
 // vendor_quota_remaining_pct gauges + sends telegram alerts on threshold.
 // Mirrors the runGatewayWatch lifecycle pattern: initial tick then ticker loop.
 func runQuotasWatch(ctx context.Context, cfg quotas.Config, notify func(string)) {
+	defer toolutil.RecoverLog("runQuotasWatch")
+
 	if !cfg.Enabled() {
 		slog.Info("quotas watch: no vendor keys configured, disabled")
 		return

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
+	"github.com/anatolykoptev/go-kit/toolutil"
 )
 
 // runRemoteWatch runs fast, independent remote server checks on a short interval.
@@ -18,6 +19,8 @@ import (
 // notifyAlert internally delegates back to notify so the operator always receives
 // the alert in some form.
 func runRemoteWatch(ctx context.Context, cfg engine.Config, notify func(string), notifyAlert func([]engine.Alert, string)) {
+	defer toolutil.RecoverLog("runRemoteWatch")
+
 	interval := cfg.RemoteCheckInterval
 	slog.Info("remote watch started",
 		slog.String("interval", interval.String()),

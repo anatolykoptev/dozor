@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -205,4 +206,23 @@ func buildSummarizeFn(p provider.Provider) session.SummarizeFn {
 		}
 		return strings.TrimSpace(resp.Content), nil
 	}
+}
+
+// recoveryMiddleware turns handler panics into a 500 + structured slog
+// (with stack) so a panicking endpoint can no longer kill the dozor process.
+func recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("panic recovered in HTTP handler",
+					slog.String("path", r.URL.Path),
+					slog.String("method", r.Method),
+					slog.Any("panic", rec),
+					slog.String("stack", string(debug.Stack())),
+				)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
