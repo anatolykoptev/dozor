@@ -109,6 +109,9 @@ func toSessionMsg(m provider.Message) session.Message {
 		Role:       m.Role,
 		Content:    m.Content,
 		ToolCallID: m.ToolCallID,
+		ChatTime:   m.ChatTime,
+		MessageID:  m.MessageID,
+		Name:       m.Name,
 	}
 	if len(m.ToolCalls) > 0 {
 		sm.ToolCalls = make([]session.ToolCall, len(m.ToolCalls))
@@ -139,6 +142,9 @@ func toProviderMsg(m session.Message) provider.Message {
 		Role:       m.Role,
 		Content:    m.Content,
 		ToolCallID: m.ToolCallID,
+		ChatTime:   m.ChatTime,
+		MessageID:  m.MessageID,
+		Name:       m.Name,
 	}
 	if len(m.ToolCalls) > 0 {
 		pm.ToolCalls = make([]provider.ToolCall, len(m.ToolCalls))
