@@ -278,6 +278,12 @@ type TriageIssue struct {
 	Description string // e.g. "redis: 3 restarts, connection refused"
 }
 
+// TriageMachineSep separates `service` from `description` in a triage line.
+// Format: `[LEVEL] service<TriageMachineSep>description`. Em-dash (U+2014) with
+// surrounding spaces. Anyone emitting a machine-readable triage line MUST use
+// this constant; replacing the em-dash with ASCII `-` silently breaks ExtractIssues.
+const TriageMachineSep = " — "
+
 // ExtractIssues parses a triage report string into searchable issue summaries.
 func ExtractIssues(report string) []TriageIssue {
 	var issues []TriageIssue
@@ -288,7 +294,7 @@ func ExtractIssues(report string) []TriageIssue {
 				continue
 			}
 			rest := line[len(prefix):]
-			parts := strings.SplitN(rest, " — ", 2)
+			parts := strings.SplitN(rest, TriageMachineSep, 2)
 			if len(parts) != 2 {
 				continue
 			}

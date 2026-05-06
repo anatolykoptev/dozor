@@ -346,10 +346,11 @@ func (a *ServerAgent) appendDiskPressure(ctx context.Context, b *strings.Builder
 		fmt.Fprintf(b, "\nDisk: %s %.0f%% (%.0fG free) — %s\n", dp.Filesystem, dp.UsedPct, dp.AvailGB, status)
 		// Machine-readable line — parsed by ExtractIssues into TriageIssue{Service:"disk"}.
 		// Without this line the disk auto-remediate branch in tryAutoRemediate is dead code.
+		// Separator MUST come from TriageMachineSep — see triage.go.
 		if dp.UsedPct >= diskCriticalPct {
-			fmt.Fprintf(b, "[CRITICAL] disk — %s at %.0f%% (%.1fGB free)\n", dp.Filesystem, dp.UsedPct, dp.AvailGB)
+			fmt.Fprintf(b, "[CRITICAL] disk%s%s at %.0f%% (%.1fGB free)\n", TriageMachineSep, dp.Filesystem, dp.UsedPct, dp.AvailGB)
 		} else if dp.UsedPct >= diskWarnPct {
-			fmt.Fprintf(b, "[WARNING] disk — %s at %.0f%% (%.1fGB free)\n", dp.Filesystem, dp.UsedPct, dp.AvailGB)
+			fmt.Fprintf(b, "[WARNING] disk%s%s at %.0f%% (%.1fGB free)\n", TriageMachineSep, dp.Filesystem, dp.UsedPct, dp.AvailGB)
 		}
 	}
 }
