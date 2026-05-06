@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -26,10 +27,30 @@ func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, cfg engine.C
 
 	var restarted []string
 	var suppressed []string
+	var remediatedDisks []string
 	var unhandled []engine.TriageIssue
 
 	for _, issue := range issues {
 		level := extractIssueLevel(triageResult, issue.Service)
+
+		// Disk pressure → auto-prune journals/tmp/caches (and docker on CRITICAL).
+		if issue.Service == "disk" {
+			alertLevel := mapTriageLevelToAlertLevel(level)
+			res := eng.AutoRemediateDisk(ctx, alertLevel)
+			if res != nil && len(res.Errors) == 0 {
+				remediatedDisks = append(remediatedDisks, formatDiskRemediation(issue, res))
+			} else {
+				if res != nil && len(res.Errors) > 0 {
+					slog.Warn("disk auto-remediate partial",
+						slog.String("service", issue.Service),
+						slog.Any("errors", res.Errors),
+						slog.Any("targets", res.Targets),
+					)
+				}
+				unhandled = append(unhandled, issue)
+			}
+			continue
+		}
 
 		// CRITICAL: exited/dead/restarting → restart.
 		if level == "CRITICAL" {
@@ -73,17 +94,18 @@ func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, cfg engine.C
 		return false
 	}
 
-	if len(verified) > 0 {
-		// Only notify when actual restarts happened — suppressed-only events are silent.
-		msg := buildAutoRemediateMessage(verified, suppressed)
+	if len(verified) > 0 || len(remediatedDisks) > 0 {
+		// Notify when restarts happened or disk was freed — suppressed-only events are silent.
+		msg := buildAutoRemediateMessage(verified, suppressed, remediatedDisks)
 		if notify != nil {
 			notify(msg)
 		}
 	}
-	if len(verified)+len(suppressed) > 0 {
+	if len(verified)+len(suppressed)+len(remediatedDisks) > 0 {
 		slog.Info("gateway watch: auto-remediated all issues",
 			slog.Int("restarted", len(verified)),
-			slog.Int("suppressed", len(suppressed)))
+			slog.Int("suppressed", len(suppressed)),
+			slog.Int("disk_cleanups", len(remediatedDisks)))
 	}
 
 	return true
@@ -126,7 +148,7 @@ func extractIssueLevel(triageResult, service string) string {
 }
 
 // buildAutoRemediateMessage formats a Telegram notification for auto-remediation results.
-func buildAutoRemediateMessage(restarted, suppressed []string) string {
+func buildAutoRemediateMessage(restarted, suppressed, disks []string) string {
 	var b strings.Builder
 	b.WriteString("<b>Auto-fix applied</b>\n")
 
@@ -141,5 +163,47 @@ func buildAutoRemediateMessage(restarted, suppressed []string) string {
 		b.WriteString(strings.Join(suppressed, ", "))
 	}
 
+	if len(disks) > 0 {
+		b.WriteString("\n<b>Disk freed:</b>\n")
+		for _, d := range disks {
+			b.WriteString("  • ")
+			b.WriteString(d)
+			b.WriteString("\n")
+		}
+	}
+
 	return b.String()
+}
+
+// mapTriageLevelToAlertLevel converts a triage level string ("WARNING", "CRITICAL", "ERROR")
+// to the engine.AlertLevel type used by AutoRemediateDisk.
+// The "ERROR" arm is future-proofing: GenerateDiskAlerts currently only emits AlertCritical/AlertWarning,
+// but if AlertError disk lines are added the conservative path is to treat them as critical.
+func mapTriageLevelToAlertLevel(triageLevel string) engine.AlertLevel {
+	switch triageLevel {
+	case "WARNING":
+		return engine.AlertWarning
+	case "CRITICAL", "ERROR":
+		return engine.AlertCritical
+	default:
+		return engine.AlertInfo
+	}
+}
+
+// formatDiskRemediation builds a one-line summary for a disk auto-remediation result.
+func formatDiskRemediation(issue engine.TriageIssue, res *engine.DiskRemediateResult) string {
+	var parts []string
+	for _, tgt := range res.Targets {
+		if tgt.Freed != "" && tgt.Freed != "0.0 MB" {
+			parts = append(parts, fmt.Sprintf("%s=%s", tgt.Name, tgt.Freed))
+		}
+	}
+	line := issue.Description
+	if len(parts) > 0 {
+		line += ": " + strings.Join(parts, ", ")
+	}
+	if res.Docker != "" {
+		line += ", docker prune ran"
+	}
+	return line
 }
