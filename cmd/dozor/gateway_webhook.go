@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,9 +39,36 @@ type webhookPayload struct {
 // rotates twice a week) but caps a stuck-in-loop sender.
 var webhookLimiter = kitratelimit.NewKeyLimiter(10, 30)
 
+// (HMAC startup warn is logged inline once per registerWebhookHandler call —
+// no package-level sync.Once because that breaks test isolation.)
+
 func init() {
 	webhookLimiter.StartCleanup(10*time.Minute, 30*time.Minute)
 	trustProxy = os.Getenv("DOZOR_TRUST_PROXY") == "1"
+}
+
+// checkWebhookSignature verifies X-Dozor-Webhook-Signature (plain hex-encoded
+// HMAC-SHA256 of the raw body) against secret. Returns true when the signature
+// is valid, or when secret is empty (HMAC disabled).
+//
+// Header format: X-Dozor-Webhook-Signature: <hex(HMAC-SHA256(body, secret))>
+// (no prefix — differs from GitHub's "sha256=" envelope which is used by
+// internal/deploy/webhook.go:verifySignature).
+func checkWebhookSignature(body []byte, r *http.Request, secret string) bool {
+	if secret == "" {
+		return true
+	}
+	sig := r.Header.Get("X-Dozor-Webhook-Signature")
+	if sig == "" {
+		return false
+	}
+	sigBytes, err := hex.DecodeString(sig)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hmac.Equal(sigBytes, mac.Sum(nil))
 }
 
 // webhookSourceKey derives the rate-limit key from the request. Defaults
@@ -84,6 +114,11 @@ var trustProxy = false
 //   - any other event name → logged + 202, not sent to LLM (deny-by-default
 //     so a typo or new source can't re-flood the agent)
 func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(string)) {
+	secret := os.Getenv("DOZOR_WEBHOOK_SECRET")
+	if secret == "" {
+		slog.Warn("webhook handler running without HMAC; set DOZOR_WEBHOOK_SECRET to enforce")
+	}
+
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		key := webhookSourceKey(r)
 		if !webhookLimiter.Allow(key) {
@@ -96,6 +131,14 @@ func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(st
 		body, err := io.ReadAll(io.LimitReader(r.Body, webhookBodyLimit))
 		if err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		if !checkWebhookSignature(body, r, secret) {
+			slog.Warn("webhook signature mismatch",
+				slog.String("source", key),
+				slog.String("path", r.URL.Path))
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
