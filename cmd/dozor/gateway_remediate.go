@@ -49,6 +49,14 @@ func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, cfg engine.C
 				}
 				unhandled = append(unhandled, issue)
 			}
+			// Always log the full remediation result at DEBUG so operators can inspect
+			// what was actually freed — visible even when there are no errors.
+			if res != nil {
+				slog.Debug("disk auto-remediate result",
+					slog.Any("targets", res.Targets),
+					slog.String("docker", res.Docker),
+				)
+			}
 			continue
 		}
 

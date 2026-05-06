@@ -72,6 +72,13 @@ func (c *CleanupCollector) Clean(ctx context.Context, targets []string, minAge s
 	return results
 }
 
+// probe checks whether tool is present on the host by running
+// `which <tool> 2>/dev/null`. The exact shell string is the mock contract:
+// test stubs that implement Transporter must match `strings.HasPrefix(cmd, "which ")`
+// and strip the ` 2>/dev/null` suffix to return the simulated path.
+//
+// All callers of probe are internal to this package; the method stays private
+// because no external consumer needs to invoke it directly.
 func (c *CleanupCollector) probe(ctx context.Context, tool string) bool {
 	res := c.transport.ExecuteUnsafe(ctx, "which "+tool+" 2>/dev/null")
 	return res.Success && strings.TrimSpace(res.Stdout) != ""

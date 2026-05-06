@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +16,83 @@ import (
 
 	"github.com/anatolykoptev/dozor/internal/bus"
 )
+
+// signBody computes the HMAC-SHA256 hex of body using secret, matching
+// the X-Dozor-Webhook-Signature header format.
+func signBody(secret, body string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(body))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// TestWebhookHandler_HMAC covers the optional HMAC-SHA256 signature gate on
+// the webhook handler, controlled by DOZOR_WEBHOOK_SECRET.
+func TestWebhookHandler_HMAC(t *testing.T) {
+	const secret = "test-secret-123"
+	const body = `{"event":"channel_dead","channel":"ch1","fails":1,"message":"dead"}`
+
+	makeHandler := func(t *testing.T, envSecret string) (http.Handler, *bus.Bus) {
+		t.Helper()
+		t.Setenv("DOZOR_WEBHOOK_SECRET", envSecret)
+		msgBus := bus.New()
+		t.Cleanup(func() { msgBus.Close() })
+		mx := http.NewServeMux()
+		registerWebhookHandler(mx, msgBus, func(string) {})
+		return mx, msgBus
+	}
+
+	t.Run("valid_sig_accepted_when_secret_set", func(t *testing.T) {
+		handler, _ := makeHandler(t, secret)
+		req := httptest.NewRequest(http.MethodPost, "/webhook",
+			strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Dozor-Webhook-Signature", signBody(secret, body))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("valid sig: expected 200, got %d body=%s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("bad_sig_rejected_401_when_secret_set", func(t *testing.T) {
+		handler, _ := makeHandler(t, secret)
+		req := httptest.NewRequest(http.MethodPost, "/webhook",
+			strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Dozor-Webhook-Signature", "badc0ffee")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("bad sig: expected 401, got %d body=%s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("missing_sig_rejected_401_when_secret_set", func(t *testing.T) {
+		handler, _ := makeHandler(t, secret)
+		req := httptest.NewRequest(http.MethodPost, "/webhook",
+			strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		// No X-Dozor-Webhook-Signature header.
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("missing sig: expected 401, got %d body=%s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("no_check_when_secret_unset_back_compat", func(t *testing.T) {
+		handler, _ := makeHandler(t, "") // empty secret
+		req := httptest.NewRequest(http.MethodPost, "/webhook",
+			strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		// No signature header at all.
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("no secret: expected 200 (back-compat), got %d body=%s", rr.Code, rr.Body.String())
+		}
+	})
+}
 
 // TestWebhookHandler_EventClassifier covers the routing logic introduced to
 // silence ACTIVE_PROBE webhook spam and route channel_dead/recovered events
