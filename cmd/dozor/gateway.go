@@ -152,6 +152,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	mx.HandleFunc("GET /health", healthHandler("gateway"))
 	mx.Handle("/metrics", promhttp.Handler())
 	registerWebhookHandler(mx, msgBus, notifyFn)
+	registerAlertmanagerWebhookHandler(mx, notifyAlertFn)
 	registerDeployWebhook(sigCtx, mx, notifyFn)
 
 	// 5. A2A protocol.
