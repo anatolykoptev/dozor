@@ -50,7 +50,7 @@ func TestExtractIssueLevel_ServiceNamePrefix(t *testing.T) {
 }
 
 func TestBuildAutoRemediateMessage_RestartedOnly(t *testing.T) {
-	msg := buildAutoRemediateMessage([]string{"ox-whisper", "memdb-api"}, nil)
+	msg := buildAutoRemediateMessage([]string{"ox-whisper", "memdb-api"}, nil, nil)
 
 	if !strings.Contains(msg, "Auto-fix applied") {
 		t.Error("missing header")
@@ -67,7 +67,7 @@ func TestBuildAutoRemediateMessage_RestartedOnly(t *testing.T) {
 }
 
 func TestBuildAutoRemediateMessage_SuppressedOnly(t *testing.T) {
-	msg := buildAutoRemediateMessage(nil, []string{"qdrant (telemetry errors)", "searxng (rate limits)"})
+	msg := buildAutoRemediateMessage(nil, []string{"qdrant (telemetry errors)", "searxng (rate limits)"}, nil)
 
 	if !strings.Contains(msg, "Suppressed") {
 		t.Error("missing Suppressed section")
@@ -84,6 +84,7 @@ func TestBuildAutoRemediateMessage_Both(t *testing.T) {
 	msg := buildAutoRemediateMessage(
 		[]string{"ox-whisper"},
 		[]string{"qdrant (telemetry errors)"},
+		nil,
 	)
 
 	if !strings.Contains(msg, "Restarted") {
