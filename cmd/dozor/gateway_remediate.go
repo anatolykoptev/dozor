@@ -40,6 +40,13 @@ func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, cfg engine.C
 			if res != nil && len(res.Errors) == 0 {
 				remediatedDisks = append(remediatedDisks, formatDiskRemediation(issue, res))
 			} else {
+				if res != nil && len(res.Errors) > 0 {
+					slog.Warn("disk auto-remediate partial",
+						slog.String("service", issue.Service),
+						slog.Any("errors", res.Errors),
+						slog.Any("targets", res.Targets),
+					)
+				}
 				unhandled = append(unhandled, issue)
 			}
 			continue
@@ -170,6 +177,8 @@ func buildAutoRemediateMessage(restarted, suppressed, disks []string) string {
 
 // mapTriageLevelToAlertLevel converts a triage level string ("WARNING", "CRITICAL", "ERROR")
 // to the engine.AlertLevel type used by AutoRemediateDisk.
+// The "ERROR" arm is future-proofing: GenerateDiskAlerts currently only emits AlertCritical/AlertWarning,
+// but if AlertError disk lines are added the conservative path is to treat them as critical.
 func mapTriageLevelToAlertLevel(triageLevel string) engine.AlertLevel {
 	switch triageLevel {
 	case "WARNING":

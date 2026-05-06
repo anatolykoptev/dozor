@@ -7,9 +7,18 @@ import (
 	"strings"
 )
 
+// Transporter is the minimal command-execution interface required by CleanupCollector.
+// *Transport satisfies it; tests may provide a mock.
+type Transporter interface {
+	ExecuteUnsafe(ctx context.Context, command string) CommandResult
+	DockerCommand(ctx context.Context, dockerCmd string) CommandResult
+	DockerComposeCommand(ctx context.Context, composeCmd string) CommandResult
+	ResolveComposePath() string
+}
+
 // CleanupCollector auto-detects and cleans system resources.
 type CleanupCollector struct {
-	transport *Transport
+	transport Transporter
 }
 
 // allTargets is the list of all supported cleanup target names.

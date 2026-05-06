@@ -94,7 +94,7 @@ func (c *CleanupCollector) cleanCaches(ctx context.Context) CleanupTarget {
 	for _, dir := range staleDirs {
 		sizeBefore := c.duSizeMB(ctx, dir)
 		if sizeBefore > 0 {
-			c.transport.ExecuteUnsafe(ctx, "rm -rf "+dir+" 2>/dev/null")
+			c.transport.ExecuteUnsafe(ctx, "rm -rf '"+dir+"' 2>/dev/null")
 			freedMB += sizeBefore
 		}
 	}
