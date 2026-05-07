@@ -7,8 +7,18 @@ import (
 )
 
 const (
+	// maxOutputLen caps the stderr tail included in structured log lines for
+	// the build phase. Build already writes a full dump file on failure, so
+	// 500 chars in the log line is enough to orient the operator.
 	maxOutputLen = 500
-	shortSHALen  = 7
+
+	// maxUpOutputLen caps the stderr tail included in structured log lines for
+	// the up phase. Up-phase stderr (env-var warnings + the actual container
+	// conflict) is denser, so we surface 4000 chars. A full dump file is also
+	// written on failure (see runUpWithFullLog).
+	maxUpOutputLen = 4000
+
+	shortSHALen = 7
 )
 
 // cmdRunner is the function used to run external commands.
@@ -34,6 +44,16 @@ func defaultRunCmd(ctx context.Context, dir, name string, args ...string) error 
 // the full output to a temp file on failure so operators can inspect what
 // Docker actually complained about.
 func defaultBuildRunner(ctx context.Context, dir string, args []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "docker", args...) //nolint:gosec // trusted local config, not shell
+	cmd.Dir = dir
+	return cmd.CombinedOutput()
+}
+
+// defaultUpRunner runs `docker <args...>` and returns the full combined
+// stdout+stderr regardless of outcome. Callers (runUpWithFullLog) dump the
+// full output to a temp file on failure so operators can see the real error
+// (e.g. "Container name already in use") buried beneath env-var warnings.
+func defaultUpRunner(ctx context.Context, dir string, args []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...) //nolint:gosec // trusted local config, not shell
 	cmd.Dir = dir
 	return cmd.CombinedOutput()

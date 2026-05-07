@@ -219,6 +219,94 @@ func TestRunBuildWithFullLog_DumpsStderrOnFailure(t *testing.T) {
 	}
 }
 
+// TestRunUpWithFullLog_DumpsStderrOnFailure verifies that when docker
+// compose up fails, runUpWithFullLog writes the full combined output to a
+// /tmp/dozor-up-<deployID>-<ts>.log file and surfaces the path in the
+// returned error string. This is the diagnostic that would have shown the
+// "Container name already in use" error hidden behind env-var warnings.
+func TestRunUpWithFullLog_DumpsStderrOnFailure(t *testing.T) {
+	origUp := upRunner
+	defer func() { upRunner = origUp }()
+
+	// Long output that exceeds maxUpOutputLen so we can verify the dump
+	// contains the FULL output, not a truncation.
+	fullOutput := strings.Repeat("docker up warning line\n", 300)
+	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		return []byte(fullOutput), errors.New("exit status 1")
+	}
+
+	req := BuildRequest{
+		CommitSHA: "deadbeefcafe",
+		Config: RepoConfig{
+			ComposePath: "/tmp",
+			Services:    []string{"embed-server"},
+		},
+	}
+
+	errMsg := runUpWithFullLog(context.Background(), req, "deploy-abc123")
+	if errMsg == "" {
+		t.Fatal("expected non-empty error message on up failure")
+	}
+	if !strings.Contains(errMsg, "full log:") {
+		t.Errorf("expected error to include 'full log:' path, got: %s", errMsg)
+	}
+
+	// Extract dump path from error message and verify the file contains
+	// the full output (not truncated).
+	const marker = "full log: "
+	idx := strings.Index(errMsg, marker)
+	if idx < 0 {
+		t.Fatalf("could not find %q in error: %s", marker, errMsg)
+	}
+	dumpPath := strings.TrimSuffix(errMsg[idx+len(marker):], ")")
+	defer os.Remove(dumpPath)
+
+	data, err := os.ReadFile(dumpPath)
+	if err != nil {
+		t.Fatalf("read dump file %q: %v", dumpPath, err)
+	}
+	if string(data) != fullOutput {
+		t.Errorf("dump file content mismatch: got %d bytes, want %d", len(data), len(fullOutput))
+	}
+
+	// Verify dump file name contains the deploy ID.
+	if !strings.Contains(filepath.Base(dumpPath), "deploy-abc123") {
+		t.Errorf("expected dump file name to contain deploy ID, got: %s", filepath.Base(dumpPath))
+	}
+}
+
+// TestRunUpWithFullLog_SuccessReturnsEmpty ensures no dump file is
+// created and no error returned on a successful up.
+func TestRunUpWithFullLog_SuccessReturnsEmpty(t *testing.T) {
+	origUp := upRunner
+	defer func() { upRunner = origUp }()
+
+	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		return nil, nil
+	}
+
+	req := BuildRequest{
+		CommitSHA: "abc1234",
+		Config: RepoConfig{
+			ComposePath: "/tmp",
+			Services:    []string{"svc"},
+		},
+	}
+
+	if errMsg := runUpWithFullLog(context.Background(), req, "deploy-xyz"); errMsg != "" {
+		t.Errorf("expected empty error on success, got: %s", errMsg)
+	}
+}
+
+// TestMaxUpOutputLen_LargerThanBuild verifies that the up-phase truncation
+// cap is strictly larger than the build-phase cap, ensuring up-phase errors
+// surface more context in the log line.
+func TestMaxUpOutputLen_LargerThanBuild(t *testing.T) {
+	if maxUpOutputLen <= maxOutputLen {
+		t.Errorf("maxUpOutputLen (%d) must be > maxOutputLen (%d)", maxUpOutputLen, maxOutputLen)
+	}
+}
+
 // TestRunBuildWithFullLog_SuccessReturnsEmpty ensures no dump file is
 // created and no error returned on a successful build.
 func TestRunBuildWithFullLog_SuccessReturnsEmpty(t *testing.T) {

@@ -20,19 +20,23 @@ func makeReq(composePath string) BuildRequest {
 	}
 }
 
-// zeroDelays sets healthWait, upRetryDelay, and portRecoveryWait to zero for fast tests
-// and stubs buildRunner to a no-op so executeBuild tests don't shell out to real docker.
-// Returns a restore function to be called via defer.
+// zeroDelays sets healthWait, upRetryDelay, and portRecoveryWait to zero for fast tests,
+// stubs buildRunner to a no-op, and stubs upRunner to a no-op so executeBuild tests
+// don't shell out to real docker. Returns a restore function to be called via defer.
 func zeroDelays(t *testing.T) func() {
 	t.Helper()
 	origHealth := healthWait
 	origRetry := upRetryDelay
 	origRecovery := portRecoveryWait
 	origBuild := buildRunner
+	origUp := upRunner
 	healthWait = 0
 	upRetryDelay = 0
 	portRecoveryWait = 0
 	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		return nil, nil
+	}
+	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
 		return nil, nil
 	}
 	return func() {
@@ -40,24 +44,20 @@ func zeroDelays(t *testing.T) func() {
 		upRetryDelay = origRetry
 		portRecoveryWait = origRecovery
 		buildRunner = origBuild
+		upRunner = origUp
 	}
 }
 
 func TestExecuteBuild_RetryThenSuccess(t *testing.T) {
 	defer zeroDelays(t)()
-	origRunner := cmdRunner
-	defer func() { cmdRunner = origRunner }()
 
 	calls := 0
-	cmdRunner = func(_ context.Context, _ string, name string, args ...string) error {
-		if name == "docker" && len(args) > 1 && args[1] == "up" {
-			calls++
-			if calls == 1 {
-				return errors.New("transient error")
-			}
-			return nil
+	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			return []byte("transient error output"), errors.New("exit status 1")
 		}
-		return nil
+		return nil, nil
 	}
 
 	ctx := context.Background()
@@ -76,14 +76,9 @@ func TestExecuteBuild_RetryThenSuccess(t *testing.T) {
 
 func TestExecuteBuild_AllRetriesFail(t *testing.T) {
 	defer zeroDelays(t)()
-	origRunner := cmdRunner
-	defer func() { cmdRunner = origRunner }()
 
-	cmdRunner = func(_ context.Context, _ string, name string, args ...string) error {
-		if name == "docker" && len(args) > 1 && args[1] == "up" {
-			return errors.New("permanent failure")
-		}
-		return nil
+	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		return []byte("permanent failure output"), errors.New("permanent failure")
 	}
 
 	ctx := context.Background()
@@ -103,17 +98,12 @@ func TestExecuteBuild_AllRetriesFail(t *testing.T) {
 
 func TestExecuteBuild_ContextCancelledDuringRetry(t *testing.T) {
 	defer zeroDelays(t)()
-	origRunner := cmdRunner
-	defer func() { cmdRunner = origRunner }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	cmdRunner = func(_ context.Context, _ string, name string, args ...string) error {
-		if name == "docker" && len(args) > 1 && args[1] == "up" {
-			cancel()
-			return errors.New("up failed")
-		}
-		return nil
+	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		cancel()
+		return []byte("up failed output"), errors.New("up failed")
 	}
 
 	q := NewQueue(context.Background(), func(string) {})

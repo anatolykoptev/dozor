@@ -14,9 +14,8 @@ const psRunning = `[{"State":"running","Status":"Up","Publishers":[]}]`
 // triggers rollback and sets RolledBack=true.
 func TestRollback_HealthCheckFail_RollbackSucceeds(t *testing.T) {
 	defer zeroDelays(t)()
-	origCmd := cmdRunner
 	origOut := outputRunner
-	defer func() { cmdRunner = origCmd; outputRunner = origOut }()
+	defer func() { outputRunner = origOut }()
 
 	// compose ps returns "exited" → health check fails.
 	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
@@ -28,7 +27,6 @@ func TestRollback_HealthCheckFail_RollbackSucceeds(t *testing.T) {
 		}
 		return []byte("{}"), nil
 	}
-	cmdRunner = func(_ context.Context, _ string, _ string, _ ...string) error { return nil }
 
 	ctx := context.Background()
 	q := NewQueue(ctx, func(string) {})
@@ -87,9 +85,8 @@ func TestRollback_RollbackAlsoFails(t *testing.T) {
 // TestRollback_ComposeUpFail_RollbackAttempted verifies rollback is triggered on compose up failure.
 func TestRollback_ComposeUpFail_RollbackAttempted(t *testing.T) {
 	defer zeroDelays(t)()
-	origCmd := cmdRunner
 	origOut := outputRunner
-	defer func() { cmdRunner = origCmd; outputRunner = origOut }()
+	defer func() { outputRunner = origOut }()
 
 	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
 		if len(args) >= 2 && args[1] == "images" {
@@ -97,11 +94,8 @@ func TestRollback_ComposeUpFail_RollbackAttempted(t *testing.T) {
 		}
 		return []byte("{}"), nil
 	}
-	cmdRunner = func(_ context.Context, _ string, name string, args ...string) error {
-		if name == "docker" && len(args) > 1 && args[1] == "up" {
-			return errors.New("compose up failed")
-		}
-		return nil
+	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		return []byte("compose up failed output"), errors.New("compose up failed")
 	}
 
 	ctx := context.Background()
@@ -122,9 +116,8 @@ func TestRollback_ComposeUpFail_RollbackAttempted(t *testing.T) {
 // TestRollback_AllSucceeds_NoRollback verifies RolledBack stays false on clean deploy.
 func TestRollback_AllSucceeds_NoRollback(t *testing.T) {
 	defer zeroDelays(t)()
-	origCmd := cmdRunner
 	origOut := outputRunner
-	defer func() { cmdRunner = origCmd; outputRunner = origOut }()
+	defer func() { outputRunner = origOut }()
 
 	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
 		if len(args) >= 2 && args[1] == "ps" {
@@ -138,7 +131,6 @@ func TestRollback_AllSucceeds_NoRollback(t *testing.T) {
 		}
 		return []byte("{}"), nil
 	}
-	cmdRunner = func(_ context.Context, _ string, _ string, _ ...string) error { return nil }
 
 	ctx := context.Background()
 	q := NewQueue(ctx, func(string) {})

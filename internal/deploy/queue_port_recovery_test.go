@@ -72,14 +72,13 @@ func TestExecuteBuild_PortMappingRecoveryFails(t *testing.T) {
 		outputRunner = origOutput
 	}()
 
-	// cmdRunner: succeed on build and first up; fail on the recovery force-recreate (second up call)
-	upCalls := 0
+	// upRunner: initial compose up succeeds (zeroDelays stubs it to nil, but we override here
+	// to be explicit). Port mapping recovery uses runCmd → cmdRunner, not upRunner.
+	// So we leave upRunner as the zeroDelays no-op and only fail the cmdRunner recovery call.
 	cmdRunner = func(_ context.Context, _ string, name string, args ...string) error {
 		if name == "docker" && len(args) > 1 && args[1] == "up" {
-			upCalls++
-			if upCalls > 1 { // second up = recovery force-recreate
-				return errors.New("recreate failed")
-			}
+			// This is the port-mapping recovery force-recreate (not the initial up).
+			return errors.New("recreate failed")
 		}
 		return nil
 	}
