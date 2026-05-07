@@ -132,21 +132,32 @@ func (rc RepoConfig) resolvedKind() DeployKind {
 // preset via `profile:` and may append entries via `build_paths_extra` /
 // `skip_paths_extra`. An explicit `build_paths` (or `skip_paths`) overrides
 // the corresponding preset list entirely.
+//
+// CanarySmokeTimeout sets the per-profile default for how long dozor waits for
+// the canary's smoke_url to return 200 after a restart. Zero means "use the
+// hard fallback (30s)". A per-repo canary_smoke_timeout always wins over this.
 var profileDefaults = map[string]struct {
-	BuildPaths []string
-	SkipPaths  []string
+	BuildPaths         []string
+	SkipPaths          []string
+	CanarySmokeTimeout time.Duration
 }{
 	"go-flat": {
-		BuildPaths: []string{"*.go", "internal/**", "go.mod", "go.sum", "vendor/**", "Dockerfile", "Makefile"},
-		SkipPaths:  []string{"docs/**", "*.md", "bin/**", "deploy/**"},
+		BuildPaths:         []string{"*.go", "internal/**", "go.mod", "go.sum", "vendor/**", "Dockerfile", "Makefile"},
+		SkipPaths:          []string{"docs/**", "*.md", "bin/**", "deploy/**"},
+		CanarySmokeTimeout: 30 * time.Second,
 	},
 	"go-cmd": {
-		BuildPaths: []string{"cmd/**", "internal/**", "go.mod", "go.sum", "vendor/**", "Dockerfile", "Makefile"},
-		SkipPaths:  []string{"docs/**", "*.md", "bin/**"},
+		BuildPaths:         []string{"cmd/**", "internal/**", "go.mod", "go.sum", "vendor/**", "Dockerfile", "Makefile"},
+		SkipPaths:          []string{"docs/**", "*.md", "bin/**"},
+		CanarySmokeTimeout: 30 * time.Second,
 	},
 	"rust": {
 		BuildPaths: []string{"src/**", "crates/**", "tests/**", "Cargo.toml", "Cargo.lock", "Dockerfile", "Makefile"},
 		SkipPaths:  []string{"docs/**", "*.md", "target/**"},
+		// 120s: Rust services with heavy startup (ONNX models, ML warmup) need
+		// significantly longer. Incident 2026-05-07: embed-server (4 ONNX models,
+		// ~46s warmup) hit the 30s default → silent rollback → prod stale 5h.
+		CanarySmokeTimeout: 120 * time.Second,
 	},
 }
 
