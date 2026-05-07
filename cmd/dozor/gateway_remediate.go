@@ -10,6 +10,10 @@ import (
 	"github.com/anatolykoptev/dozor/internal/engine"
 )
 
+// diskCooldown is the package-level cooldown tracker for disk auto-remediation.
+// Initialized once at startup from DOZOR_REMEDIATE_COOLDOWN (default 30m).
+var diskCooldown = newRemediateCooldownFromEnv()
+
 const (
 	// postRestartVerifyDelay is how long to wait after restart before re-checking service status.
 	postRestartVerifyDelay = 10 * time.Second
@@ -124,12 +128,14 @@ type diskRemediator interface {
 // handled is true when the issue was handled (including partial runs with errors — the operator
 // MUST see error notifications). Suppressed results (freed < threshold, no errors) count as
 // handled but produce no notification.
+// The package-level diskCooldown prevents re-running cleanup on the same (service, level)
+// within the cooldown window (default 30m, tunable via DOZOR_REMEDIATE_COOLDOWN).
 func handleDiskIssue(ctx context.Context, eng *engine.ServerAgent, issue engine.TriageIssue, level string) (notifyMsg string, handled bool) {
-	return handleDiskIssueWith(ctx, eng, issue, level)
+	return handleDiskIssueWithCooldown(ctx, eng, issue, level, diskCooldown, time.Now())
 }
 
-// handleDiskIssueWith is the testable core of handleDiskIssue, accepting a diskRemediator
-// interface instead of *engine.ServerAgent directly.
+// handleDiskIssueWith is the testable core without cooldown, kept for backward compat
+// with existing tests that test the raw remediation logic independently.
 func handleDiskIssueWith(ctx context.Context, rem diskRemediator, issue engine.TriageIssue, level string) (notifyMsg string, handled bool) {
 	alertLevel := mapTriageLevelToAlertLevel(level)
 	res := rem.AutoRemediateDisk(ctx, alertLevel)
