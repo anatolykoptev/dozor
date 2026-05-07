@@ -71,6 +71,10 @@ func detectDefaultBranch(ctx context.Context, sourcePath string) string {
 // context for all target services to the worktree directory — preserving each
 // service's original subdirectory offset relative to sourcePath.
 func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) string {
+	// Invalidate BuildKit exec cache mounts when requested (Rust services with
+	// --mount=type=cache,target=target/ — see RepoConfig.PruneBuildkitCache).
+	pruneBuildkitCacheMount(ctx, req)
+
 	imagesBefore := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
 
 	buildArgs := []string{"compose"}

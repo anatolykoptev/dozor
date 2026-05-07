@@ -109,6 +109,20 @@ type RepoConfig struct {
 	// into a single rebuild dispatched after this many seconds of silence
 	// from the last event. 0 (default) disables debouncing.
 	DebounceSeconds int `yaml:"debounce_seconds,omitempty"`
+
+	// PruneBuildkitCache, when true, runs
+	// `docker buildx prune --force --filter type=exec.cachemount`
+	// before each `docker compose build` for this repo.
+	//
+	// Background: BuildKit cache mounts (--mount=type=cache,target=...) persist
+	// between builds even with --no-cache — that flag only invalidates layer
+	// cache, not exec cache mounts. For Rust services the cargo target/ lives in
+	// a cache mount; stale binaries survive into the new image. Set true for any
+	// Rust service whose Dockerfile uses --mount=type=cache on target/.
+	//
+	// Default: false. Prune cost is real (~6-8 min cold rebuild); only enable
+	// where the silent-stale-binary risk is confirmed.
+	PruneBuildkitCache bool `yaml:"prune_buildkit_cache,omitempty"`
 }
 
 // DebounceWindow returns the configured debounce duration, or 0 if disabled.
