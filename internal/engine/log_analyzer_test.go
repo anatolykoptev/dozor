@@ -344,3 +344,35 @@ func TestNoiseSuppression_Cloakbrowser(t *testing.T) {
 		t.Errorf("noise lines must not increment ErrorCount, got ErrorCount=%d", result.ErrorCount)
 	}
 }
+
+// TestNoiseSuppression_Cloakbrowser_SharedMemoryAndVideoCapture checks that
+// the two ARM/headless patterns added in fix/log-analyzer-cloakbrowser-noise
+// are filtered as noise and that ssl_client_socket_impl.cc is NOT filtered.
+func TestNoiseSuppression_Cloakbrowser_SharedMemoryAndVideoCapture(t *testing.T) {
+	entries := []LogEntry{
+		{
+			Level:   "ERROR",
+			Message: `[ERROR] base/memory/shared_memory_switch.cc:289] Failed global descriptor lookup: 7`,
+			Raw:     `[ERROR] base/memory/shared_memory_switch.cc:289] Failed global descriptor lookup: 7`,
+		},
+		{
+			Level:   "ERROR",
+			Message: `[ERROR] services/video_capture/video_capture_service_impl.cc:201] Bind context provider failed.`,
+			Raw:     `[ERROR] services/video_capture/video_capture_service_impl.cc:201] Bind context provider failed.`,
+		},
+		{
+			Level:   "ERROR",
+			Message: `[ERROR] net/socket/ssl_client_socket_impl.cc:926] handshake_failed`,
+			Raw:     `[ERROR] net/socket/ssl_client_socket_impl.cc:926] handshake_failed`,
+		},
+	}
+	result := AnalyzeLogs(entries, "cloakbrowser")
+	// shared_memory_switch + video_capture_service_impl must be noise-filtered.
+	if result.NoiseCount != 2 {
+		t.Errorf("expected NoiseCount=2, got %d", result.NoiseCount)
+	}
+	// ssl_client_socket_impl must remain a real error.
+	if result.ErrorCount != 1 {
+		t.Errorf("expected ErrorCount=1 (ssl line only), got %d", result.ErrorCount)
+	}
+}
