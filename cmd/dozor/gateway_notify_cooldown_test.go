@@ -2,7 +2,6 @@ package main
 
 import (
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 )
@@ -149,5 +148,4 @@ func TestTick_NotifyCooldownSuppressesLLMCall(t *testing.T) {
 		t.Error("different hash should not be suppressed")
 	}
 
-	_ = strings.Contains // keep import for future use
 }
