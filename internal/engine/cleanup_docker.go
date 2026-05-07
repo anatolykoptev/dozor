@@ -127,6 +127,7 @@ func (c *CleanupCollector) cleanDocker(ctx context.Context, minAge string) Clean
 
 	c.transport.DockerCommand(ctx, "network prune -f")
 
+	t.FreedMB = freed
 	if len(details) > 0 {
 		t.Freed = fmt.Sprintf("%.1f MB (%s)", freed, strings.Join(details, ", "))
 	} else {
