@@ -30,14 +30,18 @@ func (c *CleanupCollector) cleanJournal(ctx context.Context, minAge string) Clea
 	if minAge != "" {
 		vacuumTime = minAge
 	}
-	before := c.scanJournal(ctx).SizeMB
-	res := c.transport.ExecuteUnsafe(ctx, "journalctl --vacuum-time="+vacuumTime+" 2>/dev/null")
-	if !res.Success {
-		t.Error = res.Stderr
+	var execErr string
+	freed := c.measureFreedMB(ctx, func() {
+		res := c.transport.ExecuteUnsafe(ctx, "journalctl --vacuum-time="+vacuumTime+" 2>/dev/null")
+		if !res.Success {
+			execErr = res.Stderr
+		}
+	})
+	if execErr != "" {
+		t.Error = execErr
 		return t
 	}
-	after := c.scanJournal(ctx).SizeMB
-	t.Freed = fmt.Sprintf("%.1f MB", before-after)
+	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }
 
@@ -59,11 +63,11 @@ func (c *CleanupCollector) cleanTmp(ctx context.Context, minAge string) CleanupT
 	if minAge != "" {
 		atime = daysFromDuration(minAge)
 	}
-	before := c.scanTmp(ctx).SizeMB
 	cmd := fmt.Sprintf("find /tmp -type f -atime +%s -delete 2>/dev/null; echo done", atime)
-	c.transport.ExecuteUnsafe(ctx, cmd)
-	after := c.scanTmp(ctx).SizeMB
-	t.Freed = fmt.Sprintf("%.1f MB", before-after)
+	freed := c.measureFreedMB(ctx, func() {
+		c.transport.ExecuteUnsafe(ctx, cmd)
+	})
+	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }
 
@@ -90,14 +94,11 @@ func (c *CleanupCollector) cleanCaches(ctx context.Context) CleanupTarget {
 		"~/.cache/pnpm",
 		"~/.cache/typescript",
 	}
-	var freedMB float64
-	for _, dir := range staleDirs {
-		sizeBefore := c.duSizeMB(ctx, dir)
-		if sizeBefore > 0 {
+	freed := c.measureFreedMB(ctx, func() {
+		for _, dir := range staleDirs {
 			c.transport.ExecuteUnsafe(ctx, "rm -rf '"+dir+"' 2>/dev/null")
-			freedMB += sizeBefore
 		}
-	}
-	t.Freed = fmt.Sprintf("%.1f MB", freedMB)
+	})
+	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }

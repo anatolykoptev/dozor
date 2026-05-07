@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,11 @@ import (
 const (
 	// postRestartVerifyDelay is how long to wait after restart before re-checking service status.
 	postRestartVerifyDelay = 10 * time.Second
+
+	// minFreedToNotifyMB is the minimum total MB freed to send a Telegram notification.
+	// Below this threshold (and with no errors) the cleanup is considered a no-op and
+	// the operator is not bothered. 50 MB covers rounding noise and already-empty caches.
+	minFreedToNotifyMB = 50.0
 )
 
 // tryAutoRemediate attempts to handle all triage issues without LLM involvement.
@@ -25,85 +31,27 @@ func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, cfg engine.C
 		return false
 	}
 
-	var restarted []string
-	var suppressed []string
-	var remediatedDisks []string
+	var restarted, suppressed, remediatedDisks []string
 	var unhandled []engine.TriageIssue
 
 	for _, issue := range issues {
 		level := extractIssueLevel(triageResult, issue.Service)
-
-		// Disk pressure → auto-prune journals/tmp/caches (and docker on CRITICAL).
-		if issue.Service == "disk" {
-			alertLevel := mapTriageLevelToAlertLevel(level)
-			res := eng.AutoRemediateDisk(ctx, alertLevel)
-			if res != nil && len(res.Errors) == 0 {
-				remediatedDisks = append(remediatedDisks, formatDiskRemediation(issue, res))
-			} else {
-				if res != nil && len(res.Errors) > 0 {
-					slog.Warn("disk auto-remediate partial",
-						slog.String("service", issue.Service),
-						slog.Any("errors", res.Errors),
-						slog.Any("targets", res.Targets),
-					)
-				}
-				unhandled = append(unhandled, issue)
-			}
-			// Always log the full remediation result at DEBUG so operators can inspect
-			// what was actually freed — visible even when there are no errors.
-			if res != nil {
-				slog.Debug("disk auto-remediate result",
-					slog.Any("targets", res.Targets),
-					slog.String("docker", res.Docker),
-				)
-			}
-			continue
-		}
-
-		// CRITICAL: exited/dead/restarting → restart.
-		if level == "CRITICAL" {
-			result := eng.RestartService(ctx, issue.Service)
-			if result.Success {
-				restarted = append(restarted, issue.Service)
-			} else {
-				unhandled = append(unhandled, issue)
-			}
-			continue
-		}
-
-		// Known benign WARNING/ERROR → suppress.
-		if reason, ok := cfg.SuppressWarnings[issue.Service]; ok {
-			suppressed = append(suppressed, issue.Service+" ("+reason+")")
-			slog.Info("gateway watch: suppressed benign warning",
-				slog.String("service", issue.Service),
-				slog.String("reason", reason))
-			continue
-		}
-
-		// Unknown issue → unhandled.
-		unhandled = append(unhandled, issue)
+		r, s, d, u := routeIssue(ctx, eng, cfg, issue, level)
+		restarted = append(restarted, r...)
+		suppressed = append(suppressed, s...)
+		remediatedDisks = append(remediatedDisks, d...)
+		unhandled = append(unhandled, u...)
 	}
 
-	// Post-restart verification.
 	verified, failedRestarts := verifyRestarts(ctx, eng, restarted)
 	unhandled = append(unhandled, failedRestarts...)
 
 	if len(unhandled) > 0 {
-		for _, u := range unhandled {
-			slog.Warn("gateway watch: unhandled issue",
-				slog.String("service", u.Service),
-				slog.String("description", u.Description),
-			)
-		}
-		slog.Info("gateway watch: auto-remediation partial",
-			slog.Int("restarted", len(verified)),
-			slog.Int("suppressed", len(suppressed)),
-			slog.Int("unhandled", len(unhandled)))
+		logUnhandled(unhandled, verified, suppressed)
 		return false
 	}
 
 	if len(verified) > 0 || len(remediatedDisks) > 0 {
-		// Notify when restarts happened or disk was freed — suppressed-only events are silent.
 		msg := buildAutoRemediateMessage(verified, suppressed, remediatedDisks)
 		if notify != nil {
 			notify(msg)
@@ -117,6 +65,86 @@ func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, cfg engine.C
 	}
 
 	return true
+}
+
+// routeIssue dispatches a single triage issue to the appropriate handler.
+// Returns (restarted, suppressed, diskMsgs, unhandled) slices for the caller to accumulate.
+func routeIssue(ctx context.Context, eng *engine.ServerAgent, cfg engine.Config, issue engine.TriageIssue, level string) (restarted, suppressed, diskMsgs []string, unhandled []engine.TriageIssue) {
+	switch {
+	case issue.Service == "disk":
+		msg, handled := handleDiskIssue(ctx, eng, issue, level)
+		if msg != "" {
+			diskMsgs = append(diskMsgs, msg)
+		}
+		if !handled {
+			unhandled = append(unhandled, issue)
+		}
+
+	case level == "CRITICAL":
+		result := eng.RestartService(ctx, issue.Service)
+		if result.Success {
+			restarted = append(restarted, issue.Service)
+		} else {
+			unhandled = append(unhandled, issue)
+		}
+
+	default:
+		if reason, ok := cfg.SuppressWarnings[issue.Service]; ok {
+			suppressed = append(suppressed, issue.Service+" ("+reason+")")
+			slog.Info("gateway watch: suppressed benign warning",
+				slog.String("service", issue.Service),
+				slog.String("reason", reason))
+		} else {
+			unhandled = append(unhandled, issue)
+		}
+	}
+	return
+}
+
+// logUnhandled logs unhandled issues and the partial remediation summary.
+func logUnhandled(unhandled []engine.TriageIssue, verified, suppressed []string) {
+	for _, u := range unhandled {
+		slog.Warn("gateway watch: unhandled issue",
+			slog.String("service", u.Service),
+			slog.String("description", u.Description),
+		)
+	}
+	slog.Info("gateway watch: auto-remediation partial",
+		slog.Int("restarted", len(verified)),
+		slog.Int("suppressed", len(suppressed)),
+		slog.Int("unhandled", len(unhandled)))
+}
+
+// handleDiskIssue runs disk auto-remediation for a single disk triage issue.
+// Returns (notifyMsg, handled): notifyMsg is non-empty when the operator should be notified,
+// handled is true when the issue was fully resolved (no errors). Suppressed results (freed < threshold)
+// count as handled but produce no notification.
+func handleDiskIssue(ctx context.Context, eng *engine.ServerAgent, issue engine.TriageIssue, level string) (notifyMsg string, handled bool) {
+	alertLevel := mapTriageLevelToAlertLevel(level)
+	res := eng.AutoRemediateDisk(ctx, alertLevel)
+	if res == nil {
+		return "", false
+	}
+	slog.DebugContext(ctx, "disk auto-remediate result",
+		slog.Any("targets", res.Targets),
+		slog.String("docker", res.Docker),
+	)
+	if len(res.Errors) > 0 {
+		slog.WarnContext(ctx, "disk auto-remediate partial",
+			slog.String("service", issue.Service),
+			slog.Any("errors", res.Errors),
+			slog.Any("targets", res.Targets),
+		)
+		return "", false
+	}
+	if !diskRemediateShouldNotify(res) {
+		slog.InfoContext(ctx, "auto-remediate ran but freed nothing meaningful, suppressing notify",
+			slog.Float64("freed_mb", sumDiskFreedMB(res)),
+			slog.Int("targets_attempted", len(res.Targets)),
+		)
+		return "", true
+	}
+	return formatDiskRemediation(issue, res), true
 }
 
 // verifyRestarts waits after restart and re-checks service status.
@@ -196,6 +224,29 @@ func mapTriageLevelToAlertLevel(triageLevel string) engine.AlertLevel {
 	default:
 		return engine.AlertInfo
 	}
+}
+
+// diskRemediateShouldNotify returns true when the remediation result is worth
+// notifying the operator about: either something meaningful was freed (≥ minFreedToNotifyMB)
+// or there were errors (operator must see failures).
+func diskRemediateShouldNotify(res *engine.DiskRemediateResult) bool {
+	if len(res.Errors) > 0 {
+		return true
+	}
+	return sumDiskFreedMB(res) >= minFreedToNotifyMB
+}
+
+// sumDiskFreedMB totals freed MB across all cleanup targets in the result.
+// Parses the "NNN.N MB" strings stored in CleanupTarget.Freed.
+func sumDiskFreedMB(res *engine.DiskRemediateResult) float64 {
+	var total float64
+	for _, tgt := range res.Targets {
+		freed := strings.TrimSuffix(strings.TrimSpace(tgt.Freed), " MB")
+		if v, err := strconv.ParseFloat(freed, 64); err == nil {
+			total += v
+		}
+	}
+	return total
 }
 
 // formatDiskRemediation builds a one-line summary for a disk auto-remediation result.
