@@ -48,6 +48,7 @@ func (a *ServerAgent) AutoRemediateDisk(ctx context.Context, level AlertLevel) *
 		appendTarget(res, a.cleanup.cleanUv(ctx), "uv")
 		appendTarget(res, a.cleanup.cleanPip(ctx), "pip")
 		appendTarget(res, a.cleanup.cleanDockerBuilderAged(ctx, "72h"), "docker_builder_aged")
+		appendTarget(res, a.cleanup.cleanMemory(ctx), "memory")
 	}
 
 	// CRITICAL / ERROR — full docker system prune.

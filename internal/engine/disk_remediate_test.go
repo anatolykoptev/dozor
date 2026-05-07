@@ -162,6 +162,45 @@ func (m *mockTransport) DockerComposeCommand(_ context.Context, _ string) Comman
 
 func (m *mockTransport) ResolveComposePath() string { return "" }
 
+// TestAutoRemediateDisk_WarningHighIncludesMemory asserts that "memory" appears in
+// WARNING_HIGH targets but NOT in plain WARNING targets.
+func TestAutoRemediateDisk_WarningHighIncludesMemory(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		level       AlertLevel
+		wantMemory  bool
+	}{
+		{AlertWarning, false},
+		{AlertWarningHigh, true},
+		{AlertCritical, true},
+		{AlertError, true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(string(tc.level), func(t *testing.T) {
+			t.Parallel()
+			a := newTestAgent()
+			res := a.AutoRemediateDisk(context.Background(), tc.level)
+			if res == nil {
+				t.Fatal("expected non-nil result")
+			}
+			found := false
+			for _, tgt := range res.Targets {
+				if tgt.Name == "memory" {
+					found = true
+					break
+				}
+			}
+			if found != tc.wantMemory {
+				t.Errorf("level %v: memory target present=%v, want %v; targets: %v",
+					tc.level, found, tc.wantMemory, res.Targets)
+			}
+		})
+	}
+}
+
 // TestExtractIssues_DiskCriticalLine asserts that a [CRITICAL] disk line emitted by
 // appendDiskPressure is parsed into a TriageIssue with Service=="disk".
 func TestExtractIssues_DiskCriticalLine(t *testing.T) {
