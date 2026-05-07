@@ -18,6 +18,10 @@ const (
 	// dfFieldCount is the number of fields expected in a df output line.
 	dfFieldCount = 6
 	// diskCriticalPct is the disk usage percentage to trigger a critical alert.
+	// Raised from 90 to 95 in the stratified-targets PR. 90% no longer triggers
+	// full docker system prune — we now run targeted cleanups (builder cache,
+	// dangling images) at 85-94% (WARNING_HIGH) and reserve full prune for 95%+
+	// to avoid evicting recent, hot builds. Operator can override via DOZOR_DISK_CRITICAL.
 	diskCriticalPct = 95
 	// diskWarnHighPct is the disk usage percentage to trigger a warning_high alert (85-94%).
 	diskWarnHighPct = 85

@@ -22,8 +22,21 @@ var protectedPaths = []string{
 	"/home/krolik/bin",
 }
 
+// isCleanupFile reports whether a .go filename belongs to cleanup/remediation
+// production code that must not reference protected paths. We check both the
+// classic cleanup_*.go files and any *_remediate.go or disk_*.go files where
+// cleanup logic may also live (e.g. disk_remediate.go, gateway_remediate.go).
+func isCleanupFile(name string) bool {
+	return strings.HasPrefix(name, "cleanup_") ||
+		strings.HasSuffix(name, "_remediate.go") ||
+		strings.HasPrefix(name, "disk_")
+}
+
 // TestCleanupTargets_NeverTouchProtectedPaths performs a static-string scan of all
-// cleanup_*.go source files to assert that none reference protected paths.
+// cleanup and remediation source files in internal/engine/ and cmd/dozor/ to assert
+// that none reference protected paths. Scanning both directories (not just
+// internal/engine/cleanup_*.go) catches cleanup logic added in disk_remediate.go,
+// gateway_remediate.go, or other remediation files.
 // This is a safety net: if a cleanup function accidentally touches operator-visible
 // data or expensive rebuild artifacts, the test fails before the code ships.
 func TestCleanupTargets_NeverTouchProtectedPaths(t *testing.T) {
@@ -35,22 +48,42 @@ func TestCleanupTargets_NeverTouchProtectedPaths(t *testing.T) {
 		t.Fatalf("failed to get working directory: %v", err)
 	}
 
-	pattern := filepath.Join(wd, "cleanup_*.go")
-	files, err := filepath.Glob(pattern)
-	if err != nil {
-		t.Fatalf("glob failed: %v", err)
+	// Walk internal/engine/ (wd) and cmd/dozor/ for cleanup/remediation files.
+	// cmd/dozor/ is two levels up from internal/engine/ in a standard Go repo
+	// layout: internal/engine/ → internal/ → repo root → cmd/dozor/.
+	repoRoot := filepath.Join(wd, "..", "..")
+	scanDirs := []string{
+		wd,
+		filepath.Join(repoRoot, "cmd", "dozor"),
 	}
+
+	var files []string
+	for _, dir := range scanDirs {
+		entries, readErr := os.ReadDir(dir)
+		if readErr != nil {
+			// cmd/dozor may not exist in all test environments; skip gracefully.
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+				continue
+			}
+			if strings.HasSuffix(e.Name(), "_test.go") {
+				continue
+			}
+			if !isCleanupFile(e.Name()) {
+				continue
+			}
+			files = append(files, filepath.Join(dir, e.Name()))
+		}
+	}
+
 	if len(files) == 0 {
-		t.Fatalf("no cleanup_*.go files found under %s", wd)
+		t.Fatalf("no cleanup/remediation .go files found under %v", scanDirs)
 	}
 
 	fset := token.NewFileSet()
 	for _, file := range files {
-		// Skip test files — safety check is for production code only.
-		if strings.HasSuffix(file, "_test.go") {
-			continue
-		}
-
 		src, err := os.ReadFile(file) //nolint:gosec
 		if err != nil {
 			t.Errorf("failed to read %s: %v", file, err)
@@ -69,7 +102,7 @@ func TestCleanupTargets_NeverTouchProtectedPaths(t *testing.T) {
 			if !ok || lit.Kind != token.STRING {
 				return true
 			}
-			val := strings.Trim(lit.Value, `"` + "`")
+			val := strings.Trim(lit.Value, `"`+"`")
 			for _, path := range protectedPaths {
 				// src/*/target is a glob; match component-by-component.
 				if path == "src/*/target" {

@@ -139,20 +139,22 @@ func (c *CleanupCollector) cleanDocker(ctx context.Context, minAge string) Clean
 // cleanDockerDangling removes dangling (untagged, unreferenced) Docker images.
 // Unlike cleanDocker which uses an age filter, this targets images that are
 // untagged regardless of age — these are always safe to remove.
-// FreedMB is derived from the docker output "Total reclaimed space: X" line.
+// FreedMB prefers docker's self-reported "Total reclaimed space:" value (precise);
+// falls back to df delta if docker's output is missing or zero.
+// The prune runs INSIDE the measureFreedMB closure so the df window brackets
+// the actual prune — making the df delta a meaningful belt-and-braces check.
 func (c *CleanupCollector) cleanDockerDangling(ctx context.Context) CleanupTarget {
 	t := CleanupTarget{Name: "docker_dangling", Available: true}
-	res := c.transport.DockerCommand(ctx, "image prune -f --filter dangling=true")
-	freed := extractDockerFreed(res.Output())
-	// Belt-and-braces: also measure via df so we capture any indirect frees
-	// (overlay storage layer coalescing). Use whichever is larger.
+	var dockerFreedMB float64
 	dfFreed := c.measureFreedMB(ctx, func() {
-		// Work already done above; re-issue a no-op to bracket the df measurement.
-		// The real measurement window is the prune command above; we just want the
-		// df delta around the entire function to cross-check.
+		res := c.transport.DockerCommand(ctx, "image prune -f --filter dangling=true")
+		dockerFreedMB = extractDockerFreed(res.Output())
 	})
-	if dfFreed > freed {
-		freed = dfFreed
+	// Prefer docker's self-reported freed (precise); fall back to df delta
+	// if docker output is missing or zero (e.g. overlay deferred coalescing).
+	freed := dfFreed
+	if dockerFreedMB > 0 {
+		freed = dockerFreedMB
 	}
 	t.FreedMB = freed
 	t.Freed = fmt.Sprintf("%.1f MB", freed)
@@ -162,18 +164,26 @@ func (c *CleanupCollector) cleanDockerDangling(ctx context.Context) CleanupTarge
 // cleanDockerBuilderAged removes Docker builder cache entries older than the
 // specified age (e.g. "72h"). Targets WARNING_HIGH level where builder cache
 // can accumulate gigabytes from repeated image builds.
+// FreedMB prefers docker's self-reported "Total reclaimed space:" value (precise);
+// falls back to df delta if docker's output is missing or zero.
+// The prune runs INSIDE the measureFreedMB closure so the df window brackets
+// the actual prune — preventing docker self-report and df delta from being summed.
 func (c *CleanupCollector) cleanDockerBuilderAged(ctx context.Context, age string) CleanupTarget {
 	if age == "" {
 		age = "72h"
 	}
 	t := CleanupTarget{Name: "docker_builder_aged", Available: true}
-	var freed float64
-	freed += c.measureFreedMB(ctx, func() {
+	var dockerFreedMB float64
+	dfFreed := c.measureFreedMB(ctx, func() {
 		res := c.transport.DockerCommand(ctx, "builder prune --filter until="+age+" -f")
-		if f := extractDockerFreed(res.Output()); f > freed {
-			freed = f
-		}
+		dockerFreedMB = extractDockerFreed(res.Output())
 	})
+	// Prefer docker's self-reported freed (precise); fall back to df delta
+	// if docker output is missing or zero.
+	freed := dfFreed
+	if dockerFreedMB > 0 {
+		freed = dockerFreedMB
+	}
 	t.FreedMB = freed
 	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t

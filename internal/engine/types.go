@@ -170,6 +170,14 @@ func (r *DiagnosticReport) CalculateHealth() {
 		}
 	}
 	for _, a := range r.Alerts {
+		// AlertWarningHigh (85–94% disk) must show as degraded so that Telegram
+		// consumers and external monitors do not see "healthy" for an 88% disk.
+		if a.Level == AlertWarningHigh {
+			r.OverallHealth = healthDegraded
+			return
+		}
+	}
+	for _, a := range r.Alerts {
 		if a.Level == AlertWarning {
 			r.OverallHealth = string(AlertWarning)
 			return
