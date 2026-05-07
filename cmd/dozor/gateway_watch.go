@@ -24,12 +24,16 @@ const (
 
 // watchDeps groups dependencies for the gateway watch loop.
 type watchDeps struct {
-	eng        *engine.ServerAgent
-	msgBus     *bus.Bus
-	cfg        engine.Config
-	kbSearcher *mcpclient.KBSearcher
-	notify     func(string)
-	lastHash   string
+	eng            *engine.ServerAgent
+	msgBus         *bus.Bus
+	cfg            engine.Config
+	kbSearcher     *mcpclient.KBSearcher
+	notify         func(string)
+	lastHash       string
+	notifyCooldown *notifyCooldown
+	// routeFn is called to dispatch a triage result to the LLM agent.
+	// Defaults to w.defaultRouteToAgent; overridable in tests.
+	routeFn func(ctx context.Context, result, hash string)
 }
 
 // runGatewayWatch runs periodic triage and feeds results through the message bus.
@@ -40,12 +44,14 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 	time.Sleep(30 * time.Second)                                                   // let everything boot
 
 	w := &watchDeps{
-		eng:        eng,
-		msgBus:     msgBus,
-		cfg:        cfg,
-		kbSearcher: kbSearcher,
-		notify:     notify,
+		eng:            eng,
+		msgBus:         msgBus,
+		cfg:            cfg,
+		kbSearcher:     kbSearcher,
+		notify:         notify,
+		notifyCooldown: newNotifyCooldownFromEnv(),
 	}
+	w.routeFn = w.defaultRouteToAgent
 	w.tick(ctx)
 
 	ticker := time.NewTicker(interval)
@@ -82,7 +88,14 @@ func (w *watchDeps) tick(ctx context.Context) {
 		return
 	}
 
-	w.routeToAgent(ctx, result, hash)
+	now := time.Now()
+	if w.notifyCooldown.shouldSuppress(hash, now) {
+		slog.InfoContext(ctx, "watch: notify cooldown active, suppressing LLM call",
+			"hash", hash, "cooldown", w.notifyCooldown.duration)
+		return
+	}
+	w.routeFn(ctx, result, hash)
+	w.notifyCooldown.markSent(hash, now) // mark AFTER successful route
 }
 
 // collectReport runs triage, systemd checks, and extra alerts into a single report.
@@ -105,8 +118,9 @@ func (w *watchDeps) isHealthy(result string) bool {
 		!strings.Contains(result, "[WARNING]")
 }
 
-// routeToAgent logs detected issues and sends the triage to the LLM agent.
-func (w *watchDeps) routeToAgent(ctx context.Context, result, hash string) {
+// defaultRouteToAgent logs detected issues and sends the triage to the LLM agent.
+// Assigned to routeFn by default; overridable in tests via the routeFn field.
+func (w *watchDeps) defaultRouteToAgent(ctx context.Context, result, hash string) {
 	issues := engine.ExtractIssues(result)
 	for _, issue := range issues {
 		slog.Warn("gateway watch: issue detected",
