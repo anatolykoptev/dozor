@@ -61,20 +61,30 @@ func newRemediateCooldown(d time.Duration) *remediateCooldown {
 
 // newRemediateCooldownFromEnv creates a cooldown tracker, reading the duration
 // from the DOZOR_REMEDIATE_COOLDOWN env var (Go duration string, e.g. "30m").
-// Falls back to remediateCooldownDuration if the env var is absent or invalid.
+// "0" or "0s" disables the cooldown entirely.
+// Falls back to remediateCooldownDuration if the env var is absent or unparseable;
+// logs a WARN on parse failure.
 func newRemediateCooldownFromEnv() *remediateCooldown {
 	d := remediateCooldownDuration
 	if raw := os.Getenv("DOZOR_REMEDIATE_COOLDOWN"); raw != "" {
-		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed >= 0 {
 			d = parsed
+		} else if err != nil {
+			slog.Warn("invalid DOZOR_REMEDIATE_COOLDOWN, falling back to default",
+				"value", raw, "default", d, "error", err)
 		}
 	}
+	slog.Info("auto-remediate cooldown configured", "duration", d)
 	return newRemediateCooldown(d)
 }
 
 // shouldSkip returns true when a run for this (service, level) pair happened
 // within the cooldown window relative to now.
+// When duration is 0, the cooldown is disabled and this always returns false.
 func (c *remediateCooldown) shouldSkip(service, level string, now time.Time) bool {
+	if c.duration == 0 {
+		return false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	last, ok := c.lastRun[service+":"+level]

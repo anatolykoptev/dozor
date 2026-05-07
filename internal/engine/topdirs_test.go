@@ -64,6 +64,41 @@ func TestTopDirs_TopNLimit(t *testing.T) {
 	}
 }
 
+// TestParseDuOutput_FiltersBelow100MB verifies that entries smaller than 100 MB are
+// dropped in Go after parsing, not by a GNU-only --threshold flag.
+func TestParseDuOutput_FiltersBelow100MB(t *testing.T) {
+	t.Parallel()
+
+	// Mix: 5G, 200M (keep) + 50M, 1.2K (drop).
+	raw := "5G\t/var\n200M\t/opt\n50M\t/tmp\n1.2K\t/boot\n"
+	got := parseDuOutput(raw, 10)
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 entries (>=100MB), got %d: %+v", len(got), got)
+	}
+	for _, d := range got {
+		if d.Bytes < 100*1024*1024 {
+			t.Errorf("entry %s (%d bytes) should have been filtered out", d.Path, d.Bytes)
+		}
+	}
+}
+
+// TestTopDirs_LocaleC_decimalDot verifies that comma-decimal input (locale artefact)
+// is gracefully ignored — ParseSizeMB returns 0 for unparseable, so the entry is
+// filtered by the <100 MB threshold.
+func TestTopDirs_LocaleC_decimalDot(t *testing.T) {
+	t.Parallel()
+
+	// Comma decimal — would appear on non-LC_ALL=C hosts. Graceful ignore expected.
+	raw := "5,2G\t/var\n"
+	got := parseDuOutput(raw, 10)
+
+	// "5,2G" → numStr stops at comma → ParseSizeMB returns 0 → bytes=0 < 100MB → filtered.
+	if len(got) != 0 {
+		t.Errorf("comma-decimal entry should be filtered as unparseable (bytes=0 < 100MB), got %d entries", len(got))
+	}
+}
+
 // TestTopDirs_SkipsTotalLine verifies that a "total" line emitted by du is excluded.
 func TestTopDirs_SkipsTotalLine(t *testing.T) {
 	t.Parallel()

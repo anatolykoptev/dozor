@@ -109,6 +109,46 @@ func TestTryAutoRemediate_SkipsWhenCooldownActive(t *testing.T) {
 	}
 }
 
+// TestCooldown_ZeroDisables verifies that duration=0 disables the cooldown — shouldSkip
+// always returns false even immediately after markRun.
+func TestCooldown_ZeroDisables(t *testing.T) {
+	t.Parallel()
+
+	cd := newRemediateCooldown(0)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	cd.markRun("disk", "warning", now)
+
+	// Immediately after markRun — should NOT skip when duration is 0.
+	if cd.shouldSkip("disk", "warning", now) {
+		t.Error("shouldSkip should return false when duration=0 (cooldown disabled)")
+	}
+}
+
+// TestCooldown_ParseEnvZero verifies that DOZOR_REMEDIATE_COOLDOWN=0s results in
+// duration==0 (disabled), not a fallback to the 30m default.
+func TestCooldown_ParseEnvZero(t *testing.T) {
+	// No t.Parallel() — t.Setenv requires sequential test.
+	t.Setenv("DOZOR_REMEDIATE_COOLDOWN", "0s")
+	cd := newRemediateCooldownFromEnv()
+
+	if cd.duration != 0 {
+		t.Errorf("expected duration=0 when env=0s, got %v", cd.duration)
+	}
+}
+
+// TestCooldown_ParseEnvMalformed verifies that an invalid DOZOR_REMEDIATE_COOLDOWN
+// falls back to the default 30m.
+func TestCooldown_ParseEnvMalformed(t *testing.T) {
+	// No t.Parallel() — t.Setenv requires sequential test.
+	t.Setenv("DOZOR_REMEDIATE_COOLDOWN", "abc")
+	cd := newRemediateCooldownFromEnv()
+
+	if cd.duration != remediateCooldownDuration {
+		t.Errorf("expected fallback to default %v on malformed env, got %v", remediateCooldownDuration, cd.duration)
+	}
+}
+
 // countingDiskRemediator counts AutoRemediateDisk calls.
 type countingDiskRemediator struct {
 	onCall func() *engine.DiskRemediateResult
