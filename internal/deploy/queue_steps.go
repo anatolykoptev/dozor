@@ -122,6 +122,11 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) st
 // implementation is in queue_helpers.go (defaultBuildRunner).
 var buildRunner = defaultBuildRunner
 
+// upRunner invokes `docker compose up` and returns the full combined output.
+// It is a package-level var so tests can substitute it. The default
+// implementation is in queue_helpers.go (defaultUpRunner).
+var upRunner = defaultUpRunner
+
 // runBuildWithFullLog invokes docker build via buildRunner and, on failure,
 // dumps the full combined stderr to /tmp/dozor-build-<shortSHA>-<ts>.log.
 // runCmd truncates output to maxOutputLen, which previously masked Docker's
@@ -258,36 +263,70 @@ func writeBuildContextOverride(overrides []BuildOverride) (string, error) {
 	return f.Name(), nil
 }
 
-// composeUp runs docker compose up with retry on transient failure.
-func composeUp(ctx context.Context, req BuildRequest) string {
+// runUpWithFullLog invokes docker compose up via upRunner and, on failure,
+// dumps the full combined stderr to /tmp/dozor-up-<deployID>-<ts>.log.
+// runCmd truncates output to maxUpOutputLen, which previously masked Docker's
+// real error (e.g. "Container name already in use") behind env-var warnings.
+func runUpWithFullLog(ctx context.Context, req BuildRequest, deployID string) string {
 	upArgs := append(
 		[]string{"compose", "up", "-d", "--no-deps", "--force-recreate"},
 		req.Config.Services...)
 
-	var upErr error
+	output, err := upRunner(ctx, req.Config.ComposePath, upArgs)
+	if err == nil {
+		return ""
+	}
+
+	dumpPath := fmt.Sprintf("/tmp/dozor-up-%s-%d.log", deployID, time.Now().UnixMilli())
+	if werr := os.WriteFile(dumpPath, output, 0o600); werr != nil { //nolint:mnd // standard log-file mode
+		slog.Warn("deploy: failed to dump full up log", "path", dumpPath, "error", werr)
+		dumpPath = ""
+	}
+
+	slog.Error("deploy: docker up failed",
+		"services", req.Config.Services,
+		"deploy_id", deployID,
+		"err", err,
+		"stderr_tail", truncate(string(output), maxUpOutputLen),
+		"full_log_path", dumpPath,
+	)
+
+	if dumpPath != "" {
+		return fmt.Sprintf("docker up: %v (full log: %s)", err, dumpPath)
+	}
+	return fmt.Sprintf("docker up: %v: %s", err, truncate(string(output), maxUpOutputLen))
+}
+
+// composeUp runs docker compose up with retry on transient failure.
+// Each failed attempt dumps the full stderr to a /tmp/dozor-up-*.log file
+// so operators can see the real error (e.g. container conflict) past warnings.
+func composeUp(ctx context.Context, req BuildRequest) string {
+	deployID := short(req.CommitSHA)
+
+	var lastErrMsg string
 	for attempt := 1; attempt <= upMaxRetries; attempt++ {
-		upErr = runCmd(ctx, req.Config.ComposePath, "docker", upArgs...)
-		if upErr == nil {
+		lastErrMsg = runUpWithFullLog(ctx, req, deployID)
+		if lastErrMsg == "" {
 			return ""
 		}
 		slog.Warn("deploy: docker up failed, retrying",
 			"attempt", attempt,
 			"max", upMaxRetries,
-			"error", truncate(upErr.Error(), maxOutputLen),
+			"error", lastErrMsg,
 			"services", req.Config.Services,
 		)
 		if attempt < upMaxRetries {
 			if ctx.Err() != nil {
-				return fmt.Sprintf("docker up: context cancelled during retry: %v", upErr)
+				return fmt.Sprintf("docker up: context cancelled during retry: %v", lastErrMsg)
 			}
 			select {
 			case <-ctx.Done():
-				return fmt.Sprintf("docker up: context cancelled during retry: %v", upErr)
+				return fmt.Sprintf("docker up: context cancelled during retry: %v", lastErrMsg)
 			case <-time.After(upRetryDelay):
 			}
 		}
 	}
-	return fmt.Sprintf("docker up (after %d attempts): %v", upMaxRetries, upErr)
+	return fmt.Sprintf("docker up (after %d attempts): %v", upMaxRetries, lastErrMsg)
 }
 
 // pruneOldImages removes dangling images and build cache older than 24h.
