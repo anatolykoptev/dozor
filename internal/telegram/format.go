@@ -4,10 +4,6 @@ import tgfmt "github.com/anatolykoptev/go-kit/telegram"
 
 // Aliases for go-kit/telegram functions — keeps internal call sites unchanged.
 var (
-	// Deprecated: use tgfmt.PrepareForTelegram directly. This alias still
-	// routes through MarkdownToHTML which EscapeHTML-encodes the input first,
-	// causing double-escaping when the caller passes pre-formatted HTML.
-	// sendReply now calls markdownToTelegramHTML which is wired to PrepareForTelegram.
 	stripMarkdown = tgfmt.StripMarkdown
 	sanitizeUTF8  = tgfmt.SanitizeUTF8
 	splitMessage  = tgfmt.SplitMessage

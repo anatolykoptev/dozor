@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,10 +24,15 @@ func TestRunMessageLoop_LogsInboundText(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	go runMessageLoop(ctx, messageLoopDeps{
-		msgBus:      msgBus,
-		adminChatID: "123",
-	})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runMessageLoop(ctx, messageLoopDeps{
+			msgBus:      msgBus,
+			adminChatID: "123",
+		})
+	}()
 
 	msgBus.PublishInbound(bus.Message{
 		ID:       "test-1",
@@ -38,6 +44,7 @@ func TestRunMessageLoop_LogsInboundText(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	cancel()
+	wg.Wait()
 
 	logs := buf.String()
 	if !strings.Contains(logs, "check server status") {
