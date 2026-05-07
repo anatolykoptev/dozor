@@ -6,10 +6,11 @@ import "time"
 type AlertLevel string
 
 const (
-	AlertCritical AlertLevel = "critical"
-	AlertError    AlertLevel = "error"
-	AlertWarning  AlertLevel = "warning"
-	AlertInfo     AlertLevel = "info"
+	AlertCritical    AlertLevel = "critical"
+	AlertError       AlertLevel = "error"
+	AlertWarningHigh AlertLevel = "warning_high"
+	AlertWarning     AlertLevel = "warning"
+	AlertInfo        AlertLevel = "info"
 )
 
 // Display icons used in formatted output across packages.

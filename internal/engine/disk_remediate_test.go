@@ -212,6 +212,31 @@ func TestExtractIssues_DiskWarningLine(t *testing.T) {
 	}
 }
 
+// TestExtractIssues_DiskWarningHighLine asserts that a [WARNING_HIGH] disk line is parsed
+// into a TriageIssue with Service=="disk".
+func TestExtractIssues_DiskWarningHighLine(t *testing.T) {
+	t.Parallel()
+
+	report := "System Overview\n\nDisk: /dev/sda1 88% (20G free) — ⚠️\n[WARNING_HIGH] disk — /dev/sda1 at 88% (20.0GB free)\n"
+	issues := ExtractIssues(report)
+	if len(issues) == 0 {
+		t.Fatal("ExtractIssues: expected at least one issue for [WARNING_HIGH] disk line, got none")
+	}
+	found := false
+	for _, iss := range issues {
+		if iss.Service == "disk" {
+			found = true
+			if !strings.Contains(iss.Description, "88%") {
+				t.Errorf("issue description should contain '88%%%%', got %q", iss.Description)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ExtractIssues: expected TriageIssue with Service=disk for WARNING_HIGH, got %+v", issues)
+	}
+}
+
 // TestExtractIssues_NoDiskLine asserts that a report without machine-readable disk lines
 // produces no disk issues — confirming the old human-readable format was invisible to ExtractIssues.
 func TestExtractIssues_NoDiskLine(t *testing.T) {
