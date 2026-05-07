@@ -78,6 +78,12 @@ func (a *ServerAgent) GetConfig() Config {
 	return a.cfg
 }
 
+// TopDirsRoot returns the n largest direct subdirectories of "/" sorted by size descending.
+// Used by gateway_remediate to log a diagnostic snapshot when cleanup freed nothing.
+func (a *ServerAgent) TopDirsRoot(ctx context.Context, n int) ([]DirSize, error) {
+	return TopDirs(ctx, a.transport, "/", n)
+}
+
 // resolveServices returns the services list: explicit > config > auto-discover.
 func (a *ServerAgent) resolveServices(ctx context.Context, services []string) []string {
 	if len(services) > 0 {
