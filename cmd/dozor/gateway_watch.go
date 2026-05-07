@@ -182,10 +182,12 @@ func buildWatchPrompt(devMode bool) string {
 	if devMode {
 		return "Periodic health check (DEV MODE — observe only, do NOT take any corrective action):\n\n"
 	}
-	return "Health check found issues. Reply with a SHORT Telegram report (max 10 lines):\n\n" +
-		"**Status:** degraded/warning/critical\n" +
-		"**Issues:**\n• service — problem (one line each)\n" +
-		"**Action:** what you did or recommend\n\n" +
+	return "Health check found issues. Reply with a SHORT Telegram report (max 10 lines).\n" +
+		"Use Telegram HTML formatting EXACTLY as shown — keep <b>...</b> tags literal in your reply:\n\n" +
+		"<b>Status:</b> degraded/warning/critical\n" +
+		"<b>Issues:</b>\n• service — problem (one line each)\n" +
+		"<b>Action:</b> what you did or recommend\n\n" +
+		"Allowed tags: <b>, <i>, <code>, <pre>. No other HTML. No Markdown (no **, no __).\n" +
 		"IMPORTANT: Only report issues from the CURRENT triage data below. " +
 		"Do NOT report numbers, restart counts, or error details from historical KB entries. " +
 		"Do NOT list healthy services. Do NOT run extra diagnostics unless a service is down.\n\n"
