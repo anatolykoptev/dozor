@@ -190,7 +190,7 @@ func verifyRestarts(ctx context.Context, eng *engine.ServerAgent, restarted []st
 func extractIssueLevel(triageResult, service string) string {
 	for _, line := range strings.Split(triageResult, "\n") {
 		line = strings.TrimSpace(line)
-		for _, level := range []string{"CRITICAL", "ERROR", "WARNING"} {
+		for _, level := range []string{"CRITICAL", "ERROR", "WARNING_HIGH", "WARNING"} {
 			prefix := "[" + level + "] " + service + " "
 			if strings.HasPrefix(line, prefix) {
 				return level
@@ -236,6 +236,8 @@ func mapTriageLevelToAlertLevel(triageLevel string) engine.AlertLevel {
 	switch triageLevel {
 	case "WARNING":
 		return engine.AlertWarning
+	case "WARNING_HIGH":
+		return engine.AlertWarningHigh
 	case "CRITICAL", "ERROR":
 		return engine.AlertCritical
 	default:

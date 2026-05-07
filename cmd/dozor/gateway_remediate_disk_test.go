@@ -34,6 +34,15 @@ func TestMapTriageLevelToAlertLevel_Error(t *testing.T) {
 	}
 }
 
+func TestMapTriageLevelToAlertLevel_WarningHigh(t *testing.T) {
+	t.Parallel()
+
+	level := mapTriageLevelToAlertLevel("WARNING_HIGH")
+	if level != engine.AlertWarningHigh {
+		t.Errorf("expected AlertWarningHigh, got %s", level)
+	}
+}
+
 func TestMapTriageLevelToAlertLevel_Unknown(t *testing.T) {
 	t.Parallel()
 

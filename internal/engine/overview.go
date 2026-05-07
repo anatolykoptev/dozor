@@ -18,7 +18,13 @@ const (
 	// dfFieldCount is the number of fields expected in a df output line.
 	dfFieldCount = 6
 	// diskCriticalPct is the disk usage percentage to trigger a critical alert.
-	diskCriticalPct = 90
+	// Raised from 90 to 95 in the stratified-targets PR. 90% no longer triggers
+	// full docker system prune — we now run targeted cleanups (builder cache,
+	// dangling images) at 85-94% (WARNING_HIGH) and reserve full prune for 95%+
+	// to avoid evicting recent, hot builds. Operator can override via DOZOR_DISK_CRITICAL.
+	diskCriticalPct = 95
+	// diskWarnHighPct is the disk usage percentage to trigger a warning_high alert (85-94%).
+	diskWarnHighPct = 85
 	// diskWarnPct is the disk usage percentage to trigger a warning.
 	diskWarnPct = 80
 	// inodeWarnPct is the inode usage percentage threshold for showing a warning.
@@ -347,9 +353,16 @@ func (a *ServerAgent) appendDiskPressure(ctx context.Context, b *strings.Builder
 		// Machine-readable line — parsed by ExtractIssues into TriageIssue{Service:"disk"}.
 		// Without this line the disk auto-remediate branch in tryAutoRemediate is dead code.
 		// Separator MUST come from TriageMachineSep — see triage.go.
-		if dp.UsedPct >= diskCriticalPct {
+		// Three levels map to three remediation strategies in AutoRemediateDisk:
+		//   [WARNING]      80-84%  — light cleanup (apt/sccache/npm/docker dangling)
+		//   [WARNING_HIGH] 85-94%  — + lang caches + docker builder prune
+		//   [CRITICAL]     95%+    — + full docker system prune
+		switch {
+		case dp.UsedPct >= diskCriticalPct:
 			fmt.Fprintf(b, "[CRITICAL] disk%s%s at %.0f%% (%.1fGB free)\n", TriageMachineSep, dp.Filesystem, dp.UsedPct, dp.AvailGB)
-		} else if dp.UsedPct >= diskWarnPct {
+		case dp.UsedPct >= diskWarnHighPct:
+			fmt.Fprintf(b, "[WARNING_HIGH] disk%s%s at %.0f%% (%.1fGB free)\n", TriageMachineSep, dp.Filesystem, dp.UsedPct, dp.AvailGB)
+		case dp.UsedPct >= diskWarnPct:
 			fmt.Fprintf(b, "[WARNING] disk%s%s at %.0f%% (%.1fGB free)\n", TriageMachineSep, dp.Filesystem, dp.UsedPct, dp.AvailGB)
 		}
 	}

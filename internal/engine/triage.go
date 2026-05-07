@@ -289,7 +289,7 @@ func ExtractIssues(report string) []TriageIssue {
 	var issues []TriageIssue
 	for _, line := range strings.Split(report, "\n") {
 		line = strings.TrimSpace(line)
-		for _, prefix := range []string{"[CRITICAL] ", "[ERROR] ", "[WARNING] "} {
+		for _, prefix := range []string{"[CRITICAL] ", "[ERROR] ", "[WARNING_HIGH] ", "[WARNING] "} {
 			if !strings.HasPrefix(line, prefix) {
 				continue
 			}

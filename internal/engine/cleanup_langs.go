@@ -163,3 +163,49 @@ func (c *CleanupCollector) cleanPip(ctx context.Context) CleanupTarget {
 	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }
+
+// --- sccache ---
+
+// cleanSccache removes the sccache on-disk cache at ~/.cache/sccache.
+// If the directory does not exist the target is returned as unavailable (no error).
+// sccache rebuilds its cache automatically on the next compile — nuking the cache
+// costs only a cold-rebuild cycle, which is acceptable under disk pressure.
+func (c *CleanupCollector) cleanSccache(ctx context.Context) CleanupTarget {
+	t := CleanupTarget{Name: "sccache"}
+	// Probe: du -sm succeeds only if the dir exists.
+	res := c.transport.ExecuteUnsafe(ctx, "du -sm ~/.cache/sccache 2>/dev/null")
+	if !res.Success || strings.TrimSpace(res.Stdout) == "" {
+		// Directory absent — skip silently.
+		return t
+	}
+	t.Available = true
+	freed := c.measureFreedMB(ctx, func() {
+		c.transport.ExecuteUnsafe(ctx, "rm -rf ~/.cache/sccache 2>/dev/null")
+	})
+	t.FreedMB = freed
+	t.Freed = fmt.Sprintf("%.1f MB", freed)
+	return t
+}
+
+// --- npm / yarn caches ---
+
+// cleanNpmYarn removes npm and yarn package manager caches:
+//   - ~/.npm/_cacache  — npm download cache (often 1-5 GB on active JS dev boxes)
+//   - ~/.cache/yarn    — Yarn 1.x offline mirror / cache
+//
+// Only caches are removed — not globally installed packages.
+func (c *CleanupCollector) cleanNpmYarn(ctx context.Context) CleanupTarget {
+	t := CleanupTarget{Name: "npm_yarn", Available: true}
+	cacheDirs := []string{
+		"~/.npm/_cacache",
+		"~/.cache/yarn",
+	}
+	freed := c.measureFreedMB(ctx, func() {
+		for _, dir := range cacheDirs {
+			c.transport.ExecuteUnsafe(ctx, "rm -rf '"+dir+"' 2>/dev/null")
+		}
+	})
+	t.FreedMB = freed
+	t.Freed = fmt.Sprintf("%.1f MB", freed)
+	return t
+}

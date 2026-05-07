@@ -6,10 +6,11 @@ import "time"
 type AlertLevel string
 
 const (
-	AlertCritical AlertLevel = "critical"
-	AlertError    AlertLevel = "error"
-	AlertWarning  AlertLevel = "warning"
-	AlertInfo     AlertLevel = "info"
+	AlertCritical    AlertLevel = "critical"
+	AlertError       AlertLevel = "error"
+	AlertWarningHigh AlertLevel = "warning_high"
+	AlertWarning     AlertLevel = "warning"
+	AlertInfo        AlertLevel = "info"
 )
 
 // Display icons used in formatted output across packages.
@@ -164,6 +165,14 @@ func (r *DiagnosticReport) CalculateHealth() {
 	}
 	for _, a := range r.Alerts {
 		if a.Level == AlertError {
+			r.OverallHealth = healthDegraded
+			return
+		}
+	}
+	for _, a := range r.Alerts {
+		// AlertWarningHigh (85–94% disk) must show as degraded so that Telegram
+		// consumers and external monitors do not see "healthy" for an 88% disk.
+		if a.Level == AlertWarningHigh {
 			r.OverallHealth = healthDegraded
 			return
 		}
