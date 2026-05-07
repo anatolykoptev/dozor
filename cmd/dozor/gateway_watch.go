@@ -24,12 +24,13 @@ const (
 
 // watchDeps groups dependencies for the gateway watch loop.
 type watchDeps struct {
-	eng        *engine.ServerAgent
-	msgBus     *bus.Bus
-	cfg        engine.Config
-	kbSearcher *mcpclient.KBSearcher
-	notify     func(string)
-	lastHash   string
+	eng             *engine.ServerAgent
+	msgBus          *bus.Bus
+	cfg             engine.Config
+	kbSearcher      *mcpclient.KBSearcher
+	notify          func(string)
+	lastHash        string
+	notifyCooldown  *notifyCooldown
 }
 
 // runGatewayWatch runs periodic triage and feeds results through the message bus.
@@ -40,11 +41,12 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 	time.Sleep(30 * time.Second)                                                   // let everything boot
 
 	w := &watchDeps{
-		eng:        eng,
-		msgBus:     msgBus,
-		cfg:        cfg,
-		kbSearcher: kbSearcher,
-		notify:     notify,
+		eng:            eng,
+		msgBus:         msgBus,
+		cfg:            cfg,
+		kbSearcher:     kbSearcher,
+		notify:         notify,
+		notifyCooldown: newNotifyCooldownFromEnv(),
 	}
 	w.tick(ctx)
 
@@ -81,6 +83,13 @@ func (w *watchDeps) tick(ctx context.Context) {
 	if !w.eng.IsDevMode() && tryAutoRemediate(ctx, w.eng, w.cfg, result, w.notify) {
 		return
 	}
+
+	if w.notifyCooldown.shouldSuppress(hash, time.Now()) {
+		slog.InfoContext(ctx, "watch: notify cooldown active, suppressing LLM call",
+			"hash", hash, "cooldown", w.notifyCooldown.duration)
+		return
+	}
+	w.notifyCooldown.markSent(hash, time.Now())
 
 	w.routeToAgent(ctx, result, hash)
 }
