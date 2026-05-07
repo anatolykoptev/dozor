@@ -16,6 +16,12 @@ const (
 	canaryPollInterval      = 5 * time.Second
 	serviceActiveMaxRetries = 6
 	serviceActiveRetryDelay = 500 * time.Millisecond
+
+	// canaryTimeoutSrcPerRepo / PerProfile / HardFallback are the source labels
+	// logged when resolveCanaryTimeout picks a timeout value.
+	canaryTimeoutSrcPerRepo      = "per-repo"
+	canaryTimeoutSrcPerProfile   = "per-profile"
+	canaryTimeoutSrcHardFallback = "hard-fallback"
 )
 
 // systemctlRunner is the function used to invoke systemctl.
@@ -63,6 +69,22 @@ func executeBinaryBuild(ctx context.Context, req BuildRequest) BuildResult {
 	return result
 }
 
+// resolveCanaryTimeout returns the effective canary smoke timeout for cfg and
+// a short string describing which source was used ("per-repo", "per-profile",
+// or "hard-fallback"). Priority:
+//  1. Per-repo canary_smoke_timeout (from deploy-repos.yaml) — wins if set.
+//  2. Per-profile default (from profileDefaults map).
+//  3. Hard-coded fallback canaryDefaultTimeout (30s).
+func resolveCanaryTimeout(cfg RepoConfig) (time.Duration, string) {
+	if cfg.CanarySmokeTimeout.D > 0 {
+		return cfg.CanarySmokeTimeout.D, canaryTimeoutSrcPerRepo
+	}
+	if p, ok := profileDefaults[cfg.Profile]; ok && p.CanarySmokeTimeout > 0 {
+		return p.CanarySmokeTimeout, canaryTimeoutSrcPerProfile
+	}
+	return canaryDefaultTimeout, canaryTimeoutSrcHardFallback
+}
+
 // restartWithCanary restarts user_services in two stages:
 //   - Stage 1 (canary): restart first service, wait for smoke_url to stay 200
 //     for canary_smoke_window (sustained window).
@@ -77,7 +99,7 @@ func restartWithCanary(ctx context.Context, cfg RepoConfig) error {
 		return nil
 	}
 
-	smokeTimeout := cfg.CanarySmokeTimeout.OrDefault(canaryDefaultTimeout)
+	smokeTimeout, timeoutSrc := resolveCanaryTimeout(cfg)
 	smokeWindow := cfg.CanarySmokeWindow.OrDefault(canaryDefaultWindow)
 
 	canary := svcs[0]
@@ -86,6 +108,7 @@ func restartWithCanary(ctx context.Context, cfg RepoConfig) error {
 	slog.Info("deploy/binary: canary restart", "service", canary,
 		"smoke_url", cfg.SmokeURL,
 		"smoke_timeout", smokeTimeout,
+		"smoke_timeout_source", timeoutSrc,
 		"smoke_window", smokeWindow)
 
 	if err := restartAndSmoke(ctx, canary, cfg.SmokeURL, smokeTimeout, smokeWindow); err != nil {
