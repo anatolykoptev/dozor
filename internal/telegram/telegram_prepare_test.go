@@ -7,16 +7,6 @@ import (
 	tgfmt "github.com/anatolykoptev/go-kit/telegram"
 )
 
-// prepareText is the helper under test: it wraps the format-and-escape
-// pipeline that sendReply applies to outbound text before calling sendChunked.
-// After the swap it will call tgfmt.PrepareForTelegram and discard the mode
-// return (always "HTML", matching the tgbotapi.ModeHTML constant used at the
-// send site).
-func prepareText(text string) string {
-	out, _ := tgfmt.PrepareForTelegram(text)
-	return out
-}
-
 // TestPrepareTextHTMLInput verifies that pre-formatted HTML (as produced by
 // buildAutoRemediateMessage) passes through unchanged rather than being
 // double-escaped.
@@ -77,35 +67,17 @@ func TestPrepareTextHTMLInput(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			out := prepareText(tc.input)
+			out, _ := tgfmt.PrepareForTelegram(tc.input)
 			for _, want := range tc.wantContains {
 				if !strings.Contains(out, want) {
-					t.Errorf("prepareText(%q) = %q\n  want to contain: %q", tc.input, out, want)
+					t.Errorf("PrepareForTelegram(%q) = %q\n  want to contain: %q", tc.input, out, want)
 				}
 			}
 			for _, absent := range tc.wantAbsent {
 				if strings.Contains(out, absent) {
-					t.Errorf("prepareText(%q) = %q\n  must NOT contain: %q", tc.input, out, absent)
+					t.Errorf("PrepareForTelegram(%q) = %q\n  must NOT contain: %q", tc.input, out, absent)
 				}
 			}
 		})
-	}
-}
-
-// TestPrepareTextMarkdownToTelegramHTMLRegression verifies that the OLD
-// markdownToTelegramHTML behaviour (EscapeHTML on HTML input) would have
-// failed on this input — this documents the bug.
-func TestPrepareTextOldBehaviourWouldFail(t *testing.T) {
-	// markdownToTelegramHTML is the old alias; it still exists in format.go
-	// until we remove it. We verify it escapes HTML tags so the regression
-	// is clearly documented.
-	htmlInput := "<b>Auto-fix applied</b>"
-	out := markdownToTelegramHTML(htmlInput)
-	if strings.Contains(out, "<b>") {
-		t.Skipf("markdownToTelegramHTML already preserves HTML tags (alias may have been updated): %q", out)
-	}
-	// This is the BUG: if we still get here, the old function escaped the tags.
-	if !strings.Contains(out, "&lt;b&gt;") {
-		t.Errorf("expected old behaviour to produce &lt;b&gt;, got: %q", out)
 	}
 }
