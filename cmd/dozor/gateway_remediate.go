@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
@@ -115,13 +114,25 @@ func logUnhandled(unhandled []engine.TriageIssue, verified, suppressed []string)
 		slog.Int("unhandled", len(unhandled)))
 }
 
+// diskRemediator is satisfied by *engine.ServerAgent and by test stubs.
+type diskRemediator interface {
+	AutoRemediateDisk(ctx context.Context, level engine.AlertLevel) *engine.DiskRemediateResult
+}
+
 // handleDiskIssue runs disk auto-remediation for a single disk triage issue.
 // Returns (notifyMsg, handled): notifyMsg is non-empty when the operator should be notified,
-// handled is true when the issue was fully resolved (no errors). Suppressed results (freed < threshold)
-// count as handled but produce no notification.
+// handled is true when the issue was handled (including partial runs with errors — the operator
+// MUST see error notifications). Suppressed results (freed < threshold, no errors) count as
+// handled but produce no notification.
 func handleDiskIssue(ctx context.Context, eng *engine.ServerAgent, issue engine.TriageIssue, level string) (notifyMsg string, handled bool) {
+	return handleDiskIssueWith(ctx, eng, issue, level)
+}
+
+// handleDiskIssueWith is the testable core of handleDiskIssue, accepting a diskRemediator
+// interface instead of *engine.ServerAgent directly.
+func handleDiskIssueWith(ctx context.Context, rem diskRemediator, issue engine.TriageIssue, level string) (notifyMsg string, handled bool) {
 	alertLevel := mapTriageLevelToAlertLevel(level)
-	res := eng.AutoRemediateDisk(ctx, alertLevel)
+	res := rem.AutoRemediateDisk(ctx, alertLevel)
 	if res == nil {
 		return "", false
 	}
@@ -135,7 +146,13 @@ func handleDiskIssue(ctx context.Context, eng *engine.ServerAgent, issue engine.
 			slog.Any("errors", res.Errors),
 			slog.Any("targets", res.Targets),
 		)
-		return "", false
+		// Return true (handled) so the issue does NOT land in unhandled[] — the error
+		// information is surfaced via the notify message, not by falling through to LLM.
+		msg := formatDiskRemediation(issue, res)
+		if len(res.Errors) > 0 {
+			msg += "\n[ERRORS] " + strings.Join(res.Errors, "; ")
+		}
+		return msg, true
 	}
 	if !diskRemediateShouldNotify(res) {
 		slog.InfoContext(ctx, "auto-remediate ran but freed nothing meaningful, suppressing notify",
@@ -237,14 +254,12 @@ func diskRemediateShouldNotify(res *engine.DiskRemediateResult) bool {
 }
 
 // sumDiskFreedMB totals freed MB across all cleanup targets in the result.
-// Parses the "NNN.N MB" strings stored in CleanupTarget.Freed.
+// Uses CleanupTarget.FreedMB (typed, authoritative) — never parses CleanupTarget.Freed
+// display strings, which may contain non-standard formats such as "1.2 GB (4 images)".
 func sumDiskFreedMB(res *engine.DiskRemediateResult) float64 {
 	var total float64
 	for _, tgt := range res.Targets {
-		freed := strings.TrimSuffix(strings.TrimSpace(tgt.Freed), " MB")
-		if v, err := strconv.ParseFloat(freed, 64); err == nil {
-			total += v
-		}
+		total += tgt.FreedMB
 	}
 	return total
 }

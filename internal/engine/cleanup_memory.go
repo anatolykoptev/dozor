@@ -99,6 +99,7 @@ func (c *CleanupCollector) cleanMemory(ctx context.Context) CleanupTarget {
 		}
 	}
 
+	t.FreedMB = freedMB
 	if len(actions) > 0 {
 		t.Freed = fmt.Sprintf("%.0f MB (%s)", freedMB, strings.Join(actions, "; "))
 	} else {

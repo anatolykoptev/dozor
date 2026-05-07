@@ -1,20 +1,29 @@
 package main
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
 )
 
 // buildDiskResult constructs a DiskRemediateResult for test scenarios.
-// freedMBPerTarget is the per-target freed amount in MB (uniform for simplicity).
+// Freed strings must follow the "NNN.N MB" format; FreedMB is derived automatically
+// so that sumDiskFreedMB (which uses FreedMB, not the string) returns the correct total.
 func buildDiskResult(targetFreeds map[string]string, errs []string) *engine.DiskRemediateResult {
 	res := &engine.DiskRemediateResult{}
 	for name, freed := range targetFreeds {
+		var freedMB float64
+		raw := strings.TrimSuffix(strings.TrimSpace(freed), " MB")
+		if v, err := strconv.ParseFloat(raw, 64); err == nil {
+			freedMB = v
+		}
 		res.Targets = append(res.Targets, engine.CleanupTarget{
 			Name:      name,
 			Available: true,
 			Freed:     freed,
+			FreedMB:   freedMB,
 		})
 	}
 	res.Errors = errs

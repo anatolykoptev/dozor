@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -45,26 +46,7 @@ func (m *dfMockTransport) DockerComposeCommand(_ context.Context, _ string) Comm
 func (m *dfMockTransport) ResolveComposePath() string { return "" }
 
 func dfOutput(mb int) string {
-	return "Avail\n" + itoa(mb) + "M\n"
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	s := ""
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	if neg {
-		s = "-" + s
-	}
-	return s
+	return "Avail\n" + strconv.Itoa(mb) + "M\n"
 }
 
 // --- cleanCaches df-delta tests ---
@@ -195,5 +177,101 @@ func TestParseDfAvailMB(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("parseDfAvailMB(%q) = %v, want %v", tc.input, got, tc.want)
 		}
+	}
+}
+
+// TestParseDfAvailMB_FallbackSixColumn verifies that parseDfAvailMB falls back to
+// scanning for the first MB-suffixed token when "--output=avail" is unsupported and
+// df emits traditional 6-column output instead.
+func TestParseDfAvailMB_FallbackSixColumn(t *testing.T) {
+	t.Parallel()
+
+	// Traditional df output (no --output=avail support, older util-linux):
+	// Filesystem 1M-blocks Used Available Use% Mounted on
+	// /dev/sda1  100000M   50000M 45000M   53%  /
+	input := "Filesystem 1M-blocks Used Available Use% Mounted on\n/dev/sda1 100000M 50000M 45000M 53% /\n"
+	got := parseDfAvailMB(input)
+	want := float64(45000)
+	if got != want {
+		t.Errorf("parseDfAvailMB fallback 6-col: got %v, want %v — old util-linux format must be handled", got, want)
+	}
+}
+
+// --- cleanup_langs.go df-delta tests ---
+
+// TestCleanGo_FreedFromDfDelta verifies that cleanGo uses measureFreedMB (df delta)
+// rather than before−after.SizeMB estimation.
+func TestCleanGo_FreedFromDfDelta(t *testing.T) {
+	t.Parallel()
+
+	// before=20000MB, after=21500MB → df delta = 1500 MB freed.
+	mock := &dfMockTransport{
+		dfResponses: []string{
+			dfOutput(20000),
+			dfOutput(21500),
+		},
+	}
+	c := &CleanupCollector{transport: mock}
+	tgt := c.cleanGo(context.Background())
+
+	if tgt.Freed != "1500.0 MB" {
+		t.Errorf("cleanGo: expected Freed=1500.0 MB (df delta), got %q — langs must use measureFreedMB not estimation", tgt.Freed)
+	}
+}
+
+// TestCleanNpm_FreedFromDfDelta verifies that cleanNpm uses measureFreedMB (df delta).
+func TestCleanNpm_FreedFromDfDelta(t *testing.T) {
+	t.Parallel()
+
+	// before=5000MB, after=5800MB → df delta = 800 MB freed.
+	mock := &dfMockTransport{
+		dfResponses: []string{
+			dfOutput(5000),
+			dfOutput(5800),
+		},
+	}
+	c := &CleanupCollector{transport: mock}
+	tgt := c.cleanNpm(context.Background())
+
+	if tgt.Freed != "800.0 MB" {
+		t.Errorf("cleanNpm: expected Freed=800.0 MB (df delta), got %q — langs must use measureFreedMB not estimation", tgt.Freed)
+	}
+}
+
+// TestCleanUv_FreedFromDfDelta verifies that cleanUv uses measureFreedMB (df delta).
+func TestCleanUv_FreedFromDfDelta(t *testing.T) {
+	t.Parallel()
+
+	// before=3000MB, after=3600MB → df delta = 600 MB freed.
+	mock := &dfMockTransport{
+		dfResponses: []string{
+			dfOutput(3000),
+			dfOutput(3600),
+		},
+	}
+	c := &CleanupCollector{transport: mock}
+	tgt := c.cleanUv(context.Background())
+
+	if tgt.Freed != "600.0 MB" {
+		t.Errorf("cleanUv: expected Freed=600.0 MB (df delta), got %q — langs must use measureFreedMB not estimation", tgt.Freed)
+	}
+}
+
+// TestCleanPip_FreedFromDfDelta verifies that cleanPip uses measureFreedMB (df delta).
+func TestCleanPip_FreedFromDfDelta(t *testing.T) {
+	t.Parallel()
+
+	// before=2000MB, after=2400MB → df delta = 400 MB freed.
+	mock := &dfMockTransport{
+		dfResponses: []string{
+			dfOutput(2000),
+			dfOutput(2400),
+		},
+	}
+	c := &CleanupCollector{transport: mock}
+	tgt := c.cleanPip(context.Background())
+
+	if tgt.Freed != "400.0 MB" {
+		t.Errorf("cleanPip: expected Freed=400.0 MB (df delta), got %q — langs must use measureFreedMB not estimation", tgt.Freed)
 	}
 }

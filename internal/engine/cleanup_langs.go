@@ -37,15 +37,19 @@ func (c *CleanupCollector) cleanGo(ctx context.Context) CleanupTarget {
 		return t
 	}
 	t.Available = true
-	before := c.scanGo(ctx).SizeMB
-
-	res := c.transport.ExecuteUnsafe(ctx, "go clean -cache 2>/dev/null")
-	if !res.Success {
-		t.Error = res.Stderr
+	var execErr string
+	freed := c.measureFreedMB(ctx, func() {
+		res := c.transport.ExecuteUnsafe(ctx, "go clean -cache 2>/dev/null")
+		if !res.Success {
+			execErr = res.Stderr
+		}
+	})
+	if execErr != "" {
+		t.Error = execErr
 		return t
 	}
-	after := c.scanGo(ctx)
-	t.Freed = fmt.Sprintf("%.1f MB", before-after.SizeMB)
+	t.FreedMB = freed
+	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }
 
@@ -73,14 +77,19 @@ func (c *CleanupCollector) cleanNpm(ctx context.Context) CleanupTarget {
 		return t
 	}
 	t.Available = true
-	before := c.scanNpm(ctx).SizeMB
-	res := c.transport.ExecuteUnsafe(ctx, "npm cache clean --force 2>/dev/null")
-	if !res.Success {
-		t.Error = res.Stderr
+	var execErr string
+	freed := c.measureFreedMB(ctx, func() {
+		res := c.transport.ExecuteUnsafe(ctx, "npm cache clean --force 2>/dev/null")
+		if !res.Success {
+			execErr = res.Stderr
+		}
+	})
+	if execErr != "" {
+		t.Error = execErr
 		return t
 	}
-	after := c.scanNpm(ctx).SizeMB
-	t.Freed = fmt.Sprintf("%.1f MB", before-after)
+	t.FreedMB = freed
+	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }
 
@@ -102,14 +111,19 @@ func (c *CleanupCollector) cleanUv(ctx context.Context) CleanupTarget {
 		return t
 	}
 	t.Available = true
-	before := c.scanUv(ctx).SizeMB
-	res := c.transport.ExecuteUnsafe(ctx, "uv cache clean 2>/dev/null")
-	if !res.Success {
-		t.Error = res.Stderr
+	var execErr string
+	freed := c.measureFreedMB(ctx, func() {
+		res := c.transport.ExecuteUnsafe(ctx, "uv cache clean 2>/dev/null")
+		if !res.Success {
+			execErr = res.Stderr
+		}
+	})
+	if execErr != "" {
+		t.Error = execErr
 		return t
 	}
-	after := c.scanUv(ctx).SizeMB
-	t.Freed = fmt.Sprintf("%.1f MB", before-after)
+	t.FreedMB = freed
+	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }
 
@@ -134,12 +148,18 @@ func (c *CleanupCollector) cleanPip(ctx context.Context) CleanupTarget {
 		return t
 	}
 	t.Available = true
-	before := c.scanPip(ctx).SizeMB
-	res := c.transport.ExecuteUnsafe(ctx, "pip cache purge 2>/dev/null || pip3 cache purge 2>/dev/null")
-	if !res.Success {
-		t.Error = res.Stderr
+	var execErr string
+	freed := c.measureFreedMB(ctx, func() {
+		res := c.transport.ExecuteUnsafe(ctx, "pip cache purge 2>/dev/null || pip3 cache purge 2>/dev/null")
+		if !res.Success {
+			execErr = res.Stderr
+		}
+	})
+	if execErr != "" {
+		t.Error = execErr
 		return t
 	}
-	t.Freed = fmt.Sprintf("%.1f MB", before)
+	t.FreedMB = freed
+	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }

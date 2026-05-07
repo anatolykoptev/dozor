@@ -41,6 +41,7 @@ func (c *CleanupCollector) cleanJournal(ctx context.Context, minAge string) Clea
 		t.Error = execErr
 		return t
 	}
+	t.FreedMB = freed
 	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }
@@ -67,6 +68,7 @@ func (c *CleanupCollector) cleanTmp(ctx context.Context, minAge string) CleanupT
 	freed := c.measureFreedMB(ctx, func() {
 		c.transport.ExecuteUnsafe(ctx, cmd)
 	})
+	t.FreedMB = freed
 	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }
@@ -99,6 +101,7 @@ func (c *CleanupCollector) cleanCaches(ctx context.Context) CleanupTarget {
 			c.transport.ExecuteUnsafe(ctx, "rm -rf '"+dir+"' 2>/dev/null")
 		}
 	})
+	t.FreedMB = freed
 	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }

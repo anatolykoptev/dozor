@@ -250,7 +250,12 @@ type CleanupTarget struct {
 	Available bool    `json:"available"`
 	SizeMB    float64 `json:"size_mb"`
 	Freed     string  `json:"freed,omitempty"`
-	Error     string  `json:"error,omitempty"`
+	// FreedMB is the authoritative freed amount in megabytes, set by the cleanup
+	// function alongside Freed. Use FreedMB for threshold comparisons and sums —
+	// not Freed, which is a display string and may use non-standard formats such
+	// as "1.2 GB (4 images)" or "500 MB (drop caches)".
+	FreedMB float64 `json:"freed_mb,omitempty"`
+	Error   string  `json:"error,omitempty"`
 }
 
 // ErrorCluster groups similar error messages by normalized template.
