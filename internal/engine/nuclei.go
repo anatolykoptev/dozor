@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/anatolykoptev/go-kit/score"
 )
 
 // NucleiFinding represents a vulnerability finding from nuclei scan.
@@ -36,15 +38,22 @@ type NucleiInfo struct {
 }
 
 // ToAlertLevel converts nuclei severity to dozor alert level.
+// Uses score.ParseSeverity to canonicalise nuclei's string output (handles
+// case + common aliases like "informational"); unknown severities default
+// to AlertWarning per existing behaviour.
 func (f NucleiFinding) ToAlertLevel() AlertLevel {
-	switch strings.ToLower(f.Info.Severity) {
-	case "critical":
-		return AlertCritical
-	case "high":
-		return AlertError
-	case "medium":
+	sev, ok := score.ParseSeverity(f.Info.Severity)
+	if !ok {
 		return AlertWarning
-	case "low", "info":
+	}
+	switch sev {
+	case score.SeverityCritical:
+		return AlertCritical
+	case score.SeverityHigh:
+		return AlertError
+	case score.SeverityMedium:
+		return AlertWarning
+	case score.SeverityLow, score.SeverityInfo:
 		return AlertInfo
 	default:
 		return AlertWarning
