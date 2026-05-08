@@ -13,6 +13,20 @@ import (
 	"time"
 )
 
+// satoriTimeout is the per-render timeout against the satori sidecar.
+// Defaults to 10s; override via DOZOR_SATORI_TIMEOUT (Go duration string,
+// e.g. "15s", "20s"). Under load satori may queue render requests, and
+// the prior 5s default produced spurious "satori unreachable: context
+// deadline exceeded" failures that triggered text-fallback.
+func satoriTimeout() time.Duration {
+	if v := os.Getenv("DOZOR_SATORI_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 10 * time.Second
+}
+
 // satoriEndpoint is the satori-render sidecar URL. Override via env for tests.
 func satoriEndpoint() string {
 	if v := os.Getenv("DOZOR_SATORI_URL"); v != "" {
@@ -40,7 +54,7 @@ func RenderAlertCard(ctx context.Context, a Alert) ([]byte, error) {
 		return nil, fmt.Errorf("alert_card: marshal: %w", err)
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	rctx, cancel := context.WithTimeout(ctx, satoriTimeout())
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(rctx, http.MethodPost, satoriEndpoint(), bytes.NewReader(payload))
