@@ -34,7 +34,7 @@ func runRemoteWatch(ctx context.Context, cfg engine.Config, notify func(string),
 	var lastAlertTime time.Time
 
 	// Consecutive failure confirmation + flap detection.
-	ft := engine.NewFailureTracker(cfg.AlertConfirmCount)
+	ft := engine.NewFailureTracker(cfg.EffectiveRemoteConfirmCount())
 	fd := engine.NewFlapDetector(cfg.FlapWindow, cfg.FlapHigh, cfg.FlapLow)
 
 	time.Sleep(15 * time.Second) // let services boot
@@ -88,7 +88,7 @@ func remoteCheckTick(ctx context.Context, cfg engine.Config, notify func(string)
 	if !confirmed {
 		slog.Info("remote watch: alert suppressed (awaiting confirmation)",
 			slog.Int("failures", count),
-			slog.Int("threshold", cfg.AlertConfirmCount))
+			slog.Int("threshold", cfg.EffectiveRemoteConfirmCount()))
 		return
 	}
 

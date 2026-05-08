@@ -75,7 +75,12 @@ type Config struct {
 	KBSaveTool   string
 
 	AlertConfirmCount int
-	FlapWindow        int
+	// RemoteAlertConfirmCount overrides AlertConfirmCount specifically for the
+	// remote watch (SSH-based health probes against external servers). Higher
+	// values absorb transient SSH timeouts. Falls back to AlertConfirmCount
+	// when unset (0).
+	RemoteAlertConfirmCount int
+	FlapWindow              int
 	FlapHigh          float64
 	FlapLow           float64
 
@@ -118,6 +123,16 @@ func (c Config) HasUserServices() bool {
 // HasLLMKeys returns true if LLM health check is configured.
 func (c Config) HasLLMKeys() bool {
 	return len(c.GeminiAPIKeys) > 0 || len(c.LLMCheckModels) > 0
+}
+
+// EffectiveRemoteConfirmCount returns the threshold for remote watch failure
+// confirmation, falling back to AlertConfirmCount when the remote-specific
+// override is unset (0) or negative.
+func (c Config) EffectiveRemoteConfirmCount() int {
+	if c.RemoteAlertConfirmCount > 0 {
+		return c.RemoteAlertConfirmCount
+	}
+	return c.AlertConfirmCount
 }
 
 // IsLocal returns true if the host is a local machine.
@@ -164,8 +179,9 @@ func Init() Config {
 		PerplexityMaxResults:  envInt("DOZOR_PERPLEXITY_MAX_RESULTS", defaultBraveMaxResults),
 		PerplexityEnabled:     envBool("DOZOR_PERPLEXITY_ENABLED", false),
 		MCPServers:            parseMCPServers(env("DOZOR_MCP_SERVERS", "")),
-		AlertConfirmCount:     envInt("DOZOR_ALERT_CONFIRM_COUNT", 2),
-		FlapWindow:            envInt("DOZOR_FLAP_WINDOW", 10),
+		AlertConfirmCount:       envInt("DOZOR_ALERT_CONFIRM_COUNT", 2),
+		RemoteAlertConfirmCount: envInt("DOZOR_REMOTE_ALERT_CONFIRM_COUNT", 0),
+		FlapWindow:              envInt("DOZOR_FLAP_WINDOW", 10),
 		FlapHigh:              envFloat("DOZOR_FLAP_HIGH", defaultFlapHigh),
 		FlapLow:               envFloat("DOZOR_FLAP_LOW", defaultFlapLow),
 		LLMConfigPath:         env("DOZOR_LLM_CONFIG_PATH", ""),
