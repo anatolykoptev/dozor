@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/docker/docker/client"
 )
 
 const (
@@ -71,6 +73,16 @@ func (a *ServerAgent) Close() {
 	if a.discovery != nil {
 		a.discovery.Close()
 	}
+}
+
+// DockerClient returns the underlying Docker SDK client, or nil if Docker is
+// unavailable (non-local config, or Docker unreachable at startup).
+// Callers must not close the returned client.
+func (a *ServerAgent) DockerClient() *client.Client {
+	if a.discovery == nil {
+		return nil
+	}
+	return a.discovery.Client()
 }
 
 // GetConfig returns the agent configuration.
