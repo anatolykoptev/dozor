@@ -154,7 +154,11 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	registerWebhookHandler(mx, msgBus, notifyFn)
 	registerAlertmanagerWebhookHandler(mx, notifyAlertFn)
 	registerDeployWebhook(sigCtx, mx, notifyFn)
-	registerLogsHandler(mx, eng.DockerClient())
+	if dockerCli := eng.DockerClient(); dockerCli != nil {
+		registerLogsHandler(mx, dockerCli)
+	} else {
+		slog.Warn("/api/logs not registered: docker client unavailable (Docker unreachable at startup)")
+	}
 
 	// 5. A2A protocol.
 	a2aSecret := os.Getenv("DOZOR_A2A_SECRET")
