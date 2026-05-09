@@ -11,6 +11,7 @@ import (
 
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/tools"
+	"github.com/anatolykoptev/go-kit/tracing/httpmw"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -46,7 +47,7 @@ func runServe(cfg engine.Config, eng *engine.ServerAgent) {
 		port = p
 	}
 
-	mx := http.NewServeMux()
+	mx := httpmw.NewServeMux()
 	mx.Handle("/mcp", buildMCPHTTPHandler(server))
 	mx.Handle("/mcp/", buildMCPHTTPHandler(server))
 	mx.HandleFunc("GET /health", healthHandler(""))
