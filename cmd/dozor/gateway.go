@@ -146,23 +146,23 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	defer webhookLimiter.Close()
 
 	// 4. HTTP mux: MCP + health + webhook + metrics.
-	mx := http.NewServeMux()
+	mx := httpmw.NewServeMux()
 	mx.Handle("/mcp", buildMCPHTTPHandler(mcpServer))
 	mx.Handle("/mcp/", buildMCPHTTPHandler(mcpServer))
 	mx.HandleFunc("GET /health", healthHandler("gateway"))
 	mx.Handle("/metrics", promhttp.Handler())
-	registerWebhookHandler(mx, msgBus, notifyFn)
-	registerAlertmanagerWebhookHandler(mx, notifyAlertFn)
-	registerDeployWebhook(sigCtx, mx, notifyFn)
+	registerWebhookHandler(mx.ServeMux, msgBus, notifyFn)
+	registerAlertmanagerWebhookHandler(mx.ServeMux, notifyAlertFn)
+	registerDeployWebhook(sigCtx, mx.ServeMux, notifyFn)
 	if dockerCli := eng.DockerClient(); dockerCli != nil {
-		registerLogsHandler(mx, dockerCli)
+		registerLogsHandler(mx.ServeMux, dockerCli)
 	} else {
 		slog.Warn("/api/logs not registered: docker client unavailable (Docker unreachable at startup)")
 	}
 
 	// 5. A2A protocol.
 	a2aSecret := os.Getenv("DOZOR_A2A_SECRET")
-	a2a.Register(mx, stack.loop, stack.registry, "http://127.0.0.1:"+port, version, a2aSecret)
+	a2a.Register(mx.ServeMux, stack.loop, stack.registry, "http://127.0.0.1:"+port, version, a2aSecret)
 
 	// 6. Telegram channel.
 	if os.Getenv("DOZOR_TELEGRAM_TOKEN") != "" {
