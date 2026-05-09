@@ -1,8 +1,9 @@
 package main
 
 import (
-	"bytes"
+	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -22,6 +23,10 @@ const (
 	logsDefaultLimit = 100
 	logsMaxLimit     = 1000
 )
+
+// serviceNameRe validates that a service name contains only safe characters.
+// Dots are intentionally excluded — compose service names use [a-zA-Z0-9_-].
+var serviceNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // containerLogger is the subset of docker client used by the logs handler.
 // *client.Client (from github.com/docker/docker/client) satisfies this interface. Extracted for testability.
@@ -88,11 +93,16 @@ func registerLogsHandler(mx *http.ServeMux, cli containerLogger) {
 	}
 
 	mx.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
-		// Auth check.
+		// Auth check — use constant-time compare to prevent timing oracle.
 		if apiToken != "" {
 			auth := r.Header.Get("Authorization")
 			const prefix = "Bearer "
-			if !strings.HasPrefix(auth, prefix) || strings.TrimPrefix(auth, prefix) != apiToken {
+			if !strings.HasPrefix(auth, prefix) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			provided := strings.TrimPrefix(auth, prefix)
+			if subtle.ConstantTimeCompare([]byte(provided), []byte(apiToken)) != 1 {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -100,14 +110,19 @@ func registerLogsHandler(mx *http.ServeMux, cli containerLogger) {
 
 		q := r.URL.Query()
 
-		// Parse service (required).
+		// Parse service (required) and validate characters.
 		service := q.Get("service")
 		if service == "" {
 			http.Error(w, `{"error":"service param required"}`, http.StatusBadRequest)
 			return
 		}
+		if !serviceNameRe.MatchString(service) {
+			http.Error(w, `{"error":"service name contains invalid characters"}`, http.StatusBadRequest)
+			return
+		}
 
 		// Parse optional since/until (unix seconds).
+		var sinceTS, untilTS int64
 		var since, until string
 		if s := q.Get("since"); s != "" {
 			ts, err := strconv.ParseInt(s, 10, 64)
@@ -115,6 +130,7 @@ func registerLogsHandler(mx *http.ServeMux, cli containerLogger) {
 				http.Error(w, `{"error":"since must be unix timestamp"}`, http.StatusBadRequest)
 				return
 			}
+			sinceTS = ts
 			since = time.Unix(ts, 0).UTC().Format(time.RFC3339)
 		}
 		if u := q.Get("until"); u != "" {
@@ -123,7 +139,14 @@ func registerLogsHandler(mx *http.ServeMux, cli containerLogger) {
 				http.Error(w, `{"error":"until must be unix timestamp"}`, http.StatusBadRequest)
 				return
 			}
+			untilTS = ts
 			until = time.Unix(ts, 0).UTC().Format(time.RFC3339)
+		}
+
+		// Validate time window ordering when both are present.
+		if since != "" && until != "" && untilTS <= sinceTS {
+			http.Error(w, `{"error":"until must be > since"}`, http.StatusBadRequest)
+			return
 		}
 
 		// Parse grep.
@@ -176,7 +199,11 @@ func registerLogsHandler(mx *http.ServeMux, cli containerLogger) {
 			Truncated:   truncated,
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			slog.Warn("logs: json encode failed",
+				slog.String("service", service),
+				slog.Any("error", err))
+		}
 	})
 
 	slog.Info("logs endpoint active", slog.String("path", "/api/logs"))
@@ -224,7 +251,9 @@ func resolveContainer(ctx context.Context, cli containerLogger, service string) 
 	return "", nil
 }
 
-// fetchAndFilterLogs streams container logs, demuxes, parses, filters, and limits.
+// fetchAndFilterLogs streams container logs, demuxes via io.Pipe+stdcopy,
+// parses line-by-line with bufio.Scanner, filters, and limits. Memory usage
+// is bounded to O(limit) regardless of total log volume.
 func fetchAndFilterLogs(
 	ctx context.Context,
 	cli containerLogger,
@@ -237,6 +266,8 @@ func fetchAndFilterLogs(
 		ShowStdout: true,
 		ShowStderr: true,
 		Timestamps: true,
+		// Soft pre-filter: fetch up to 10× limit so post-grep we have enough lines.
+		Tail: strconv.Itoa(limit * 10),
 	}
 	if since != "" {
 		opts.Since = since
@@ -251,13 +282,20 @@ func fetchAndFilterLogs(
 	}
 	defer rc.Close()
 
-	// Demux multiplexed stdout/stderr stream.
-	var buf bytes.Buffer
-	if _, err := stdcopy.StdCopy(&buf, &buf, rc); err != nil && err != io.EOF {
-		return nil, false, err
-	}
+	// Demux multiplexed stdout/stderr into a pipe so we can scan line-by-line
+	// without buffering the entire response in memory.
+	pr, pw := io.Pipe()
+	go func() {
+		_, copyErr := stdcopy.StdCopy(pw, pw, rc)
+		pw.CloseWithError(copyErr)
+	}()
+	// Ensure the pipe reader is closed when we return so the goroutine above
+	// gets ErrClosedPipe and exits promptly.
+	defer pr.Close()
 
-	raw := strings.Split(buf.String(), "\n")
+	scanner := bufio.NewScanner(pr)
+	// Allow up to 64 KiB per line; longer lines are truncated and kept as raw.
+	scanner.Buffer(make([]byte, 64<<10), 64<<10)
 
 	var grepRe *regexp.Regexp
 	if grep != "" {
@@ -265,12 +303,11 @@ func fetchAndFilterLogs(
 		grepRe = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(grep))
 	}
 
-	lines := make([]LogLine, 0, min(len(raw), limit))
-	kept := 0
+	lines := make([]LogLine, 0, limit)
 	truncated := false
 
-	for _, rawLine := range raw {
-		rawLine = strings.TrimSpace(rawLine)
+	for scanner.Scan() {
+		rawLine := strings.TrimSpace(scanner.Text())
 		if rawLine == "" {
 			continue
 		}
@@ -286,12 +323,15 @@ func fetchAndFilterLogs(
 			continue
 		}
 
-		if kept >= limit {
+		if len(lines) >= limit {
 			truncated = true
 			break
 		}
 		lines = append(lines, ll)
-		kept++
+	}
+
+	if err := scanner.Err(); err != nil && err != io.EOF && err != io.ErrClosedPipe {
+		slog.Warn("logs: scan error", slog.String("container", containerID), slog.Any("error", err))
 	}
 
 	return lines, truncated, nil

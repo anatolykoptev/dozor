@@ -370,3 +370,159 @@ func TestLogsHandler_NilClient_NotRegistered(t *testing.T) {
 		t.Errorf("want 404 (route not registered), got %d", resp.StatusCode)
 	}
 }
+
+// ---- new tests for PR #32 review findings ----
+
+func TestFetchAndFilterLogs_BoundedStreaming(t *testing.T) {
+	// Build 200 error lines; request limit=5 → at most 5 returned, truncated=true.
+	var sb strings.Builder
+	for i := range 200 {
+		sb.WriteString(fmt.Sprintf("%s {\"level\":\"error\",\"msg\":\"err %d\"}\n", fakeTS1, i))
+	}
+	fake := &fakeContainerLogger{
+		containers: []container.Summary{makeContainer("id1", "svc", "svc")},
+		logsBody:   sb.String(),
+	}
+
+	mx := http.NewServeMux()
+	registerLogsHandler(mx, fake)
+	srv := httptest.NewServer(mx)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/logs?service=svc&limit=5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	var body logsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Lines) != 5 {
+		t.Errorf("want exactly 5 lines, got %d", len(body.Lines))
+	}
+	if !body.Truncated {
+		t.Error("want truncated=true when 200 lines available but limit=5")
+	}
+}
+
+func TestLogsHandler_AuthRequired_401(t *testing.T) {
+	fake := &fakeContainerLogger{
+		containers: []container.Summary{makeContainer("id1", "svc", "svc")},
+	}
+
+	t.Setenv("DOZOR_API_TOKEN", "secret123")
+	mx := http.NewServeMux()
+	registerLogsHandler(mx, fake)
+	srv := httptest.NewServer(mx)
+	defer srv.Close()
+
+	// No Authorization header -> 401.
+	resp, err := http.Get(srv.URL + "/api/logs?service=svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("no auth: want 401, got %d", resp.StatusCode)
+	}
+
+	// Wrong token -> 401.
+	req, _ := http.NewRequest("GET", srv.URL+"/api/logs?service=svc", nil)
+	req.Header.Set("Authorization", "Bearer wrongtoken")
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Errorf("wrong token: want 401, got %d", resp2.StatusCode)
+	}
+
+	// Correct token -> 200.
+	req3, _ := http.NewRequest("GET", srv.URL+"/api/logs?service=svc", nil)
+	req3.Header.Set("Authorization", "Bearer secret123")
+	resp3, err := http.DefaultClient.Do(req3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Errorf("correct token: want 200, got %d", resp3.StatusCode)
+	}
+}
+
+func TestLogsHandler_SanitizeServiceName_400(t *testing.T) {
+	fake := &fakeContainerLogger{}
+
+	mx := http.NewServeMux()
+	registerLogsHandler(mx, fake)
+	srv := httptest.NewServer(mx)
+	defer srv.Close()
+
+	cases := []struct {
+		name    string
+		service string
+	}{
+		{"path traversal", "../../etc/passwd"},
+		{"command injection", "%3B%20rm%20-rf%20%2F"},
+		{"slash", "some%2Fpath"},
+		{"space", "my%20service"},
+		{"dot dot", ".."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/api/logs?service=" + tc.service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("service=%q: want 400, got %d", tc.service, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestLogsHandler_InvertedWindow_400(t *testing.T) {
+	fake := &fakeContainerLogger{}
+
+	mx := http.NewServeMux()
+	registerLogsHandler(mx, fake)
+	srv := httptest.NewServer(mx)
+	defer srv.Close()
+
+	// until == since -> 400
+	resp, err := http.Get(srv.URL + "/api/logs?service=svc&since=1000&until=1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("until==since: want 400, got %d", resp.StatusCode)
+	}
+
+	// until < since -> 400
+	resp2, err := http.Get(srv.URL + "/api/logs?service=svc&since=2000&until=1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Errorf("until<since: want 400, got %d", resp2.StatusCode)
+	}
+
+	// Valid window -> not 400 (service won't be found -> 404)
+	resp3, err := http.Get(srv.URL + "/api/logs?service=svc&since=1000&until=2000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode == http.StatusBadRequest {
+		t.Errorf("valid window: got unexpected 400")
+	}
+}
