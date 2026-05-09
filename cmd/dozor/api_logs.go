@@ -214,6 +214,10 @@ func registerLogsHandler(mx *http.ServeMux, cli containerLogger) {
 //  1. com.docker.compose.service label == service
 //  2. container name == service (with or without leading /)
 //  3. container name contains service as substring
+//  4. dozor.alias label (CSV) contains service — checked last across all running containers
+//
+// Priority 1-3 operate on the Docker name-filtered set (cheap).
+// Priority 4 fetches all containers only when 1-3 yield no match (rare slow path).
 //
 // Returns ("", nil) when not found, ("", err) on docker error.
 func resolveContainer(ctx context.Context, cli containerLogger, service string) (string, error) {
@@ -244,6 +248,25 @@ func resolveContainer(ctx context.Context, cli containerLogger, service string) 
 	for _, c := range containers {
 		for _, n := range c.Names {
 			if strings.Contains(strings.TrimPrefix(n, "/"), service) {
+				return c.ID, nil
+			}
+		}
+	}
+
+	// Alias fallback: check dozor.alias label (CSV) across all containers.
+	// This requires a second Docker call because the name filter above only
+	// matches containers whose name contains the service string.
+	all, err := cli.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return "", err
+	}
+	for _, c := range all {
+		aliases := c.Labels["dozor.alias"]
+		if aliases == "" {
+			continue
+		}
+		for _, a := range strings.Split(aliases, ",") {
+			if strings.TrimSpace(a) == service {
 				return c.ID, nil
 			}
 		}

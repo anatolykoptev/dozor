@@ -526,3 +526,75 @@ func TestLogsHandler_InvertedWindow_400(t *testing.T) {
 		t.Errorf("valid window: got unexpected 400")
 	}
 }
+
+// ---- alias resolver tests ----
+
+// makeContainerWithLabels builds a container.Summary with arbitrary labels.
+func makeContainerWithLabels(id, name string, labels map[string]string) container.Summary {
+	return container.Summary{
+		ID:     id,
+		Names:  []string{"/" + name},
+		Labels: labels,
+	}
+}
+
+// TestResolveContainer_AliasMatch verifies a container with dozor.alias matching
+// the query service name is found when no name/compose-label match exists.
+func TestResolveContainer_AliasMatch(t *testing.T) {
+	aliasContainer := makeContainerWithLabels("sfu001", "oxpulse-sfu-local", map[string]string{
+		"dozor.alias": "partner-edge-sfu,sfu",
+	})
+	fake := &fakeContainerLogger{
+		containers: []container.Summary{aliasContainer},
+	}
+
+	id, err := resolveContainer(t.Context(), fake, "partner-edge-sfu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "sfu001" {
+		t.Errorf("alias match: want sfu001, got %q", id)
+	}
+}
+
+// TestResolveContainer_AliasMatch_AfterExact verifies exact name wins over alias
+// when two containers compete: one named partner-edge-sfu (exact) and another
+// with dozor.alias=partner-edge-sfu (alias-only).
+func TestResolveContainer_AliasMatch_AfterExact(t *testing.T) {
+	exactContainer := makeContainerWithLabels("exact001", "partner-edge-sfu", map[string]string{})
+	aliasContainer := makeContainerWithLabels("alias001", "oxpulse-sfu-local", map[string]string{
+		"dozor.alias": "partner-edge-sfu",
+	})
+	fake := &fakeContainerLogger{
+		containers: []container.Summary{exactContainer, aliasContainer},
+	}
+
+	id, err := resolveContainer(t.Context(), fake, "partner-edge-sfu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "exact001" {
+		t.Errorf("exact name should win over alias: want exact001, got %q", id)
+	}
+}
+
+// TestResolveContainer_MultipleAliases verifies CSV aliases with whitespace
+// around values are correctly trimmed and each alias matches independently.
+func TestResolveContainer_MultipleAliases(t *testing.T) {
+	c := makeContainerWithLabels("multi001", "some-internal-name", map[string]string{
+		"dozor.alias": "a, b , c",
+	})
+	fake := &fakeContainerLogger{
+		containers: []container.Summary{c},
+	}
+
+	for _, alias := range []string{"a", "b", "c"} {
+		id, err := resolveContainer(t.Context(), fake, alias)
+		if err != nil {
+			t.Fatalf("alias %q: %v", alias, err)
+		}
+		if id != "multi001" {
+			t.Errorf("alias %q: want multi001, got %q", alias, id)
+		}
+	}
+}
