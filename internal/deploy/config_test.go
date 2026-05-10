@@ -323,6 +323,91 @@ repos:
 	}
 }
 
+// --- KindStatic config tests ---
+
+func TestLoadConfig_Static_HappyPath(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/krolik-tools-site:
+    kind: static
+    source_path: /home/krolik/sites/krolik-tools-site
+    static_deploy_script: /home/krolik/bin/site-deploy-krolik-tools.sh
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rc := cfg.Repos["anatolykoptev/krolik-tools-site"]
+	if rc.resolvedKind() != KindStatic {
+		t.Errorf("kind = %q, want %q", rc.resolvedKind(), KindStatic)
+	}
+	if rc.StaticDeployScript != "/home/krolik/bin/site-deploy-krolik-tools.sh" {
+		t.Errorf("static_deploy_script = %q", rc.StaticDeployScript)
+	}
+	if rc.SourcePath != "/home/krolik/sites/krolik-tools-site" {
+		t.Errorf("source_path = %q", rc.SourcePath)
+	}
+	// Services should be auto-populated from repo name.
+	if len(rc.Services) == 0 {
+		t.Error("Services should be non-empty for static repo")
+	}
+}
+
+func TestLoadConfig_Static_MissingScript_Error(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/krolik-tools-site:
+    kind: static
+    source_path: /home/krolik/sites/krolik-tools-site
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected error for missing static_deploy_script")
+	}
+	if !strings.Contains(err.Error(), "static_deploy_script") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadConfig_Static_MissingSourcePath_Error(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/krolik-tools-site:
+    kind: static
+    static_deploy_script: /home/krolik/bin/deploy.sh
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected error for missing source_path")
+	}
+	if !strings.Contains(err.Error(), "source_path") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadConfig_Static_ExplicitServices(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/krolik-tools-site:
+    kind: static
+    source_path: /home/krolik/sites/krolik-tools-site
+    static_deploy_script: /home/krolik/bin/deploy.sh
+    services: [krolik-tools-site]
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rc := cfg.Repos["anatolykoptev/krolik-tools-site"]
+	if len(rc.Services) != 1 || rc.Services[0] != "krolik-tools-site" {
+		t.Errorf("Services = %v, want [krolik-tools-site]", rc.Services)
+	}
+}
+
 func TestDefaultConfigPath(t *testing.T) {
 	// With DOZOR_WORKSPACE
 	t.Setenv("DOZOR_WORKSPACE", "/custom/workspace")

@@ -1,7 +1,8 @@
 // Package deploy implements GitHub webhook-driven service rebuilds.
-// Supports two deploy kinds:
+// Supports three deploy kinds:
 //   - "compose" (default): docker compose build + up
 //   - "binary": git pull + go build + systemctl --user restart
+//   - "static": run a custom deploy script (Astro / Vite / Next static export)
 package deploy
 
 import (
@@ -41,6 +42,7 @@ type DeployKind string
 const (
 	KindCompose DeployKind = "compose" // Docker Compose (default)
 	KindBinary  DeployKind = "binary"  // native Go binary + systemd user service
+	KindStatic  DeployKind = "static"  // custom deploy script (Astro / Vite / Next static export)
 )
 
 // RepoConfig maps a GitHub repository to its deploy strategy.
@@ -110,6 +112,15 @@ type RepoConfig struct {
 	// from the last event. 0 (default) disables debouncing.
 	DebounceSeconds int `yaml:"debounce_seconds,omitempty"`
 
+	// --- static-only fields ---
+
+	// StaticDeployScript (kind=static): absolute path to a bash script that
+	// performs the atomic deploy. The script receives two environment variables:
+	//   DEPLOY_REPO_PATH  — absolute path to the local git checkout (SourcePath)
+	//   DEPLOY_SHA        — commit SHA from the webhook
+	// stdout+stderr are captured and logged. A non-zero exit code is a failure.
+	StaticDeployScript string `yaml:"static_deploy_script,omitempty"`
+
 	// PruneBuildkitCache, when true, runs
 	// `docker buildx prune --force --filter type=exec.cachemount`
 	// before each `docker compose build` for this repo.
@@ -135,10 +146,14 @@ func (rc RepoConfig) DebounceWindow() time.Duration {
 
 // resolvedKind returns the effective deploy kind (defaulting to KindCompose).
 func (rc RepoConfig) resolvedKind() DeployKind {
-	if rc.Kind == KindBinary {
+	switch rc.Kind {
+	case KindBinary:
 		return KindBinary
+	case KindStatic:
+		return KindStatic
+	default:
+		return KindCompose
 	}
-	return KindCompose
 }
 
 // profileDefaults defines built-in build_paths/skip_paths presets, versioned
@@ -233,10 +248,57 @@ type Config struct {
 	Secret string                `yaml:"-"` // loaded from env, never from file
 }
 
+// validateRepoConfig validates and normalises a single RepoConfig entry.
+// It is called once per repo by LoadConfig after profile resolution.
+// Mutates rc in-place to fill derived fields (Services from UserServices, etc.).
+func validateRepoConfig(repo string, rc *RepoConfig) error {
+	switch rc.resolvedKind() {
+	case KindBinary:
+		if rc.SourcePath == "" {
+			return fmt.Errorf("binary repo %q has no source_path", repo)
+		}
+		if len(rc.BuildCmd) == 0 {
+			return fmt.Errorf("binary repo %q has no build_cmd", repo)
+		}
+		if len(rc.UserServices) == 0 {
+			return fmt.Errorf("binary repo %q has no user_services", repo)
+		}
+		// Binary repos use UserServices for restart targets; the
+		// queue keys/logs/debounce paths all reach for Services. If
+		// the operator didn't set Services explicitly, mirror it from
+		// UserServices so the queue key is non-empty (empty key would
+		// collide with drainPending's "no work pending" sentinel and
+		// leave the entry stuck forever) and log lines show the
+		// systemd unit names being restarted.
+		if len(rc.Services) == 0 {
+			rc.Services = append([]string(nil), rc.UserServices...)
+		}
+	case KindStatic:
+		if rc.SourcePath == "" {
+			return fmt.Errorf("static repo %q has no source_path", repo)
+		}
+		if rc.StaticDeployScript == "" {
+			return fmt.Errorf("static repo %q has no static_deploy_script", repo)
+		}
+		// Use repo name as the queue key when Services is not set explicitly.
+		if len(rc.Services) == 0 {
+			rc.Services = []string{repo}
+		}
+	default: // KindCompose
+		if len(rc.Services) == 0 {
+			return fmt.Errorf("compose repo %q has no services", repo)
+		}
+		if rc.ComposePath == "" {
+			return fmt.Errorf("compose repo %q has no compose_path", repo)
+		}
+	}
+	return nil
+}
+
 // LoadConfig reads deploy-repos.yaml from the given path.
 // Secret is loaded from DOZOR_GITHUB_WEBHOOK_SECRET env var.
 //
-//nolint:gocognit // pre-existing validation switch; complexity was borderline before Duration fields were added
+//nolint:gocognit // pre-existing; kind-specific validation extracted to validateRepoConfig
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -258,37 +320,9 @@ func LoadConfig(path string) (*Config, error) {
 		if err := resolveProfile(repo, &rc); err != nil {
 			return nil, err
 		}
-
-		switch rc.resolvedKind() {
-		case KindBinary:
-			if rc.SourcePath == "" {
-				return nil, fmt.Errorf("binary repo %q has no source_path", repo)
-			}
-			if len(rc.BuildCmd) == 0 {
-				return nil, fmt.Errorf("binary repo %q has no build_cmd", repo)
-			}
-			if len(rc.UserServices) == 0 {
-				return nil, fmt.Errorf("binary repo %q has no user_services", repo)
-			}
-			// Binary repos use UserServices for restart targets; the
-			// queue keys/logs/debounce paths all reach for Services. If
-			// the operator didn't set Services explicitly, mirror it from
-			// UserServices so the queue key is non-empty (empty key would
-			// collide with drainPending's "no work pending" sentinel and
-			// leave the entry stuck forever) and log lines show the
-			// systemd unit names being restarted.
-			if len(rc.Services) == 0 {
-				rc.Services = append([]string(nil), rc.UserServices...)
-			}
-		default: // KindCompose
-			if len(rc.Services) == 0 {
-				return nil, fmt.Errorf("compose repo %q has no services", repo)
-			}
-			if rc.ComposePath == "" {
-				return nil, fmt.Errorf("compose repo %q has no compose_path", repo)
-			}
+		if err := validateRepoConfig(repo, &rc); err != nil {
+			return nil, err
 		}
-
 		cfg.Repos[repo] = rc
 	}
 
