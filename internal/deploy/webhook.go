@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -174,17 +175,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// For push events, only main branch. For releases, we already validated.
-	if event == "push" && push.Ref != "refs/heads/main" {
-		respondJSON(w, http.StatusOK, map[string]string{
-			"status": "ignored",
-			"reason": "not main branch",
-		})
-		return
+	// Lookup repo config before branch check so per-repo Branch is available.
+	rc := h.config.Lookup(push.Repository.FullName)
+
+	// For push events, reject non-target branches. For releases, already validated.
+	if event == "push" {
+		expectedBranch := "main"
+		if rc != nil && rc.Branch != "" {
+			expectedBranch = rc.Branch
+		}
+		if push.Ref != "refs/heads/"+expectedBranch {
+			respondJSON(w, http.StatusOK, map[string]string{
+				"status": "ignored",
+				"reason": fmt.Sprintf("not %s branch", expectedBranch),
+			})
+			return
+		}
 	}
 
-	// Lookup repo config.
-	rc := h.config.Lookup(push.Repository.FullName)
 	if rc == nil {
 		slog.Info("deploy/webhook: unknown repo",
 			"repo", push.Repository.FullName)

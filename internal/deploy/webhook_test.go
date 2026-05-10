@@ -319,3 +319,75 @@ func TestHandler_NonPushEvent(t *testing.T) {
 		t.Errorf("reason = %q, want %q", resp["reason"], "not a push event")
 	}
 }
+
+// testConfigWithBranch builds a Config with a custom per-repo Branch value.
+func testConfigWithBranch(branch string) *Config {
+	return &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/dozor": {
+				ComposePath: "/home/krolik/deploy/krolik-server",
+				Services:    []string{"dozor"},
+				SourcePath:  "/home/krolik/src/dozor",
+				Branch:      branch,
+			},
+		},
+	}
+}
+
+func TestWebhook_PushEvent_PerRepoBranch(t *testing.T) {
+	t.Parallel()
+
+	// Repo configured with Branch: "master" — push to master should be accepted.
+	cfg := testConfigWithBranch("master")
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+
+	body := pushPayload("anatolykoptev/dozor", "refs/heads/master", "abc1234567890")
+	req := httptest.NewRequest(http.MethodPost, "/deploy/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "push")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["status"] == "ignored" {
+		t.Errorf("push to configured branch 'master' should not be ignored (reason: %q)", resp["reason"])
+	}
+	if resp["status"] != "queued" && resp["status"] != "deduplicated" {
+		t.Errorf("status = %q, want queued or deduplicated", resp["status"])
+	}
+}
+
+func TestWebhook_PushEvent_PerRepoBranch_Mismatch(t *testing.T) {
+	t.Parallel()
+
+	// Repo configured with Branch: "develop" — push to master should be ignored.
+	cfg := testConfigWithBranch("develop")
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+
+	body := pushPayload("anatolykoptev/dozor", "refs/heads/master", "abc1234567890")
+	req := httptest.NewRequest(http.MethodPost, "/deploy/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "push")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["status"] != "ignored" {
+		t.Errorf("status = %q, want ignored", resp["status"])
+	}
+	if resp["reason"] != "not develop branch" {
+		t.Errorf("reason = %q, want %q", resp["reason"], "not develop branch")
+	}
+}

@@ -48,6 +48,10 @@ type RepoConfig struct {
 	// Kind selects the deploy strategy. Default: "compose".
 	Kind DeployKind `yaml:"kind,omitempty"`
 
+	// Branch is the git branch that triggers deploys. Default: "main".
+	// Use this for repos that deploy from a non-standard branch (e.g. "master").
+	Branch string `yaml:"branch,omitempty"`
+
 	// --- compose fields ---
 	ComposePath string `yaml:"compose_path,omitempty"`
 	NoCache     bool   `yaml:"no_cache,omitempty"`
