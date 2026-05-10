@@ -210,3 +210,71 @@ With this config:
 - `server_triage` shows services grouped by `data` and `backend` with per-group health
 - `server_inspect({mode: "groups"})` shows a dashboard of all groups
 - `server_restart({service: "postgres"})` cascades to restart `my-api` then `my-worker` (topological order)
+
+## GitHub Webhook Deploy (`deploy-repos.yaml`)
+
+Dozor triggers repo-specific builds on `push` events from GitHub. Config file: `~/.dozor/deploy-repos.yaml`.
+
+Three deploy kinds are supported:
+
+### `compose` (default)
+
+Docker Compose rebuild + up. Used for Dockerized services.
+
+```yaml
+repos:
+  anatolykoptev/ox-browser:
+    compose_path: /home/krolik/deploy/krolik-server
+    source_path: /home/krolik/src/ox-browser
+    services: [ox-browser]
+    profile: go-cmd
+```
+
+### `binary`
+
+`git pull` + custom build command + `systemctl --user restart`. Used for native Go binaries managed by systemd.
+
+```yaml
+repos:
+  anatolykoptev/dozor:
+    kind: binary
+    source_path: /home/krolik/src/dozor
+    build_cmd: [go, build, -o, /home/krolik/.local/bin/dozor, ./cmd/dozor]
+    user_services: [dozor]
+    smoke_url: http://localhost:8765/health
+    profile: go-cmd
+```
+
+### `static`
+
+Executes a custom bash script for static sites (Astro, Vite, Next static export). The script receives:
+- `DEPLOY_REPO_PATH` — absolute path to the local git checkout (`source_path`)
+- `DEPLOY_SHA` — commit SHA from the webhook
+
+A non-zero exit code marks the deploy as failed.
+
+```yaml
+repos:
+  anatolykoptev/krolik-tools-site:
+    kind: static
+    source_path: /home/krolik/sites/krolik-tools-site
+    static_deploy_script: /home/krolik/bin/site-deploy-krolik-tools.sh
+    branch: master
+```
+
+Minimal script example (`/home/krolik/bin/site-deploy-krolik-tools.sh`):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$DEPLOY_REPO_PATH"
+git fetch origin
+git checkout "$DEPLOY_SHA"
+
+npm ci
+npm run build
+
+# Atomic swap: move built output to web root
+rsync -a --delete dist/ /var/www/krolik-tools/ 
+```
