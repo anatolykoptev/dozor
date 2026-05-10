@@ -68,7 +68,7 @@ Required for `gateway` mode (agent loop with Telegram).
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DOZOR_LLM_URL` | `http://127.0.0.1:8787/v1` | OpenAI-compatible API base URL |
-| `DOZOR_LLM_MODEL` | `gemini-2.5-flash` | Model name |
+| `DOZOR_LLM_MODEL` | `gemini-3.1-flash-lite-preview` | Model name |
 | `DOZOR_LLM_API_KEY` | _(empty)_ | API key for LLM provider |
 | `DOZOR_MAX_TOOL_ITERATIONS` | `10` | Max tool call iterations per agent request |
 
