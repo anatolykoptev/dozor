@@ -37,7 +37,7 @@ type OpenAI struct {
 
 // NewOpenAI creates a provider from environment variables.
 // DOZOR_LLM_URL (default http://127.0.0.1:8787/v1)
-// DOZOR_LLM_MODEL (default gemini-2.5-flash)
+// DOZOR_LLM_MODEL (default gemini-3.1-flash-lite-preview)
 // DOZOR_LLM_API_KEY
 // DOZOR_MAX_TOOL_ITERATIONS (default 10)
 func NewOpenAI() *OpenAI {
@@ -47,7 +47,7 @@ func NewOpenAI() *OpenAI {
 	}
 	model := os.Getenv("DOZOR_LLM_MODEL")
 	if model == "" {
-		model = "gemini-2.5-flash"
+		model = "gemini-3.1-flash-lite-preview"
 	}
 	maxIters := 10
 	if v := os.Getenv("DOZOR_MAX_TOOL_ITERATIONS"); v != "" {
