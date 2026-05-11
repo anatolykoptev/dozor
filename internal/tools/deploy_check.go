@@ -168,7 +168,11 @@ func probeSmoke(ctx context.Context, url string) (status, snippet string) {
 }
 
 func dockerStatus(ctx context.Context, container string) string {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// dockerd response can lag significantly under heavy host load
+	// (deploy-queue bursts, OOM pressure). 10s gives headroom without
+	// making the tool feel slow on an idle host — `docker ps` returns in
+	// <100ms when uncontended.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	out, err := exec.CommandContext(ctx, "docker", "ps", "--all",
