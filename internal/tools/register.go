@@ -23,6 +23,7 @@ func RegisterAllWithOpts(server *mcp.Server, agent *engine.ServerAgent, execOpts
 	registerRemoteExec(server, agent)
 	registerRestart(server, agent)
 	registerDeploy(server, agent)
+	registerDeployCheck(server, agent)
 	registerPrune(server, agent)
 	registerCleanup(server, agent)
 	registerServices(server, agent)
