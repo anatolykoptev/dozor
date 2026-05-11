@@ -229,8 +229,14 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 		return
 	}
 
-	// Log deploy lifecycle to journalctl instead of Telegram — visibility for debug.
-	deployLog := func(msg string) { slog.Info("deploy", "msg", msg) }
+	// Log all deploy lifecycle events to journalctl; forward failures and
+	// rollbacks to Telegram so the operator sees them without polling logs.
+	deployLog := func(msg string) {
+		slog.Info("deploy", "msg", msg)
+		if strings.HasPrefix(msg, "❌") || strings.HasPrefix(msg, "⚠️") {
+			notifyFn(msg)
+		}
+	}
 	queue := deploy.NewQueue(ctx, deployLog)
 	handler := deploy.NewHandler(cfg, queue, deployLog)
 	mx.Handle("POST /deploy/github", handler)
