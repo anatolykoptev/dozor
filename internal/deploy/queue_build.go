@@ -49,7 +49,7 @@ func waitForMaintenanceLock(ctx context.Context, services []string) error {
 }
 
 func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult {
-	ctx, cancel := context.WithTimeout(ctx, buildTimeout)
+	ctx, cancel := context.WithTimeout(ctx, req.Config.BuildTimeout.OrDefault(buildTimeout))
 	defer cancel()
 
 	// Non-compose kinds bypass the Docker Compose pipeline entirely.
