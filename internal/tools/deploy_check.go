@@ -13,6 +13,7 @@ import (
 	"github.com/anatolykoptev/dozor/internal/deploy"
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
 
@@ -65,7 +66,7 @@ func handleDeployCheck(ctx context.Context, input DeployCheckInput) (string, err
 	// 1. git HEAD
 	sha, subject := readGitHead(ctx, rc.SourcePath)
 	if sha != "" {
-		fmt.Fprintf(&b, "HEAD:    %s %q\n", short(sha), subject)
+		fmt.Fprintf(&b, "HEAD:    %s %q\n", deploy.ShortSHA(sha), subject)
 	} else {
 		fmt.Fprintf(&b, "HEAD:    (unreadable — %s)\n", subject)
 	}
@@ -105,12 +106,10 @@ func findRepoByService(cfg *deploy.Config, service string) (string, deploy.RepoC
 	sort.Strings(keys)
 	for _, k := range keys {
 		rc := cfg.Repos[k]
+		// rc.Services is normalised by validateRepoConfig: binary repos copy
+		// UserServices → Services at load time (deploy/config.go), so iterating
+		// rc.Services alone is sufficient post-LoadConfig.
 		for _, s := range rc.Services {
-			if s == service {
-				return k, rc, true
-			}
-		}
-		for _, s := range rc.UserServices {
 			if s == service {
 				return k, rc, true
 			}
@@ -185,32 +184,30 @@ func dockerStatus(ctx context.Context, container string) string {
 	return line
 }
 
-// writeCounters formats per-service Prometheus counter snapshots. Reads
-// values directly from the in-process registry — same numbers /metrics
-// would emit, no HTTP roundtrip.
+// writeCounters formats per-service Prometheus counter snapshots.
+//
+// Reads via Gather() — NOT WithLabelValues — to keep this tool truly
+// read-only. WithLabelValues / GetMetricWithLabelValues both create a
+// zero-valued metric for any previously-unseen label combination, which
+// would silently bloat /metrics output every time the operator inspected
+// a service that hasn't fired a deploy yet.
 func writeCounters(b *strings.Builder, repo string, services []string) {
-	read := func(c interface{ Write(*dto.Metric) error }) float64 {
-		var m dto.Metric
-		if err := c.Write(&m); err != nil {
-			return 0
-		}
-		if m.Counter != nil {
-			return m.Counter.GetValue()
-		}
-		return 0
+	snap, err := snapshotCounters()
+	if err != nil {
+		fmt.Fprintf(b, "  (counter snapshot failed: %v)\n", err)
+		return
 	}
-
 	for _, svc := range services {
 		fmt.Fprintf(b, "  %s:\n", svc)
-		fmt.Fprintf(b, "    fired:        %.0f\n", read(deploy.FiredTotal.WithLabelValues(repo, svc)))
-		fmt.Fprintf(b, "    debounced:    %.0f\n", read(deploy.DebouncedTotal.WithLabelValues(repo, svc)))
-		fmt.Fprintf(b, "    superseded:   %.0f\n", read(deploy.SupersededTotal.WithLabelValues(repo, svc)))
-		fmt.Fprintf(b, "    deduplicated: %.0f\n", read(deploy.DeduplicatedTotal.WithLabelValues(repo, svc)))
-		fmt.Fprintf(b, "    build success: %.0f\n", read(deploy.BuildResultTotal.WithLabelValues(repo, svc, "success")))
-		fmt.Fprintf(b, "    build failure: %.0f\n", read(deploy.BuildResultTotal.WithLabelValues(repo, svc, "failure")))
-		fmt.Fprintf(b, "    build timeout: %.0f\n", read(deploy.BuildResultTotal.WithLabelValues(repo, svc, "timeout")))
+		fmt.Fprintf(b, "    fired:        %.0f\n", snap.get("dozor_deploy_fired_total", repo, svc, ""))
+		fmt.Fprintf(b, "    debounced:    %.0f\n", snap.get("dozor_deploy_debounced_total", repo, svc, ""))
+		fmt.Fprintf(b, "    superseded:   %.0f\n", snap.get("dozor_deploy_superseded_total", repo, svc, ""))
+		fmt.Fprintf(b, "    deduplicated: %.0f\n", snap.get("dozor_deploy_deduplicated_total", repo, svc, ""))
+		fmt.Fprintf(b, "    build success: %.0f\n", snap.get("dozor_build_result_total", repo, svc, "success"))
+		fmt.Fprintf(b, "    build failure: %.0f\n", snap.get("dozor_build_result_total", repo, svc, "failure"))
+		fmt.Fprintf(b, "    build timeout: %.0f\n", snap.get("dozor_build_result_total", repo, svc, "timeout"))
 		for _, reason := range []string{"no_relevant_paths", "explicit_skip"} {
-			v := read(deploy.SkippedTotal.WithLabelValues(repo, svc, reason))
+			v := snap.get("dozor_deploy_skipped_total", repo, svc, reason)
 			if v > 0 {
 				fmt.Fprintf(b, "    skipped (%s): %.0f\n", reason, v)
 			}
@@ -218,9 +215,48 @@ func writeCounters(b *strings.Builder, repo string, services []string) {
 	}
 }
 
-func short(sha string) string {
-	if len(sha) > 8 {
-		return sha[:8]
-	}
-	return sha
+// counterSnapshot is the result of one Gather() pass: maps metric name →
+// list of (label set, value). Read-only; never created counters.
+type counterSnapshot struct {
+	byName map[string][]*dto.Metric
 }
+
+func snapshotCounters() (*counterSnapshot, error) {
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		return nil, err
+	}
+	s := &counterSnapshot{byName: make(map[string][]*dto.Metric, len(families))}
+	for _, fam := range families {
+		if fam.GetType() != dto.MetricType_COUNTER {
+			continue
+		}
+		s.byName[fam.GetName()] = fam.GetMetric()
+	}
+	return s, nil
+}
+
+// get returns the value of a counter with the given (repo, service[, status])
+// labels. status="" matches counters with only repo+service labels (3rd label
+// is treated as "absent"). Returns 0 if no matching series exists — and,
+// crucially, does NOT create one.
+func (s *counterSnapshot) get(name, repo, service, status string) float64 {
+	for _, m := range s.byName[name] {
+		var gotRepo, gotService, gotStatus string
+		for _, l := range m.GetLabel() {
+			switch l.GetName() {
+			case "repo":
+				gotRepo = l.GetValue()
+			case "service":
+				gotService = l.GetValue()
+			case "status", "reason":
+				gotStatus = l.GetValue()
+			}
+		}
+		if gotRepo == repo && gotService == service && gotStatus == status {
+			return m.GetCounter().GetValue()
+		}
+	}
+	return 0
+}
+

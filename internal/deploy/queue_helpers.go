@@ -71,6 +71,13 @@ func serviceKey(services []string) string {
 }
 
 func short(sha string) string {
+	return ShortSHA(sha)
+}
+
+// ShortSHA truncates a commit hash to the package's standard short length
+// (shortSHALen). Exported so external packages (e.g. internal/tools) emit
+// SHAs that line up exactly with queue log lines.
+func ShortSHA(sha string) string {
 	if len(sha) > shortSHALen {
 		return sha[:shortSHALen]
 	}
