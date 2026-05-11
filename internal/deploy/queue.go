@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -87,6 +89,10 @@ func NewQueue(ctx context.Context, notify func(string)) *Queue {
 		done:     make(chan struct{}),
 	}
 	go q.worker(ctx)
+	// Publish to the activeQueue singleton so external read-only callers can
+	// find us without explicit plumbing. Last-writer-wins if multiple queues
+	// are constructed in the same process (only tests do this).
+	activeQueue.Store(q)
 	return q
 }
 
@@ -167,6 +173,76 @@ func (q *Queue) Submit(req BuildRequest) bool {
 func (q *Queue) Close() {
 	q.cancel()
 	<-q.done
+	// Clear the active-queue pointer only if we are still the active one.
+	// Lets tests stand up a Queue and tear it down without poisoning the
+	// process-wide pointer for a subsequent test.
+	if activeQueue.Load() == q {
+		activeQueue.Store(nil)
+	}
+}
+
+// ── Active-queue singleton ────────────────────────────────────────────────────
+
+// activeQueue holds the currently-running Queue so external read-only callers
+// (e.g. internal/tools/server_deploy_check) can inspect snapshot state without
+// being plumbed an explicit Queue handle. NewQueue registers; Close clears.
+//
+// This is a late-binding singleton: tools register at process start (before
+// the queue exists) and look up the queue lazily. Idiomatic Go pattern —
+// mirrors prometheus.DefaultGatherer.
+var activeQueue atomic.Pointer[Queue]
+
+// ActiveQueue returns the currently-registered Queue, or nil if no queue has
+// been created yet (e.g. during early MCP-tool registration in gateway init).
+func ActiveQueue() *Queue { return activeQueue.Load() }
+
+// ServiceQueueState is the inspectable per-service-group snapshot returned by
+// Queue.Snapshot. Designed for human-readable output, not metrics scraping.
+type ServiceQueueState struct {
+	// Services is the list of compose / user-service names this entry covers
+	// (the queue keys builds by joined service group).
+	Services []string
+	// BuildingSHA is the commit currently being built for this group, or "" if idle.
+	BuildingSHA string
+	// PendingSHA is the next commit queued to build, or "" if nothing pending.
+	PendingSHA string
+}
+
+// Snapshot returns a point-in-time view of every service group with either a
+// build in progress, a pending build, or both. Idle groups are omitted. Read
+// under the queue mutex; the returned slice is independent of the live maps.
+func (q *Queue) Snapshot() []ServiceQueueState {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	keys := make(map[string]struct{})
+	for k := range q.pending {
+		keys[k] = struct{}{}
+	}
+	for k := range q.busySHA {
+		keys[k] = struct{}{}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	ordered := make([]string, 0, len(keys))
+	for k := range keys {
+		ordered = append(ordered, k)
+	}
+	sort.Strings(ordered)
+
+	out := make([]ServiceQueueState, 0, len(ordered))
+	for _, k := range ordered {
+		state := ServiceQueueState{Services: strings.Split(k, "+")}
+		if sha, ok := q.busySHA[k]; ok {
+			state.BuildingSHA = sha
+		}
+		if req, ok := q.pending[k]; ok {
+			state.PendingSHA = req.CommitSHA
+		}
+		out = append(out, state)
+	}
+	return out
 }
 
 func (q *Queue) worker(ctx context.Context) {

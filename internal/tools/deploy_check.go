@@ -88,11 +88,60 @@ func handleDeployCheck(ctx context.Context, input DeployCheckInput) (string, err
 		}
 	}
 
-	// 4. counters
+	// 4. live queue state for this service group
+	writeQueueState(&b, rc.Services)
+
+	// 5. counters
 	fmt.Fprintf(&b, "\nCounters since dozor start (%s):\n", repo)
 	writeCounters(&b, repo, rc.Services)
 
 	return b.String(), nil
+}
+
+// writeQueueState renders the current Queue snapshot for the requested
+// service set. "idle" when no build is in flight or pending. The data
+// comes from deploy.ActiveQueue() — nil during early init (before
+// NewQueue runs) — in which case the section is omitted entirely.
+func writeQueueState(b *strings.Builder, services []string) {
+	q := deploy.ActiveQueue()
+	if q == nil {
+		// Most plausibly an early-restart race — operator ran the tool
+		// before gateway init completed NewQueue. Make the absence visible
+		// rather than silently skipping the section.
+		fmt.Fprintf(b, "Queue:   (not yet started)\n")
+		return
+	}
+	want := make(map[string]struct{}, len(services))
+	for _, s := range services {
+		want[s] = struct{}{}
+	}
+	for _, state := range q.Snapshot() {
+		// Match if any of the snapshot's service names is in our request.
+		hit := false
+		for _, s := range state.Services {
+			if _, ok := want[s]; ok {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			continue
+		}
+		fmt.Fprintf(b, "Queue:   ")
+		if state.BuildingSHA != "" {
+			fmt.Fprintf(b, "building %s", deploy.ShortSHA(state.BuildingSHA))
+		}
+		if state.PendingSHA != "" {
+			if state.BuildingSHA != "" {
+				fmt.Fprintf(b, ", ")
+			}
+			fmt.Fprintf(b, "pending %s", deploy.ShortSHA(state.PendingSHA))
+		}
+		b.WriteString("\n")
+		return
+	}
+	// Service known to config but absent from the snapshot — queue is idle for it.
+	fmt.Fprintf(b, "Queue:   idle\n")
 }
 
 // findRepoByService scans the loaded config for any repo whose Services list
