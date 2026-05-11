@@ -236,24 +236,37 @@ func snapshotCounters() (*counterSnapshot, error) {
 	return s, nil
 }
 
-// get returns the value of a counter with the given (repo, service[, status])
-// labels. status="" matches counters with only repo+service labels (3rd label
-// is treated as "absent"). Returns 0 if no matching series exists — and,
-// crucially, does NOT create one.
-func (s *counterSnapshot) get(name, repo, service, status string) float64 {
+// get returns the value of a counter with the given (repo, service, qual)
+// labels. `qual` matches whichever 3rd label the counter uses — `status` for
+// BuildResultTotal, `reason` for SkippedTotal — handled separately to avoid
+// silently conflating distinct label semantics. Pass qual="" for counters
+// with only repo+service labels (FiredTotal, DebouncedTotal, etc.). Returns
+// 0 if no matching series exists — and, crucially, does NOT create one.
+func (s *counterSnapshot) get(name, repo, service, qual string) float64 {
 	for _, m := range s.byName[name] {
-		var gotRepo, gotService, gotStatus string
+		var gotRepo, gotService, gotStatus, gotReason string
 		for _, l := range m.GetLabel() {
 			switch l.GetName() {
 			case "repo":
 				gotRepo = l.GetValue()
 			case "service":
 				gotService = l.GetValue()
-			case "status", "reason":
+			case "status":
 				gotStatus = l.GetValue()
+			case "reason":
+				gotReason = l.GetValue()
 			}
 		}
-		if gotRepo == repo && gotService == service && gotStatus == status {
+		// Either the metric's status OR reason label must equal qual. They
+		// are mutually exclusive in dozor today (a counter has one or the
+		// other, never both). qual="" matches series where both are empty.
+		if gotRepo != repo || gotService != service {
+			continue
+		}
+		if gotStatus == qual && gotReason == "" {
+			return m.GetCounter().GetValue()
+		}
+		if gotReason == qual && gotStatus == "" {
 			return m.GetCounter().GetValue()
 		}
 	}
