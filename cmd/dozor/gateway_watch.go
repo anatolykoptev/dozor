@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -154,12 +155,16 @@ func (w *watchDeps) defaultRouteToAgent(ctx context.Context, result, hash string
 // hashResult creates a stable hash from issue service names only,
 // ignoring timestamps, error counts and log snippets that change every tick.
 // This prevents repeated alerts for the same set of problematic services.
+// Service names are sorted before hashing so that Docker container iteration
+// order (non-deterministic) does not produce different hashes for the same
+// issue set — which was bypassing cooldown suppression in production.
 func hashResult(result string) string {
 	issues := engine.ExtractIssues(result)
 	var parts []string
 	for _, issue := range issues {
 		parts = append(parts, issue.Service)
 	}
+	sort.Strings(parts)
 	h := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return hex.EncodeToString(h[:8])
 }

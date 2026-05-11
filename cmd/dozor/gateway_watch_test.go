@@ -7,6 +7,41 @@ import (
 	"time"
 )
 
+// TestHashResult_OrderIndependent verifies that hashResult produces the same
+// hash regardless of the order issues appear in the triage report.
+// Docker container iteration order is non-deterministic; without sorting,
+// different orderings produced different hashes and bypassed cooldown
+// suppression (production incident 2026-05-10: duplicate Telegram alerts
+// every 5 min after migration).
+func TestHashResult_OrderIndependent(t *testing.T) {
+	t.Parallel()
+
+	// Two reports with the same set of failing services in different order.
+	// ExtractIssues parses lines matching "[LEVEL] service — description".
+	result1 := "[CRITICAL] oxpulse-chat — exited with code 1\n[ERROR] postgres — connection refused"
+	result2 := "[ERROR] postgres — connection refused\n[CRITICAL] oxpulse-chat — exited with code 1"
+
+	h1 := hashResult(result1)
+	h2 := hashResult(result2)
+
+	if h1 != h2 {
+		t.Errorf("hashResult should be order-independent: result1=%q result2=%q", h1, h2)
+	}
+}
+
+// TestHashResult_DifferentServices verifies that different issue sets still
+// produce different hashes (the fix must not collapse distinct issue sets).
+func TestHashResult_DifferentServices(t *testing.T) {
+	t.Parallel()
+
+	resultA := "[CRITICAL] oxpulse-chat — exited with code 1"
+	resultB := "[CRITICAL] postgres — exited with code 1"
+
+	if hashResult(resultA) == hashResult(resultB) {
+		t.Error("hashResult: different services must produce different hashes")
+	}
+}
+
 func TestBuildWatchPrompt_ProductionUsesHTML(t *testing.T) {
 	got := buildWatchPrompt(false)
 
