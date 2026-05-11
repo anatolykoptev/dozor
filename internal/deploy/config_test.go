@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeYAML(t *testing.T, dir, content string) string {
@@ -405,6 +406,92 @@ repos:
 	rc := cfg.Repos["anatolykoptev/krolik-tools-site"]
 	if len(rc.Services) != 1 || rc.Services[0] != "krolik-tools-site" {
 		t.Errorf("Services = %v, want [krolik-tools-site]", rc.Services)
+	}
+}
+
+// --- Duration / build_timeout tests ---
+
+func TestDuration_OrDefault_ZeroUsesDefault(t *testing.T) {
+	var d Duration
+	got := d.OrDefault(15 * time.Minute)
+	if got != 15*time.Minute {
+		t.Errorf("OrDefault(15m) = %v, want 15m", got)
+	}
+}
+
+func TestDuration_OrDefault_CustomValueOverrides(t *testing.T) {
+	d := Duration{D: 45 * time.Minute}
+	got := d.OrDefault(15 * time.Minute)
+	if got != 45*time.Minute {
+		t.Errorf("OrDefault = %v, want 45m", got)
+	}
+}
+
+func TestDuration_OrDefault_NegativeUsesDefault(t *testing.T) {
+	d := Duration{D: -1 * time.Second}
+	got := d.OrDefault(15 * time.Minute)
+	if got != 15*time.Minute {
+		t.Errorf("OrDefault with negative = %v, want fallback 15m", got)
+	}
+}
+
+func TestLoadConfig_BuildTimeout_Default(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rc := cfg.Repos["anatolykoptev/svc"]
+	got := rc.BuildTimeout.OrDefault(buildTimeout)
+	if got != buildTimeout {
+		t.Errorf("default build_timeout = %v, want %v", got, buildTimeout)
+	}
+}
+
+func TestLoadConfig_BuildTimeout_CustomParsed(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+    build_timeout: 45m
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rc := cfg.Repos["anatolykoptev/svc"]
+	got := rc.BuildTimeout.OrDefault(buildTimeout)
+	if got != 45*time.Minute {
+		t.Errorf("build_timeout = %v, want 45m", got)
+	}
+}
+
+func TestLoadConfig_BuildTimeout_InvalidReturnsError(t *testing.T) {
+	yaml := `
+repos:
+  anatolykoptev/svc:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [svc]
+    build_timeout: notaduration
+`
+	path := writeYAML(t, t.TempDir(), yaml)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected error for invalid build_timeout")
+	}
+	if !strings.Contains(err.Error(), "notaduration") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 

@@ -138,6 +138,14 @@ type RepoConfig struct {
 	// Default: false. Prune cost is real (~6-8 min cold rebuild); only enable
 	// where the silent-stale-binary risk is confirmed.
 	PruneBuildkitCache bool `yaml:"prune_buildkit_cache,omitempty"`
+
+	// BuildTimeout overrides the global 15-minute build timeout for this repo.
+	// Accepts Go duration strings: "15m", "45m", "1h". Must be positive.
+	// Default (zero value): uses the package-level buildTimeout constant (15m).
+	//
+	// Increase for repos with slow builds (e.g. cold-cache Rust workspace with
+	// no_cache: true). Example: build_timeout: 45m
+	BuildTimeout Duration `yaml:"build_timeout,omitempty"`
 }
 
 // DebounceWindow returns the configured debounce duration, or 0 if disabled.

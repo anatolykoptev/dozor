@@ -236,9 +236,10 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest) {
 	status := "success"
 	if !result.Success {
 		// Distinguish timeout from other failures for better observability.
+		effectiveTimeout := req.Config.BuildTimeout.OrDefault(buildTimeout)
 		if strings.Contains(strings.ToLower(result.Error), "context deadline exceeded") ||
 			strings.Contains(strings.ToLower(result.Error), "timeout") ||
-			result.Duration >= buildTimeout {
+			result.Duration >= effectiveTimeout {
 			status = "timeout"
 		} else {
 			status = "failure"
