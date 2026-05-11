@@ -8,6 +8,11 @@ import (
 // newStoppedQueue creates a Queue whose worker exits before draining any
 // pending submits. Tests can then inspect Snapshot() without races against
 // processBuild (which would try to invoke docker compose on /tmp).
+//
+// Cleanup explicitly calls Close so the activeQueue singleton pointer is
+// cleared between tests — otherwise a stopped queue would leak across
+// suite runs and confuse TestActiveQueue_PointerLifecycle if test order
+// ever shifted.
 func newStoppedQueue(t *testing.T) *Queue {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -15,8 +20,10 @@ func newStoppedQueue(t *testing.T) *Queue {
 	cancel()
 	<-q.done // worker fully exited before any Submit calls
 	t.Cleanup(func() {
-		// Close handles activeQueue clearing.
-		// q.Close on an already-cancelled queue is idempotent.
+		// Close is idempotent on an already-cancelled queue (worker exited
+		// long ago, channel already closed → second receive returns
+		// immediately) and clears activeQueue if we still own the pointer.
+		q.Close()
 	})
 	return q
 }

@@ -233,7 +233,6 @@ func (q *Queue) Snapshot() []ServiceQueueState {
 
 	out := make([]ServiceQueueState, 0, len(ordered))
 	for _, k := range ordered {
-		// serviceKey joins with '+' (see queue_helpers.go:serviceKey).
 		state := ServiceQueueState{Services: strings.Split(k, "+")}
 		if sha, ok := q.busySHA[k]; ok {
 			state.BuildingSHA = sha

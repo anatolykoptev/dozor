@@ -105,6 +105,10 @@ func handleDeployCheck(ctx context.Context, input DeployCheckInput) (string, err
 func writeQueueState(b *strings.Builder, services []string) {
 	q := deploy.ActiveQueue()
 	if q == nil {
+		// Most plausibly an early-restart race — operator ran the tool
+		// before gateway init completed NewQueue. Make the absence visible
+		// rather than silently skipping the section.
+		fmt.Fprintf(b, "Queue:   (not yet started)\n")
 		return
 	}
 	want := make(map[string]struct{}, len(services))
