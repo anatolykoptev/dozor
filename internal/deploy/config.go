@@ -184,17 +184,17 @@ var profileDefaults = map[string]struct {
 }{
 	"go-flat": {
 		BuildPaths:         []string{"*.go", "internal/**", "go.mod", "go.sum", "vendor/**", "Dockerfile", "Makefile"},
-		SkipPaths:          []string{"docs/**", "*.md", "bin/**", "deploy/**"},
+		SkipPaths:          []string{"docs/**", "*.md", "*.c4", "bin/**", "deploy/**"},
 		CanarySmokeTimeout: 30 * time.Second,
 	},
 	"go-cmd": {
 		BuildPaths:         []string{"cmd/**", "internal/**", "go.mod", "go.sum", "vendor/**", "Dockerfile", "Makefile"},
-		SkipPaths:          []string{"docs/**", "*.md", "bin/**"},
+		SkipPaths:          []string{"docs/**", "*.md", "*.c4", "bin/**"},
 		CanarySmokeTimeout: 30 * time.Second,
 	},
 	"rust": {
 		BuildPaths: []string{"src/**", "crates/**", "tests/**", "Cargo.toml", "Cargo.lock", "Dockerfile", "Makefile"},
-		SkipPaths:  []string{"docs/**", "*.md", "target/**"},
+		SkipPaths:  []string{"docs/**", "*.md", "*.c4", "target/**"},
 		// 120s: Rust services with heavy startup (ONNX models, ML warmup) need
 		// significantly longer. Incident 2026-05-07: embed-server (4 ONNX models,
 		// ~46s warmup) hit the 30s default → silent rollback → prod stale 5h.
