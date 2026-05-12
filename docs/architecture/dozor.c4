@@ -1,0 +1,33 @@
+specification {
+  element person { style { shape: person } }
+  element system
+  element container
+}
+
+model {
+  user = person "User" "Caller / consumer."
+  
+  dozor = system "dozor" {
+    description '''
+      systemctl --user status dozor
+      
+      **TODO**: расширить описание. Добавить containers + components.
+    '''
+    
+    main = container "dozor" {
+      description "Main container. Tech: Go, port :8765."
+      technology "Go"
+      icon tech:go
+    }
+  }
+  
+  user -> dozor.main "calls"
+}
+
+views {
+  view index {
+    title "Top level"
+    include user, dozor, dozor.main
+    autoLayout LeftRight
+  }
+}

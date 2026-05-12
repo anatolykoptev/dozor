@@ -1,0 +1,34 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: dozor
+  title: dozor — deploy orchestrator
+  description: |
+    GitHub webhook → docker compose rebuild orchestrator. Получает push events от GitHub,
+    pulls source, builds + restarts containers. Поддерживает profiles (go-flat, go-cmd, rust),
+    debounce coalescing, build_paths filtering, smoke health checks с canary window.
+  annotations:
+    github.com/project-slug: anatolykoptev/dozor
+    likec4.dev/diagrams: /c4/dozor/
+    krolik.run/dozor: dozor
+    krolik.run/port: "8765"
+    krolik.run/url: https://deploy.krolik.run/deploy/github
+  links:
+    - url: https://m.krolik.run/c4/dozor/
+      title: Architecture diagrams
+    - url: https://github.com/anatolykoptev/dozor
+      title: GitHub repo
+    - url: https://deploy.krolik.run/deploy/github
+      title: GitHub webhook endpoint
+  tags:
+    - go
+    - deploy
+    - ci-cd
+    - webhook
+    - infrastructure
+spec:
+  type: service
+  lifecycle: production
+  owner: platform
+  system: krolik
+  tier: 1
