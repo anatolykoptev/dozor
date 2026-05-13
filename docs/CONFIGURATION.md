@@ -16,6 +16,23 @@ All settings are optional unless noted. Dozor works zero-config for local Docker
 | `DOZOR_MCP_PORT` | `8765` | HTTP port for the MCP server |
 | `DOZOR_WORKSPACE` | `~/.dozor` | Path to workspace directory (IDENTITY.md, MEMORY.md, AGENTS.md) |
 
+## Personal Config: Where to Put It
+
+**This repo is public.** Keep operator-specific text — your real network topology, downstream A2A agent IDs / URLs, infrastructure paths, persona — OUT of the repo and IN your `$DOZOR_WORKSPACE` (default `~/.dozor/`).
+
+| Path | Purpose |
+|------|---------|
+| `workspace/` in this repo | Open-source baseline templates. Generic only — no real agent IDs, no operator paths. `InitWorkspace` copies these to `$DOZOR_WORKSPACE` on first boot if it is empty. |
+| `$DOZOR_WORKSPACE/IDENTITY.md` | Persona — generic baseline acceptable, customize as needed |
+| `$DOZOR_WORKSPACE/AGENTS.md` | **Operator-private** — your actual A2A network: real agent IDs, real URLs, real routing rules. Never commit this verbatim back to the repo. |
+| `$DOZOR_WORKSPACE/MEMORY.md` | **Operator-private** — accumulated operational notes (services, hosts, incidents) |
+| `$DOZOR_WORKSPACE/skills/<name>/SKILL.md` | **Operator-private** — your custom skills (loader tier: workspace > builtin) |
+| `$DOZOR_WORKSPACE/sessions/` | **Operator-private** — Claude Code interactive session state |
+
+Skill loader resolution (`internal/skills/loader.go`): workspace tier (`$DOZOR_WORKSPACE/skills/`) overrides the builtin tier (compiled-in `skills/`). Put site-specific skills in the workspace; keep the builtin set generic.
+
+Before opening a PR that touches `workspace/` or `skills/`, grep your diff for: operator usernames, hardcoded `/home/<user>/` paths, real A2A agent IDs (e.g. names like `orchestrator-prod`, internal port numbers like `:18790`). If any are found, move them to `~/.dozor/` instead.
+
 ## Watch Mode
 
 | Variable | Default | Description |
