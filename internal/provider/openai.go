@@ -63,6 +63,9 @@ func NewOpenAI() *OpenAI {
 		// 90s — under burst, 300s pinned message-slices for 5 min × N goroutines
 		// → 6.3 GB RSS peak (incident 2026-05-12). Monitoring/triage rarely
 		// needs >60s; streaming not used.
+		// NOTE: fallback chain (internal/provider/fallback.go) wraps each provider
+		// with its own client; this timeout applies to every OpenAI instance
+		// constructed by NewOpenAI, including the fallback chain's secondary.
 		client: &http.Client{Timeout: 90 * time.Second, Transport: httpmw.WrapTransport(&http.Transport{})},
 	}
 }

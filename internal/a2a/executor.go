@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -37,8 +38,12 @@ func NewExecutor(proc MessageProcessor) *Executor {
 	if v := strings.TrimSpace(os.Getenv("DOZOR_A2A_MAX_CONCURRENT")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			maxCon = n
+		} else {
+			slog.Warn("a2a: invalid DOZOR_A2A_MAX_CONCURRENT, using default",
+				"value", v, "default", defaultA2AMaxConcurrent)
 		}
 	}
+	ExecutorCap.Set(float64(maxCon))
 	return &Executor{
 		proc: proc,
 		sem:  make(chan struct{}, maxCon),
@@ -58,14 +63,21 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 	// Bounded concurrency — reject burst rather than pin GB of RAM.
 	select {
 	case e.sem <- struct{}{}:
+		ExecutorInflight.Inc()
 	default:
+		ExecutorRejected.Inc()
+		slog.Warn("a2a: concurrency cap reached, rejecting",
+			"cap", cap(e.sem), "inflight", len(e.sem))
 		event := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateFailed,
 			a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx,
 				a2a.TextPart{Text: "dozor busy: A2A concurrent cap reached, retry later"}))
 		event.Final = true
 		return queue.Write(ctx, event)
 	}
-	defer func() { <-e.sem }()
+	defer func() {
+		<-e.sem
+		ExecutorInflight.Dec()
+	}()
 
 	// Signal working state.
 	workingEvent := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateWorking, nil)
