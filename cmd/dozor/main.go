@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 
@@ -25,7 +24,12 @@ func main() {
 	// toggle which resets on restart.
 	if isTruthy(os.Getenv("DOZOR_DEV_MODE")) {
 		eng.SetDevMode(true)
-		slog.Info("dev mode enabled at startup", slog.String("source", "DOZOR_DEV_MODE env"))
+		// Pre-slog-init path: subcommands (gateway/serve/watch) install their
+		// own slog handlers later; emitting via slog here would land on the
+		// default text handler to stderr and not match the structured journal
+		// format of subsequent lines. Emit raw to stderr so it's still visible
+		// in the journal but doesn't pretend to be structured.
+		fmt.Fprintln(os.Stderr, "dozor: dev mode enabled at startup (DOZOR_DEV_MODE env)")
 	}
 
 	if len(os.Args) < 2 {
@@ -49,6 +53,10 @@ func main() {
 }
 
 // isTruthy returns true for "1", "true", "yes", "on" (case-insensitive).
+// Narrower than strconv.ParseBool (which also accepts "t"/"T"/"True" variants
+// and explicit falsy values) — intentional: env-var feature flags should be
+// readable to humans, not letter-shortcuts. Any value not in this set,
+// including "0"/"false"/"no"/"off"/empty, is treated as disabled with no log.
 func isTruthy(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "1", "true", "yes", "on":
