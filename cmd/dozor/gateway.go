@@ -160,9 +160,13 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		slog.Warn("/api/logs not registered: docker client unavailable (Docker unreachable at startup)")
 	}
 
-	// 5. A2A protocol.
+	// 5. A2A protocol (fail-closed: exits if DOZOR_A2A_SECRET is unset and
+	// DOZOR_A2A_ALLOW_INSECURE is not explicitly set to "true").
 	a2aSecret := os.Getenv("DOZOR_A2A_SECRET")
-	a2a.Register(mx.ServeMux, stack.loop, stack.registry, "http://127.0.0.1:"+port, version, a2aSecret)
+	if err := a2a.Register(mx.ServeMux, stack.loop, stack.registry, "http://127.0.0.1:"+port, version, a2aSecret); err != nil {
+		slog.Error("a2a registration failed — refusing to start", slog.Any("error", err))
+		os.Exit(1)
+	}
 
 	// 6. Telegram channel.
 	if os.Getenv("DOZOR_TELEGRAM_TOKEN") != "" {

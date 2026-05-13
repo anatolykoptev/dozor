@@ -113,8 +113,23 @@ Agent-to-agent communication for multi-agent setups.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DOZOR_A2A_SECRET` | _(empty)_ | Bearer token for A2A endpoint authentication |
+| `DOZOR_A2A_SECRET` | _(empty)_ | **Required when A2A is enabled.** Bearer token for `/a2a` endpoint authentication. If unset, dozor refuses to start with a fatal error (fail-closed). See rationale below. |
+| `DOZOR_A2A_ALLOW_INSECURE` | _(empty)_ | Set to `true` to allow the A2A endpoint to start without `DOZOR_A2A_SECRET`. Emits a WARN on every startup. **Dev/test only — never set in production.** |
 | `DOZOR_A2A_AGENTS` | _(empty)_ | Remote A2A agents. Format: `name=http://host:port,name=http://host:port` |
+
+### Security rationale — 2026-05-12 incident
+
+Prior to this change, an empty `DOZOR_A2A_SECRET` caused `bearerAuthMiddleware` to silently skip authentication (`if secret == "" { next.ServeHTTP(...) }`). Any process with localhost access could POST to `/a2a` and invoke `claude_code` with the full dozor tool palette — including `server_exec` and `server_remote_exec`.
+
+The fix is **fail-closed**: if `DOZOR_A2A_SECRET` is unset and `DOZOR_A2A_ALLOW_INSECURE` is not explicitly `true`, `Register` returns an error and the process exits before binding the endpoint.
+
+Behavior matrix:
+
+| `DOZOR_A2A_SECRET` | `DOZOR_A2A_ALLOW_INSECURE` | Result |
+|--------------------|---------------------------|--------|
+| non-empty          | any                        | Endpoint registered, Bearer auth enforced |
+| empty              | `true`                     | Endpoint registered, all requests allowed; WARN logged on startup and per-request |
+| empty              | unset / other              | `Register` returns error → process exits (fail-closed) |
 
 ## Remote MCP Servers
 
