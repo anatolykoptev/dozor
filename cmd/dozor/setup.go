@@ -115,6 +115,17 @@ func resolveWorkspacePath() string {
 	return home + "/.dozor"
 }
 
+// resolveBindHost returns the network interface dozor binds to.
+// Reads DOZOR_BIND_HOST; defaults to "127.0.0.1" (loopback-only) when the
+// variable is unset or empty. Set DOZOR_BIND_HOST=0.0.0.0 to opt in to
+// binding on all interfaces (requires explicit operator intent).
+func resolveBindHost() string {
+	if h := strings.TrimSpace(os.Getenv("DOZOR_BIND_HOST")); h != "" {
+		return h
+	}
+	return "127.0.0.1"
+}
+
 // buildMCPServer creates an MCP server and registers all core tools.
 func buildMCPServer(eng *engine.ServerAgent, execOpts tools.ExecOptions) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
