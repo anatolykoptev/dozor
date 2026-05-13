@@ -3,7 +3,6 @@ package a2a
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/anatolykoptev/dozor/internal/toolreg"
@@ -24,7 +23,7 @@ func TestBearerAuthMiddleware_WithSecret(t *testing.T) {
 
 	t.Run("valid token passes", func(t *testing.T) {
 		reached := false
-		h := bearerAuthMiddleware(passthroughHandler(&reached), secret)
+		h := bearerAuthMiddleware(passthroughHandler(&reached), secret, false)
 		req := httptest.NewRequest(http.MethodPost, "/a2a", nil)
 		req.Header.Set("Authorization", "Bearer "+secret)
 		w := httptest.NewRecorder()
@@ -39,7 +38,7 @@ func TestBearerAuthMiddleware_WithSecret(t *testing.T) {
 
 	t.Run("invalid token rejected", func(t *testing.T) {
 		reached := false
-		h := bearerAuthMiddleware(passthroughHandler(&reached), secret)
+		h := bearerAuthMiddleware(passthroughHandler(&reached), secret, false)
 		req := httptest.NewRequest(http.MethodPost, "/a2a", nil)
 		req.Header.Set("Authorization", "Bearer wrong")
 		w := httptest.NewRecorder()
@@ -54,7 +53,7 @@ func TestBearerAuthMiddleware_WithSecret(t *testing.T) {
 
 	t.Run("missing auth header rejected", func(t *testing.T) {
 		reached := false
-		h := bearerAuthMiddleware(passthroughHandler(&reached), secret)
+		h := bearerAuthMiddleware(passthroughHandler(&reached), secret, false)
 		req := httptest.NewRequest(http.MethodPost, "/a2a", nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
@@ -68,10 +67,8 @@ func TestBearerAuthMiddleware_WithSecret(t *testing.T) {
 // DOZOR_A2A_SECRET is empty and DOZOR_A2A_ALLOW_INSECURE is not set,
 // the middleware returns 503 Service Unavailable (fail-closed).
 func TestBearerAuthMiddleware_EmptySecret_FailClosed(t *testing.T) {
-	os.Unsetenv("DOZOR_A2A_ALLOW_INSECURE")
-
 	reached := false
-	h := bearerAuthMiddleware(passthroughHandler(&reached), "")
+	h := bearerAuthMiddleware(passthroughHandler(&reached), "", false)
 	req := httptest.NewRequest(http.MethodPost, "/a2a", nil)
 	// No auth header — attacker with localhost access
 	w := httptest.NewRecorder()
@@ -89,10 +86,8 @@ func TestBearerAuthMiddleware_EmptySecret_FailClosed(t *testing.T) {
 // DOZOR_A2A_ALLOW_INSECURE=true is set, the middleware allows pass-through
 // (opt-in escape hatch for local dev).
 func TestBearerAuthMiddleware_EmptySecret_AllowInsecure(t *testing.T) {
-	t.Setenv("DOZOR_A2A_ALLOW_INSECURE", "true")
-
 	reached := false
-	h := bearerAuthMiddleware(passthroughHandler(&reached), "")
+	h := bearerAuthMiddleware(passthroughHandler(&reached), "", true)
 	req := httptest.NewRequest(http.MethodPost, "/a2a", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -105,13 +100,48 @@ func TestBearerAuthMiddleware_EmptySecret_AllowInsecure(t *testing.T) {
 	}
 }
 
+// TestBearerAuthMiddleware_TOCTOU verifies that allowInsecure is captured at
+// middleware construction time (Register call), not re-read from the environment
+// on every request. A process that starts with DOZOR_A2A_ALLOW_INSECURE=true
+// must not become inaccessible if the env var is cleared after startup.
+func TestBearerAuthMiddleware_TOCTOU(t *testing.T) {
+	// Simulate Register capturing allowInsecure=true at startup (env var was "true" then).
+	// The middleware receives the already-captured bool — it never reads the env itself.
+	reached := false
+	h := bearerAuthMiddleware(passthroughHandler(&reached), "", true)
+
+	// First request: env var still set — must pass.
+	req1 := httptest.NewRequest(http.MethodPost, "/a2a", nil)
+	w1 := httptest.NewRecorder()
+	h.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first request: expected 200, got %d", w1.Code)
+	}
+
+	// Simulate runtime env mutation — attacker or operator unsets the var.
+	t.Setenv("DOZOR_A2A_ALLOW_INSECURE", "")
+
+	// Second request: env var now gone — middleware must still pass because the
+	// allowInsecure bool was captured at construction time, not re-read per-request.
+	reached = false
+	req2 := httptest.NewRequest(http.MethodPost, "/a2a", nil)
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("TOCTOU: second request (env cleared after startup) expected 200, got %d — middleware must use captured bool, not re-read os.Getenv", w2.Code)
+	}
+	if !reached {
+		t.Fatal("TOCTOU: next handler not called after env var was cleared — captured bool not working")
+	}
+}
+
 // TestRegister_EmptySecret_NoOptIn verifies that Register returns an error
 // when DOZOR_A2A_SECRET is empty and DOZOR_A2A_ALLOW_INSECURE is not set.
 func TestRegister_EmptySecret_NoOptIn(t *testing.T) {
-	os.Unsetenv("DOZOR_A2A_ALLOW_INSECURE")
+	t.Setenv("DOZOR_A2A_ALLOW_INSECURE", "")
 
 	mux := http.NewServeMux()
-	err := Register(mux, nil, toolreg.NewRegistry(),"http://localhost:8765", "test", "")
+	err := Register(mux, nil, toolreg.NewRegistry(), "http://localhost:8765", "test", "")
 	if err == nil {
 		t.Fatal("expected error when registering A2A without secret (fail-closed), got nil")
 	}
@@ -132,7 +162,7 @@ func TestRegister_EmptySecret_WithOptIn(t *testing.T) {
 // TestRegister_WithSecret verifies that Register succeeds when a non-empty
 // secret is provided (normal production path).
 func TestRegister_WithSecret(t *testing.T) {
-	os.Unsetenv("DOZOR_A2A_ALLOW_INSECURE")
+	t.Setenv("DOZOR_A2A_ALLOW_INSECURE", "")
 
 	mux := http.NewServeMux()
 	err := Register(mux, nil, toolreg.NewRegistry(),"http://localhost:8765", "test", "mysecret")

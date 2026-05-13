@@ -25,8 +25,12 @@ var ErrSecretRequired = errors.New("a2a: DOZOR_A2A_SECRET must be set; set DOZOR
 // This prevents the 2026-05-12 auth-bypass: an empty secret previously allowed
 // any localhost caller to execute claude_code with the full tool palette.
 func Register(mux *http.ServeMux, proc MessageProcessor, registry *toolreg.Registry, baseURL, version, secret string) error {
+	// Capture the insecure-mode flag once at registration time so that
+	// bearerAuthMiddleware never re-reads the environment per-request (TOCTOU fix).
+	allowInsecure := secret == "" && os.Getenv("DOZOR_A2A_ALLOW_INSECURE") == "true"
+
 	if secret == "" {
-		if os.Getenv("DOZOR_A2A_ALLOW_INSECURE") != "true" {
+		if !allowInsecure {
 			slog.Error("a2a endpoint disabled: DOZOR_A2A_SECRET is not set",
 				slog.String("hint", "set DOZOR_A2A_SECRET or DOZOR_A2A_ALLOW_INSECURE=true (dev only)"))
 			return ErrSecretRequired
@@ -41,7 +45,7 @@ func Register(mux *http.ServeMux, proc MessageProcessor, registry *toolreg.Regis
 	jsonrpcHandler := a2asrv.NewJSONRPCHandler(handler)
 
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
-	mux.Handle("/a2a", bearerAuthMiddleware(jsonrpcHandler, secret))
+	mux.Handle("/a2a", bearerAuthMiddleware(jsonrpcHandler, secret, allowInsecure))
 
 	slog.Info("a2a protocol enabled",
 		slog.String("card_url", baseURL+a2asrv.WellKnownAgentCardPath),
@@ -53,16 +57,19 @@ func Register(mux *http.ServeMux, proc MessageProcessor, registry *toolreg.Regis
 
 // bearerAuthMiddleware enforces Bearer token authentication on the /a2a endpoint.
 //
+// allowInsecure must be captured by the caller at registration time (not re-read
+// from the environment per-request) to prevent TOCTOU: an attacker or operator who
+// mutates DOZOR_A2A_ALLOW_INSECURE after process start must not affect the decision
+// made at startup.
+//
 // Behavior matrix:
-//   - secret != ""                           → enforce Bearer auth (production path)
-//   - secret == "" && ALLOW_INSECURE != true → return 503 (fail-closed, defense-in-depth)
-//   - secret == "" && ALLOW_INSECURE == true → pass-through with WARN log (dev opt-in)
-func bearerAuthMiddleware(next http.Handler, secret string) http.Handler {
+//   - secret != ""                → enforce Bearer auth (production path)
+//   - secret == "" && !allowInsecure → return 503 (fail-closed, defense-in-depth)
+//   - secret == "" && allowInsecure  → pass-through (dev opt-in; WARN already logged at startup)
+func bearerAuthMiddleware(next http.Handler, secret string, allowInsecure bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if secret == "" {
-			if os.Getenv("DOZOR_A2A_ALLOW_INSECURE") == "true" {
-				slog.Warn("A2A request served unauthenticated — DOZOR_A2A_ALLOW_INSECURE override active",
-					slog.String("remote", r.RemoteAddr))
+			if allowInsecure {
 				next.ServeHTTP(w, r)
 				return
 			}
