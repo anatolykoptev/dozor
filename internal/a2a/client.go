@@ -176,17 +176,22 @@ func extractResponseText(data []byte) (string, error) {
 		return "", fmt.Errorf("remote error: %s", rpc.Error.Message)
 	}
 
-	// The result is a Task object. Extract text from status.message.parts.
+	// The result is a Task object. Extract text from status.message.parts,
+	// falling back to artifacts[].parts when status.message is empty.
+	type part struct {
+		Kind string `json:"kind"`
+		Text string `json:"text"`
+	}
 	var task struct {
 		Status struct {
 			State   string `json:"state"`
 			Message struct {
-				Parts []struct {
-					Kind string `json:"kind"`
-					Text string `json:"text"`
-				} `json:"parts"`
+				Parts []part `json:"parts"`
 			} `json:"message"`
 		} `json:"status"`
+		Artifacts []struct {
+			Parts []part `json:"parts"`
+		} `json:"artifacts"`
 	}
 	if err := json.Unmarshal(rpc.Result, &task); err != nil {
 		return "", fmt.Errorf("parse task: %w", err)
@@ -200,6 +205,15 @@ func extractResponseText(data []byte) (string, error) {
 	for _, p := range task.Status.Message.Parts {
 		if p.Kind == "text" && p.Text != "" {
 			texts = append(texts, p.Text)
+		}
+	}
+	if len(texts) == 0 {
+		for _, a := range task.Artifacts {
+			for _, p := range a.Parts {
+				if p.Kind == "text" && p.Text != "" {
+					texts = append(texts, p.Text)
+				}
+			}
 		}
 	}
 	if len(texts) == 0 {
