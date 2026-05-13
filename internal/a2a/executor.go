@@ -3,6 +3,9 @@ package a2a
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/a2aproject/a2a-go/a2a"
@@ -15,16 +18,36 @@ type MessageProcessor interface {
 	Process(ctx context.Context, sessionKey, message string) (string, error)
 }
 
+// defaultA2AMaxConcurrent caps in-flight A2A agent runs.
+// Each run pins a messages slice (~1 MB) + LLM goroutines for the full HTTP
+// timeout. Incident 2026-05-12: 40 concurrent vaelor a2a_call → 6.3 GB RSS.
+// Override via DOZOR_A2A_MAX_CONCURRENT.
+const defaultA2AMaxConcurrent = 4
+
 // Executor implements a2asrv.AgentExecutor by bridging to the agent loop.
 type Executor struct {
 	proc MessageProcessor
+	sem  chan struct{}
 }
 
 var _ a2asrv.AgentExecutor = (*Executor)(nil)
 
 // NewExecutor creates a new A2A executor.
 func NewExecutor(proc MessageProcessor) *Executor {
-	return &Executor{proc: proc}
+	maxCon := defaultA2AMaxConcurrent
+	if v := strings.TrimSpace(os.Getenv("DOZOR_A2A_MAX_CONCURRENT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxCon = n
+		} else {
+			slog.Warn("a2a: invalid DOZOR_A2A_MAX_CONCURRENT, using default",
+				"value", v, "default", defaultA2AMaxConcurrent)
+		}
+	}
+	ExecutorCap.Set(float64(maxCon))
+	return &Executor{
+		proc: proc,
+		sem:  make(chan struct{}, maxCon),
+	}
 }
 
 // Execute processes an incoming A2A message through the agent loop.
@@ -36,6 +59,25 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 		event.Final = true
 		return queue.Write(ctx, event)
 	}
+
+	// Bounded concurrency — reject burst rather than pin GB of RAM.
+	select {
+	case e.sem <- struct{}{}:
+		ExecutorInflight.Inc()
+	default:
+		ExecutorRejected.Inc()
+		slog.Warn("a2a: concurrency cap reached, rejecting",
+			"cap", cap(e.sem), "inflight", len(e.sem))
+		event := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateFailed,
+			a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx,
+				a2a.TextPart{Text: "dozor busy: A2A concurrent cap reached, retry later"}))
+		event.Final = true
+		return queue.Write(ctx, event)
+	}
+	defer func() {
+		<-e.sem
+		ExecutorInflight.Dec()
+	}()
 
 	// Signal working state.
 	workingEvent := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateWorking, nil)
