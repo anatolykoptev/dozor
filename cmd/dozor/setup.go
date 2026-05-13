@@ -107,8 +107,10 @@ func kbSearcherFromExtensions(extRegistry *extensions.Registry) *mcpclient.KBSea
 }
 
 // resolveWorkspacePath returns the DOZOR_WORKSPACE path or ~/.dozor.
+// Whitespace-only values fall through to the default — symmetric with
+// resolveBindHost for consistent env-var parsing across this file.
 func resolveWorkspacePath() string {
-	if p := os.Getenv("DOZOR_WORKSPACE"); p != "" {
+	if p := strings.TrimSpace(os.Getenv("DOZOR_WORKSPACE")); p != "" {
 		return p
 	}
 	home, _ := os.UserHomeDir()
@@ -117,13 +119,22 @@ func resolveWorkspacePath() string {
 
 // resolveBindHost returns the network interface dozor binds to.
 // Reads DOZOR_BIND_HOST; defaults to "127.0.0.1" (loopback-only) when the
-// variable is unset or empty. Set DOZOR_BIND_HOST=0.0.0.0 to opt in to
-// binding on all interfaces (requires explicit operator intent).
+// variable is unset, empty, or whitespace-only. Set DOZOR_BIND_HOST=0.0.0.0
+// to opt in to binding on all interfaces (requires explicit operator intent).
 func resolveBindHost() string {
 	if h := strings.TrimSpace(os.Getenv("DOZOR_BIND_HOST")); h != "" {
 		return h
 	}
 	return "127.0.0.1"
+}
+
+// isLoopbackBind reports whether bind host is a loopback address (no WARN needed).
+func isLoopbackBind(host string) bool {
+	switch host {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	return false
 }
 
 // buildMCPServer creates an MCP server and registers all core tools.

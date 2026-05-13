@@ -1,51 +1,44 @@
 package main
 
-import (
-	"os"
-	"testing"
-)
+import "testing"
 
 // TestResolveBindHost covers the DOZOR_BIND_HOST env-var resolution:
-//   - unset → default loopback
-//   - empty string → default loopback
+//   - unset / empty / whitespace-only → default loopback
 //   - "0.0.0.0" → passed through as-is
 //   - "127.0.0.1" → passed through as-is
-//   - whitespace-padded → trimmed
+//   - surrounding whitespace → trimmed
+//
+// Uses t.Setenv for per-subtest cleanup and race-safety. resolveBindHost
+// treats unset and empty identically (both yield the default), so we pass
+// "" to model the unset case rather than introduce a separate primitive.
 func TestResolveBindHost(t *testing.T) {
-	t.Cleanup(func() { os.Unsetenv("DOZOR_BIND_HOST") })
-
 	tests := []struct {
-		name    string
-		envVal  string
-		setEnv  bool
-		want    string
+		name   string
+		envVal string
+		want   string
 	}{
 		{
-			name:   "unset returns loopback default",
-			setEnv: false,
-			want:   "127.0.0.1",
-		},
-		{
-			name:   "empty string returns loopback default",
-			setEnv: true,
+			name:   "empty (models unset) returns loopback default",
 			envVal: "",
 			want:   "127.0.0.1",
 		},
 		{
+			name:   "whitespace-only returns loopback default",
+			envVal: "   ",
+			want:   "127.0.0.1",
+		},
+		{
 			name:   "explicit loopback passes through",
-			setEnv: true,
 			envVal: "127.0.0.1",
 			want:   "127.0.0.1",
 		},
 		{
 			name:   "explicit all-interfaces passes through",
-			setEnv: true,
 			envVal: "0.0.0.0",
 			want:   "0.0.0.0",
 		},
 		{
-			name:   "whitespace is trimmed",
-			setEnv: true,
+			name:   "whitespace around value is trimmed",
 			envVal: "  0.0.0.0  ",
 			want:   "0.0.0.0",
 		},
@@ -53,14 +46,27 @@ func TestResolveBindHost(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			os.Unsetenv("DOZOR_BIND_HOST")
-			if tc.setEnv {
-				os.Setenv("DOZOR_BIND_HOST", tc.envVal)
-			}
+			t.Setenv("DOZOR_BIND_HOST", tc.envVal)
 			got := resolveBindHost()
 			if got != tc.want {
-				t.Errorf("resolveBindHost() = %q, want %q", got, tc.want)
+				t.Errorf("resolveBindHost(env=%q) = %q, want %q", tc.envVal, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestIsLoopbackBind(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1": true,
+		"::1":       true,
+		"localhost": true,
+		"0.0.0.0":   false,
+		"10.0.0.1":  false,
+		"":          false,
+	}
+	for in, want := range cases {
+		if got := isLoopbackBind(in); got != want {
+			t.Errorf("isLoopbackBind(%q) = %v, want %v", in, got, want)
+		}
 	}
 }
