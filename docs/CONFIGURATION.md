@@ -14,6 +14,7 @@ All settings are optional unless noted. Dozor works zero-config for local Docker
 | `DOZOR_SERVICES` | _(auto-discovered)_ | Comma-separated Docker services to monitor. Auto-discovered via Docker SDK if not set |
 | `DOZOR_TIMEOUT` | `30` | Command execution timeout in seconds |
 | `DOZOR_MCP_PORT` | `8765` | HTTP port for the MCP server |
+| `DOZOR_BIND_HOST` | `127.0.0.1` | Network interface to bind the HTTP server to. Default is loopback-only. Set `0.0.0.0` only if a container ingress or non-Caddy proxy needs direct host-network access. For typical deployments (Caddy reverse proxy on the same host) the default is correct and safest. |
 | `DOZOR_WORKSPACE` | `~/.dozor` | Path to workspace directory (IDENTITY.md, MEMORY.md, AGENTS.md) |
 | `DOZOR_DEV_MODE` | _(unset)_ | When truthy (`1`/`true`/`yes`/`on`), starts the agent in dev mode: periodic watch runs triage and notifies via Telegram/alertmanager but skips auto-remediation, and the routing prompt instructs the LLM to observe only. Equivalent to calling `server_dev_mode(enable=true)` immediately after startup, but survives restarts. Useful during active development of the server itself — Dozor sees the issues, reports them, doesn't touch anything. Runtime override semantics: calling `server_dev_mode(enable=false)` at runtime turns dev mode OFF for the current process lifetime; on next restart the env var is re-evaluated and dev mode re-enables. To disable permanently, unset the env var. |
 

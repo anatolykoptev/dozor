@@ -215,8 +215,15 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	go runQuotasWatch(sigCtx, quotas.LoadConfig(), notifyFn)
 
 	// 10. HTTP server (blocks until shutdown).
+	bindHost := resolveBindHost()
+	slog.Info("binding gateway", slog.String("addr", bindHost+":"+port))
+	if !isLoopbackBind(bindHost) {
+		slog.Warn("gateway bound to non-loopback interface — network-reachable",
+			slog.String("bind_host", bindHost),
+			slog.String("hint", "set DOZOR_BIND_HOST=127.0.0.1 for loopback-only binding"))
+	}
 	startHTTPServer(sigCtx, &http.Server{
-		Addr:         ":" + port,
+		Addr:         bindHost + ":" + port,
 		Handler:      httpmw.Handler("dozor", recoveryMiddleware(mx)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 300 * time.Second,

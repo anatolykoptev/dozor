@@ -55,8 +55,15 @@ func runServe(cfg engine.Config, eng *engine.ServerAgent) {
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	bindHost := resolveBindHost()
+	slog.Info("binding MCP server", slog.String("addr", bindHost+":"+port))
+	if !isLoopbackBind(bindHost) {
+		slog.Warn("MCP server bound to non-loopback interface — network-reachable",
+			slog.String("bind_host", bindHost),
+			slog.String("hint", "set DOZOR_BIND_HOST=127.0.0.1 for loopback-only binding"))
+	}
 	startHTTPServer(sigCtx, &http.Server{
-		Addr:         ":" + port,
+		Addr:         bindHost + ":" + port,
 		Handler:      mx,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 120 * time.Second,
