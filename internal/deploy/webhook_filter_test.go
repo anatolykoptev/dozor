@@ -202,6 +202,142 @@ repos:
 	}
 }
 
+// --- static kind + build_paths filter tests (PR #139 followup: krolik-server Caddyfile auto-sync) ---
+
+// TestHandler_Static_PathFilter_SkipsIrrelevant verifies that a push touching
+// only docs/ does NOT trigger the Caddy deploy script when build_paths is set
+// to config/caddy/** on a static-kind repo.
+func TestHandler_Static_PathFilter_SkipsIrrelevant(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/krolik-server": {
+				Kind:               KindStatic,
+				SourcePath:         "/home/krolik/deploy/krolik-server",
+				StaticDeployScript: "/home/krolik/deploy/krolik-server/config/caddy/deploy.sh",
+				Services:           []string{"anatolykoptev/krolik-server"},
+				BuildPaths:         []string{"config/caddy/**"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	// Push that only touches docs — must NOT trigger the deploy script.
+	body := pushPayloadWithFiles("anatolykoptev/krolik-server", "refs/heads/main", "abc1234",
+		[]string{"docs/README.md", "docker-compose.yml"})
+
+	w := postPush(h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "skipped" || resp["reason"] != "no_relevant_paths" {
+		t.Errorf("response = %+v, want status=skipped reason=no_relevant_paths", resp)
+	}
+}
+
+// TestHandler_Static_PathFilter_BuildsOnCaddyfileChange verifies that a push
+// touching config/caddy/Caddyfile DOES trigger the static deploy script.
+func TestHandler_Static_PathFilter_BuildsOnCaddyfileChange(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/krolik-server": {
+				Kind:               KindStatic,
+				SourcePath:         "/home/krolik/deploy/krolik-server",
+				StaticDeployScript: "/home/krolik/deploy/krolik-server/config/caddy/deploy.sh",
+				Services:           []string{"anatolykoptev/krolik-server"},
+				BuildPaths:         []string{"config/caddy/**"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	// Push touching config/caddy/Caddyfile — must trigger the deploy script.
+	body := pushPayloadWithFiles("anatolykoptev/krolik-server", "refs/heads/main", "def5678",
+		[]string{"config/caddy/Caddyfile"})
+
+	w := postPush(h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "queued" {
+		t.Errorf("response = %+v, want status=queued", resp)
+	}
+}
+
+// TestHandler_Static_PathFilter_BuildsOnDeployScriptChange verifies that
+// changes to deploy.sh itself also trigger a run (self-deploying config).
+func TestHandler_Static_PathFilter_BuildsOnDeployScriptChange(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/krolik-server": {
+				Kind:               KindStatic,
+				SourcePath:         "/home/krolik/deploy/krolik-server",
+				StaticDeployScript: "/home/krolik/deploy/krolik-server/config/caddy/deploy.sh",
+				Services:           []string{"anatolykoptev/krolik-server"},
+				BuildPaths:         []string{"config/caddy/**"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/krolik-server", "refs/heads/main", "ghi9012",
+		[]string{"config/caddy/deploy.sh"})
+
+	w := postPush(h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "queued" {
+		t.Errorf("response = %+v, want status=queued", resp)
+	}
+}
+
+// TestLoadConfig_Static_WithBuildPaths verifies that a static-kind repo with
+// build_paths loads correctly and preserves the path list.
+func TestLoadConfig_Static_WithBuildPaths(t *testing.T) {
+	yamlStr := `
+repos:
+  anatolykoptev/krolik-server:
+    kind: static
+    source_path: /home/krolik/deploy/krolik-server
+    static_deploy_script: /home/krolik/deploy/krolik-server/config/caddy/deploy.sh
+    build_paths:
+      - config/caddy/**
+`
+	path := writeYAML(t, t.TempDir(), yamlStr)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rc := cfg.Repos["anatolykoptev/krolik-server"]
+	if rc.resolvedKind() != KindStatic {
+		t.Errorf("kind = %q, want static", rc.resolvedKind())
+	}
+	if len(rc.BuildPaths) != 1 || rc.BuildPaths[0] != "config/caddy/**" {
+		t.Errorf("BuildPaths = %v, want [config/caddy/**]", rc.BuildPaths)
+	}
+	if rc.StaticDeployScript != "/home/krolik/deploy/krolik-server/config/caddy/deploy.sh" {
+		t.Errorf("static_deploy_script = %q", rc.StaticDeployScript)
+	}
+}
+
 func TestHandler_DebounceCoalescesBurst(t *testing.T) {
 	t.Parallel()
 
