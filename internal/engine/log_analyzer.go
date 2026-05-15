@@ -183,6 +183,19 @@ var noiseRules = []noiseRule{
 		reason: "ARM headless Chromium hardware probing — benign initialization warnings that fire on every browser context init and have no effect on functionality. Only treat as incident if the cloakbrowser container is currently restarting (check via docker_ps restart count) or actual chrome OOM events appear in dmesg with timestamps inside the last 10 minutes.",
 	},
 	{
+		// Chrome viz display pipeline: negative frame latency is an ARM timing
+		// artifact — the compositor clock reads slightly behind and produces a
+		// negative delta on the first few frames. This has never correlated with
+		// visible rendering issues in cloakbrowser operation.
+		// Renderer process count is an informational log that Chrome emits at
+		// ERROR level in some build configurations; it carries no actionable signal.
+		services: []string{"cloakbrowser"},
+		re: regexp.MustCompile(
+			`(?:components/viz/service/display/display\.cc.*Frame latency is negative|render_process_host_impl\.cc.*Renderer process count)`,
+		),
+		reason: "Chrome cosmetic display logs — viz display pipeline negative frame latency (ARM clock artifact) and renderer process count (informational). Neither has ever correlated with a real cloakbrowser failure. Only treat as incident if the container is restarting or shows OOM in dmesg.",
+	},
+	{
 		services: []string{"go-search"},
 		re: regexp.MustCompile(
 			`search source failed.*(?:rate limited|status 400|EOF|timeout)`,
