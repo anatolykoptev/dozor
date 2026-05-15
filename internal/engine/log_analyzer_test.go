@@ -376,3 +376,65 @@ func TestNoiseSuppression_Cloakbrowser_SharedMemoryAndVideoCapture(t *testing.T)
 		t.Errorf("expected ErrorCount=1 (ssl line only), got %d", result.ErrorCount)
 	}
 }
+
+// TestNoiseSuppression_Cloakbrowser_VizDisplayAndRenderer verifies that Chrome
+// viz display latency and renderer process-count lines are treated as noise for
+// cloakbrowser, while a real ssl handshake error is NOT suppressed.
+// Ref: fix/alert-pattern-tuning — these patterns caused false-positive alerts.
+func TestNoiseSuppression_Cloakbrowser_VizDisplayAndRenderer(t *testing.T) {
+	entries := []LogEntry{
+		{
+			// Chrome viz display: negative frame latency — cosmetic ARM timing artifact.
+			Level:   "ERROR",
+			Message: `[19:19:0411/021042.803514:ERROR:components/viz/service/display/display.cc:298] Frame latency is negative: -0.128 ms`,
+			Raw:     `[19:19:0411/021042.803514:ERROR:components/viz/service/display/display.cc:298] Frame latency is negative: -0.128 ms`,
+		},
+		{
+			// Chrome renderer process count — informational, logged at ERROR level.
+			Level:   "ERROR",
+			Message: `[WARNING:content/browser/renderer_host/render_process_host_impl.cc:123] Renderer process count: 3`,
+			Raw:     `[WARNING:content/browser/renderer_host/render_process_host_impl.cc:123] Renderer process count: 3`,
+		},
+		{
+			// Real TLS error — must NOT be suppressed.
+			Level:   "ERROR",
+			Message: `[ERROR] net/socket/ssl_client_socket_impl.cc:926] handshake_failed`,
+			Raw:     `[ERROR] net/socket/ssl_client_socket_impl.cc:926] handshake_failed`,
+		},
+	}
+	result := AnalyzeLogs(entries, "cloakbrowser")
+	// display.cc + render_process_host_impl.cc must be noise-filtered.
+	if result.NoiseCount != 2 {
+		t.Errorf("expected NoiseCount=2 (viz display + renderer count), got %d", result.NoiseCount)
+	}
+	// ssl_client_socket_impl must remain a real error.
+	if result.ErrorCount != 1 {
+		t.Errorf("expected ErrorCount=1 (ssl line only), got %d", result.ErrorCount)
+	}
+}
+
+// TestNoiseSuppression_Cloakbrowser_VizDisplay_NotForOtherService ensures the
+// display.cc pattern is scoped to cloakbrowser, not leaking to other services.
+func TestNoiseSuppression_Cloakbrowser_VizDisplay_NotForOtherService(t *testing.T) {
+	entries := []LogEntry{
+		{
+			Level:   "ERROR",
+			Message: `[ERROR:components/viz/service/display/display.cc:298] Frame latency is negative: -0.128 ms`,
+			Raw:     `[ERROR:components/viz/service/display/display.cc:298] Frame latency is negative: -0.128 ms`,
+		},
+	}
+	result := AnalyzeLogs(entries, "some-go-service")
+	if result.NoiseCount != 0 {
+		t.Errorf("display.cc noise rule must NOT apply to non-cloakbrowser service, got NoiseCount=%d", result.NoiseCount)
+	}
+}
+
+// TestErrorDensityThreshold_BelowDefault verifies that defaultErrorThreshold
+// is ≥10 — bumped from 5 to reduce alert sensitivity on services with
+// naturally noisy logs. The 5-min staleness window means this is effectively
+// "at least 10 errors per 5-minute window" before an alert fires.
+func TestErrorDensityThreshold_BelowDefault(t *testing.T) {
+	if defaultErrorThreshold < 10 {
+		t.Errorf("defaultErrorThreshold should be ≥10 to reduce noise; got %d (was 5 before alert tuning)", defaultErrorThreshold)
+	}
+}

@@ -9,7 +9,14 @@ const (
 	defaultSSHPort                = 1987
 	sshStandardPort               = 22
 	defaultTimeoutSec             = 30
-	defaultErrorThreshold         = 5
+	// defaultErrorThreshold is the minimum number of errors in the 5-minute
+	// staleness window before an error-count alert fires. Bumped from 5 → 10
+	// (fix/alert-pattern-tuning) because Chrome-wrapper services (cloakbrowser)
+	// and retry-loop services produce bursts of 5 within a single transient
+	// event, creating false-positive alerts before the noise rules can filter.
+	// Real incidents (container exit, disk full) are caught by state-level
+	// checks independent of this threshold.
+	defaultErrorThreshold = 10
 	defaultRemoteCheckIntervalMin = 3
 	defaultDiskThreshold          = 80
 	defaultDiskCritical           = 95
