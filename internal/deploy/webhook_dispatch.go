@@ -31,12 +31,21 @@ func (p pushEvent) changedFiles() []string {
 }
 
 // skipByPathFilter reports whether this push should be skipped due to the
-// BuildPaths whitelist. Returns false (i.e. proceed to build) when:
-//   - BuildPaths is empty (feature disabled)
+// BuildPaths whitelist or SkipPaths deny-list. Returns false (i.e. proceed
+// to build) when:
+//   - BuildPaths is empty (feature disabled — SkipPaths also ignored)
 //   - the push has no per-commit file list (force push / oversize)
-//   - at least one changed file matches the whitelist
+//   - at least one non-skip changed file matches the whitelist
 //
-// On skip, increments dozor_deploy_skipped_total{reason="no_relevant_paths"}.
+// Filter order (when BuildPaths non-empty):
+//  1. Subtract changed files that match SkipPaths — these are treated as
+//     "not deploy-worthy" regardless of whether they also match BuildPaths
+//     (skip-list wins on overlap). Operator intent: "even if Cargo.toml
+//     matches build_paths, ignore changes under target/**".
+//  2. If nothing remains → skip{reason="only_skip_paths"}.
+//  3. Else if remaining files don't match BuildPaths → skip{reason="no_relevant_paths"}.
+//
+// On skip, increments dozor_deploy_skipped_total{reason=<above>}.
 func (h *Handler) skipByPathFilter(push pushEvent, rc *RepoConfig) bool {
 	if len(rc.BuildPaths) == 0 {
 		return false
@@ -46,7 +55,24 @@ func (h *Handler) skipByPathFilter(push pushEvent, rc *RepoConfig) bool {
 		// GitHub elided the diff — be conservative and build.
 		return false
 	}
-	if MatchAny(changed, rc.BuildPaths) {
+
+	relevant := changed
+	if len(rc.SkipPaths) > 0 {
+		relevant = make([]string, 0, len(changed))
+		for _, f := range changed {
+			if !MatchPath(f, rc.SkipPaths) {
+				relevant = append(relevant, f)
+			}
+		}
+		if len(relevant) == 0 {
+			for _, svc := range rc.Services {
+				SkippedTotal.WithLabelValues(push.Repository.FullName, svc, "only_skip_paths").Inc()
+			}
+			return true
+		}
+	}
+
+	if MatchAny(relevant, rc.BuildPaths) {
 		return false
 	}
 	for _, svc := range rc.Services {

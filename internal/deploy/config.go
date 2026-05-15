@@ -94,9 +94,16 @@ type RepoConfig struct {
 	//   "go.mod"       matches the literal file
 	BuildPaths []string `yaml:"build_paths,omitempty"`
 
-	// SkipPaths is a documentation-only list of paths the operator wants to
-	// be sure never trigger a rebuild. Today it is purely informational —
-	// BuildPaths is the source of truth for the filter decision.
+	// SkipPaths is a deny-list of glob patterns applied BEFORE the BuildPaths
+	// whitelist check. Files matching SkipPaths are subtracted from the changed
+	// set: even if such a file would otherwise match BuildPaths, it does not
+	// count toward "deploy-worthy" change. Useful when an operator wants a
+	// permissive BuildPaths (e.g. `**/*`) but explicit exclusion of certain
+	// directories (e.g. `tmp/**`, `target/**`, `docs/**`).
+	//
+	// Empty (the default) preserves backward-compat: no deny filtering.
+	// When the entire changed set is consumed by SkipPaths, the push is
+	// skipped with reason="only_skip_paths".
 	SkipPaths []string `yaml:"skip_paths,omitempty"`
 
 	// Profile selects a built-in preset for BuildPaths/SkipPaths. Known values:

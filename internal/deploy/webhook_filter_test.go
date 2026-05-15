@@ -405,3 +405,124 @@ func TestHandler_DebounceCoalescesBurst(t *testing.T) {
 		t.Errorf("HitCount = %d, want 3", got)
 	}
 }
+
+// --- SkipPaths deny-list (2026-05-15) ---
+// SkipPaths is subtracted from `changed` before BuildPaths matching:
+// even if a file would otherwise match BuildPaths, it does not count toward
+// "deploy-worthy" change. Useful when operator wants permissive BuildPaths
+// (e.g. **/*) with explicit deny for tmp/, target/, docs/, etc.
+
+func TestHandler_SkipPaths_AllChangedAreSkipped(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/memdb": {
+				ComposePath: "/tmp", SourcePath: "/tmp",
+				Services:   []string{"memdb-go"},
+				BuildPaths: []string{"memdb-go/**", "go.mod"},
+				SkipPaths:  []string{"memdb-go/tmp/**"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",
+		[]string{"memdb-go/tmp/scratch.txt", "memdb-go/tmp/foo.go"})
+
+	w := postPush(h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "skipped" {
+		t.Errorf("response status = %q, want skipped (all changed files matched skip_paths)", resp["status"])
+	}
+}
+
+func TestHandler_SkipPaths_PartialSkipBuildsOnRemaining(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/memdb": {
+				ComposePath: "/tmp", SourcePath: "/tmp",
+				Services:   []string{"memdb-go"},
+				BuildPaths: []string{"memdb-go/**"},
+				SkipPaths:  []string{"memdb-go/tmp/**"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",
+		[]string{"memdb-go/tmp/scratch.txt", "memdb-go/internal/handler.go"})
+
+	w := postPush(h, body)
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "queued" {
+		t.Errorf("response status = %q, want queued (handler.go survives skip filter)", resp["status"])
+	}
+}
+
+func TestHandler_SkipPaths_RemainingNotInBuildPathsSkips(t *testing.T) {
+	t.Parallel()
+	// changed = [tmp/foo, ROADMAP.md], skip = [tmp/**], build = [memdb-go/**].
+	// After skip subtract: [ROADMAP.md]. Not in build_paths → skip.
+	// Reason should be no_relevant_paths (not only_skip_paths).
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/memdb": {
+				ComposePath: "/tmp", SourcePath: "/tmp",
+				Services:   []string{"memdb-go"},
+				BuildPaths: []string{"memdb-go/**"},
+				SkipPaths:  []string{"memdb-go/tmp/**"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",
+		[]string{"memdb-go/tmp/scratch.txt", "ROADMAP.md"})
+
+	w := postPush(h, body)
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "skipped" {
+		t.Errorf("response status = %q, want skipped (no remaining match build_paths)", resp["status"])
+	}
+}
+
+func TestHandler_SkipPaths_EmptySkipPreservesLegacyBehaviour(t *testing.T) {
+	t.Parallel()
+	// SkipPaths empty → existing behaviour: ROADMAP.md alone outside BuildPaths skips.
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/memdb": {
+				ComposePath: "/tmp", SourcePath: "/tmp",
+				Services:   []string{"memdb-go"},
+				BuildPaths: []string{"memdb-go/**"},
+				// SkipPaths intentionally omitted.
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",
+		[]string{"ROADMAP.md"})
+
+	w := postPush(h, body)
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "skipped" {
+		t.Errorf("response status = %q, want skipped", resp["status"])
+	}
+}
