@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -34,6 +35,15 @@ const (
 	// remoteCheckTimeoutSec is the timeout for checking remote server status (seconds).
 	remoteCheckTimeoutSec = 30
 )
+
+// renderMu serializes calls to engine.RenderAlertCard.
+//
+// satori-render is a single-threaded Node process. Concurrent render requests
+// pile up and the slowest exceed DOZOR_SATORI_TIMEOUT, triggering text-fallback.
+// Even after the batch fix (one notifyAlertFn call per webhook POST), independent
+// alert sources (alertmanager + remote-watch) can still race. Mutex caps inflight
+// renders at 1 within this process, keeping each request well inside the timeout.
+var renderMu sync.Mutex
 
 // runGateway starts the full agent: MCP + A2A + Telegram + LLM.
 func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
@@ -84,7 +94,9 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 			notifyFn(fallbackText)
 			return
 		}
+		renderMu.Lock()
 		card, err := engine.RenderAlertCard(context.Background(), alerts[0])
+		renderMu.Unlock()
 		if err != nil {
 			slog.Warn("alert card render failed, falling back to text",
 				slog.Any("error", err),
