@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 const (
@@ -60,40 +62,90 @@ type BuildResult struct {
 //
 // A buffered signal channel wakes the worker when new pending work appears; the
 // worker drains the entire pending map before sleeping again, so multiple
-// service groups can each get their own build in turn (still serialized).
+// Queue manages Docker builds with configurable concurrency.
+//
+// Concurrency model:
+//   - N worker goroutines drive builds concurrently (N = DOZOR_BUILD_CONCURRENCY,
+//     default 1 for backward compat). Each worker calls drainPending independently.
+//   - "Heavy" repos (heavy: true in dozor.yml) additionally acquire heavySem(1),
+//     so at most one heavy build runs regardless of N â preventing OOM on ARM.
+//   - pending[key] holds at most one queued request per service group (newest-wins).
+//   - busySHA[key] tracks the SHA currently building, used for SHA-aware dedup.
+//   - signal is buffered N; after picking work a worker re-signals if pending is
+//     non-empty, ensuring all workers stay busy when work is available.
 type Queue struct {
 	notify func(string)
 
 	mu       sync.Mutex
-	pending  map[string]BuildRequest // service-key → next-to-build (newest-wins)
-	busySHA  map[string]string       // service-key → SHA currently building (active)
-	signal   chan struct{}           // worker wake-up
+	pending  map[string]BuildRequest // service-key â next-to-build (newest-wins)
+	busySHA  map[string]string       // service-key â SHA currently building (active)
+	signal   chan struct{}           // worker wake-up (buffered N)
 
 	// For tests: visibility into the building set without exposing busySHA's SHA.
 	building map[string]bool
 
+	// heavySem gates heavy builds: at most one heavy build runs at a time,
+	// regardless of DOZOR_BUILD_CONCURRENCY, to prevent OOM on the ARM host.
+	// Light builds skip this semaphore entirely.
+	heavySem *semaphore.Weighted
+
 	cancel context.CancelFunc
-	done   chan struct{}
+	done   chan struct{} // closed when all workers have exited (compat with newStoppedQueue)
+	wg     sync.WaitGroup // tracks all worker goroutines
 }
 
-// NewQueue creates a build queue and starts the worker goroutine.
+// NewQueue creates a build queue with concurrency=1 (backward-compatible default).
+// Use NewQueueN for a higher concurrency limit.
 func NewQueue(ctx context.Context, notify func(string)) *Queue {
+	return NewQueueN(ctx, notify, 1)
+}
+
+// NewQueueN creates a build queue and starts n worker goroutines.
+// n <= 0 is clamped to 1.
+//
+// Env knob (resolved by the caller, not here): DOZOR_BUILD_CONCURRENCY.
+// Default 1 = identical to the old single-worker behaviour.
+func NewQueueN(ctx context.Context, notify func(string), n int) *Queue {
+	if n <= 0 {
+		n = 1
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	q := &Queue{
 		notify:   notify,
 		pending:  make(map[string]BuildRequest),
 		busySHA:  make(map[string]string),
 		building: make(map[string]bool),
-		signal:   make(chan struct{}, 1),
+		signal:   make(chan struct{}, n), // buffered N so all workers can be woken
+		heavySem: semaphore.NewWeighted(1),
 		cancel:   cancel,
-		done:     make(chan struct{}),
+		done:     make(chan struct{}), // closed when all workers have exited
 	}
-	go q.worker(ctx)
+	q.wg.Add(n)
+	for range n {
+		go q.worker(ctx)
+	}
+	// Close done when all workers exit.
+	go func() { q.wg.Wait(); close(q.done) }()
 	// Publish to the activeQueue singleton so external read-only callers can
 	// find us without explicit plumbing. Last-writer-wins if multiple queues
 	// are constructed in the same process (only tests do this).
 	activeQueue.Store(q)
 	return q
+}
+
+// IsActiveOrPending reports whether the given service-key has a build currently
+// in flight or queued to run next. Used by dispatchPush to bypass the debounce
+// window when the queue already has work for this service group â the queue's
+// own newest-wins dedup handles the second webhook correctly, eliminating the
+// 30-60 s debounce latency in the bursty case.
+//
+// key must be serviceKey(rc.Services) â no repo-name prefix.
+func (q *Queue) IsActiveOrPending(key string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	_, busy := q.busySHA[key]
+	_, pend := q.pending[key]
+	return busy || pend
 }
 
 // queued is a test helper / back-compat shim: returns whether a key has a
@@ -169,9 +221,10 @@ func (q *Queue) Submit(req BuildRequest) bool {
 	return true
 }
 
-// Close shuts down the queue worker.
+// Close shuts down all queue workers and waits for them to exit.
 func (q *Queue) Close() {
 	q.cancel()
+	// done is closed by the watcher goroutine once all workers have exited.
 	<-q.done
 	// Clear the active-queue pointer only if we are still the active one.
 	// Lets tests stand up a Queue and tear it down without poisoning the
@@ -246,7 +299,7 @@ func (q *Queue) Snapshot() []ServiceQueueState {
 }
 
 func (q *Queue) worker(ctx context.Context) {
-	defer close(q.done)
+	defer q.wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
@@ -257,21 +310,28 @@ func (q *Queue) worker(ctx context.Context) {
 	}
 }
 
-// drainPending processes all pending requests, one at a time, until empty.
-// Strict global serialization: only one processBuild call active at any time.
-// Within the loop, map iteration order is non-deterministic which is fine —
-// every pending key gets built before the worker sleeps again.
+// drainPending picks one ready pending request and executes it. Multiple workers
+// call this concurrently; the mutex ensures each picks a distinct key.
+//
+// Heavy builds use TryAcquire on heavySem (non-blocking): if another heavy
+// build is running the key is skipped. The releaser re-signals so the skipped
+// heavy build is retried once the semaphore is free.
 func (q *Queue) drainPending(ctx context.Context) {
 	for {
-		// Pick next pending key whose service group is not currently building.
-		// (busySHA is set in this same goroutine, so this check is mostly defensive
-		// against future concurrency changes; today there is exactly one worker.)
 		q.mu.Lock()
 		var pickKey string
 		var pickReq BuildRequest
+		var isHeavy bool
 		for k, r := range q.pending {
 			if _, busy := q.busySHA[k]; busy {
 				continue
+			}
+			if r.Config.Heavy {
+				// Non-blocking: skip if another heavy build holds the semaphore.
+				if !q.heavySem.TryAcquire(1) {
+					continue
+				}
+				isHeavy = true
 			}
 			pickKey = k
 			pickReq = r
@@ -284,22 +344,41 @@ func (q *Queue) drainPending(ctx context.Context) {
 		delete(q.pending, pickKey)
 		q.busySHA[pickKey] = pickReq.CommitSHA
 		q.building[pickKey] = true
+		// Re-signal if more pending work exists so another worker can pick it up.
+		if len(q.pending) > 0 {
+			select {
+			case q.signal <- struct{}{}:
+			default:
+			}
+		}
 		q.mu.Unlock()
 
-		q.processBuild(ctx, pickReq)
+		q.processBuild(ctx, pickReq, isHeavy)
 
 		q.mu.Lock()
 		delete(q.busySHA, pickKey)
 		delete(q.building, pickKey)
 		q.mu.Unlock()
-		// Loop continues — if a webhook arrived during the build and replaced
-		// q.pending[key] with a newer SHA, it gets picked next iteration. This
-		// is the convergence guarantee: after all webhooks settle, the latest
-		// SHA per service group is what runs in production.
+		if isHeavy {
+			q.heavySem.Release(1)
+			// Wake a worker that skipped this key while the semaphore was held.
+			select {
+			case q.signal <- struct{}{}:
+			default:
+			}
+		}
+		// Loop: pick next pending for this worker (newest-wins convergence).
 	}
 }
 
-func (q *Queue) processBuild(ctx context.Context, req BuildRequest) {
+func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool) {
+	class := "light"
+	if isHeavy {
+		class = "heavy"
+	}
+	BuildInflight.WithLabelValues(class).Inc()
+	defer BuildInflight.WithLabelValues(class).Dec()
+
 	services := strings.Join(req.Config.Services, ", ")
 	q.notify(fmt.Sprintf(
 		"\U0001f528 [%s] Building... (commit %s)", services, short(req.CommitSHA)))

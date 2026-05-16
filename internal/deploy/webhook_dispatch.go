@@ -1,5 +1,7 @@
 package deploy
 
+import "log/slog"
+
 // This file isolates the post-validation routing logic of the GitHub webhook
 // handler — path filtering, debounce dispatch, and queue submission. ServeHTTP
 // (in webhook.go) handles HMAC + event classification only.
@@ -84,25 +86,43 @@ func (h *Handler) skipByPathFilter(push pushEvent, rc *RepoConfig) bool {
 // dispatchPush hands the (filtered) push event off to either the debouncer or
 // directly to the build queue, returning the status string included in the
 // HTTP response ("queued", "deduplicated", or "debounced").
+//
+// Skip-debounce optimisation: when a build is already active or pending for
+// this service group, bypass the debounce window entirely and submit directly
+// to the queue. The queue's newest-wins dedup collapses it correctly, and
+// skipping debounce eliminates 30–60 s of unnecessary latency.
 func (h *Handler) dispatchPush(push pushEvent, rc *RepoConfig) string {
 	if window := rc.DebounceWindow(); window > 0 && h.debouncer != nil {
-		// Key includes repo + sorted services so two services in the same
-		// repo debounce independently.
-		key := push.Repository.FullName + "#" + serviceKey(rc.Services)
-		svcLabel := ""
-		if len(rc.Services) > 0 {
-			svcLabel = rc.Services[0]
+		// Use the queue's key (serviceKey only, no repo prefix) to match what
+		// the queue tracks internally in busySHA/pending.
+		queueKey := serviceKey(rc.Services)
+		if h.queue.IsActiveOrPending(queueKey) {
+			// Build already active/pending: debounce window adds pure latency here.
+			// Go straight to queue; newest-wins dedup handles duplicate SHAs.
+			slog.Info("deploy debounced: skipping debounce (build active/pending)",
+				"repo", push.Repository.FullName,
+				"services", rc.Services,
+				"commit", short(push.HeadCommit.ID),
+			)
+		} else {
+			// Key includes repo + sorted services so two services in the same
+			// repo debounce independently.
+			debounceKey := push.Repository.FullName + "#" + queueKey
+			svcLabel := ""
+			if len(rc.Services) > 0 {
+				svcLabel = rc.Services[0]
+			}
+			h.debouncer.Submit(debounceKey, PendingEvent{
+				Repo:      push.Repository.FullName,
+				Service:   svcLabel,
+				CommitSHA: push.HeadCommit.ID,
+				Config:    *rc,
+			}, window)
+			return "debounced"
 		}
-		h.debouncer.Submit(key, PendingEvent{
-			Repo:      push.Repository.FullName,
-			Service:   svcLabel,
-			CommitSHA: push.HeadCommit.ID,
-			Config:    *rc,
-		}, window)
-		return "debounced"
 	}
 
-	// Immediate dispatch — original behaviour.
+	// Immediate dispatch — original behaviour (or skip-debounce fast path).
 	for _, svc := range rc.Services {
 		FiredTotal.WithLabelValues(push.Repository.FullName, svc).Inc()
 	}

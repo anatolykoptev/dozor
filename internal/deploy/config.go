@@ -153,6 +153,16 @@ type RepoConfig struct {
 	// Increase for repos with slow builds (e.g. cold-cache Rust workspace with
 	// no_cache: true). Example: build_timeout: 45m
 	BuildTimeout Duration `yaml:"build_timeout,omitempty"`
+
+	// Heavy marks this repo as a resource-intensive build that acquires the
+	// global heavy-build semaphore (in addition to the per-slot concurrency
+	// limit). At most one heavy build runs at a time regardless of
+	// DOZOR_BUILD_CONCURRENCY, preventing OOM on the ARM build host when
+	// concurrent Rust/Docker builds are enabled.
+	//
+	// Set heavy: true for repos with no_cache:true Rust builds or multi-stage
+	// Docker builds that pin >4 GB RAM during compile.
+	Heavy bool `yaml:"heavy,omitempty"`
 }
 
 // DebounceWindow returns the configured debounce duration, or 0 if disabled.

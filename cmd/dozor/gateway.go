@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -260,7 +261,24 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 			notifyFn(msg)
 		}
 	}
-	queue := deploy.NewQueue(ctx, deployLog)
+	// DOZOR_BUILD_CONCURRENCY controls how many Docker builds may run
+	// concurrently across all service groups. Default 1 preserves the
+	// original serialized behaviour; set to 2 once the ARM host has been
+	// validated under concurrent load. Heavy builds (heavy: true in
+	// deploy-repos.yaml) always have an additional serialization constraint
+	// (heavySem) regardless of this knob.
+	buildConcurrency := 1
+	if v := os.Getenv("DOZOR_BUILD_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			buildConcurrency = n
+		} else {
+			slog.Warn("DOZOR_BUILD_CONCURRENCY: invalid value, using 1",
+				slog.String("value", v))
+		}
+	}
+	slog.Info("deploy queue starting",
+		slog.Int("concurrency", buildConcurrency))
+	queue := deploy.NewQueueN(ctx, deployLog, buildConcurrency)
 	handler := deploy.NewHandler(cfg, queue, deployLog)
 	mx.Handle("POST /deploy/github", handler)
 

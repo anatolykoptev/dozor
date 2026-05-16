@@ -59,4 +59,12 @@ var (
 		Name: "dozor_build_result_total",
 		Help: "Build results by repository, service, and outcome status.",
 	}, []string{"repo", "service", "status"})
+
+	// BuildInflight tracks the number of builds currently executing, by class.
+	// class label: "heavy" (acquires heavySem) or "light". Useful for alerting
+	// when concurrent heavy builds approach the ARM host OOM threshold.
+	BuildInflight = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dozor_build_inflight",
+		Help: "Builds currently executing, by class (heavy|light).",
+	}, []string{"class"})
 )
