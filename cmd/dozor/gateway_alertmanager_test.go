@@ -409,5 +409,78 @@ func TestAlertmanager_CommonLabelsAndAnnotations(t *testing.T) {
 	}
 }
 
+// TestAlertmanager_BatchOf3_SingleNotifyCall verifies that a webhook POST
+// carrying 3 alerts triggers exactly one notifyAlertFn invocation with all
+// 3 alerts in the slice — NOT three separate calls. This is the regression
+// guard for the "concurrent render cascade" bug where N alerts → N satori
+// requests → N-1 timeout failures.
+func TestAlertmanager_BatchOf3_SingleNotifyCall(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		calls    int
+		allAlerts []engine.Alert
+	)
+	spy := func(alerts []engine.Alert, _ string) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		allAlerts = append(allAlerts, alerts...)
+	}
+	handler := makeAlertmanagerHandler(t, "", "", spy)
+
+	body := `{
+		"version":"4",
+		"status":"firing",
+		"receiver":"dozor",
+		"groupLabels":{},
+		"commonLabels":{},
+		"alerts":[
+			{
+				"status":"firing",
+				"labels":{"alertname":"DozorBuildFailingPersistent","severity":"critical"},
+				"annotations":{"summary":"Build failing","description":"Build has been failing for 20m"},
+				"startsAt":"2026-05-15T19:15:17Z",
+				"endsAt":"0001-01-01T00:00:00Z"
+			},
+			{
+				"status":"firing",
+				"labels":{"alertname":"RealitySniPoolDrift","severity":"warning"},
+				"annotations":{"summary":"SNI pool drifted","description":"Pool size diverged from expected"},
+				"startsAt":"2026-05-15T19:15:17Z",
+				"endsAt":"0001-01-01T00:00:00Z"
+			},
+			{
+				"status":"firing",
+				"labels":{"alertname":"PartnerEdgeStaleHeartbeat","severity":"warning"},
+				"annotations":{"summary":"Stale heartbeat","description":"Last heartbeat >5m ago"},
+				"startsAt":"2026-05-15T19:15:17Z",
+				"endsAt":"0001-01-01T00:00:00Z"
+			}
+		]
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/alertmanager", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	mu.Lock()
+	gotCalls := calls
+	gotAlerts := len(allAlerts)
+	mu.Unlock()
+
+	// Critical invariant: single POST → single notifyAlertFn call (not N calls).
+	if gotCalls != 1 {
+		t.Errorf("notifyAlertFn called %d times, want exactly 1 (batch regression)", gotCalls)
+	}
+	if gotAlerts != 3 {
+		t.Errorf("total alerts dispatched: got %d, want 3", gotAlerts)
+	}
+}
+
 // Compile-time interface check: registerAlertmanagerWebhookHandler must exist.
 var _ = registerAlertmanagerWebhookHandler
