@@ -44,6 +44,7 @@ type Handler struct {
 	queue     *Queue
 	notify    func(string)
 	debouncer *Debouncer
+	checker   *prLabelChecker
 }
 
 // NewHandler creates a GitHub webhook handler. The handler unconditionally
@@ -51,9 +52,13 @@ type Handler struct {
 // configured debounce window is zero.
 func NewHandler(config *Config, queue *Queue, notify func(string)) *Handler {
 	h := &Handler{
-		config: config,
-		queue:  queue,
-		notify: notify,
+		config:  config,
+		queue:   queue,
+		notify:  notify,
+		checker: newPRLabelChecker(config.GitHubToken),
+	}
+	if config.GitHubToken == "" {
+		slog.Warn("DOZOR_GITHUB_TOKEN not set; PR label check disabled (marker-only mode)")
 	}
 	h.debouncer = NewDebouncer(nil, h.dispatch)
 	return h

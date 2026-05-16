@@ -183,7 +183,7 @@ Optional integration with Claude Code CLI for deep analysis.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DOZOR_TRACKED_BINARIES` | _(empty)_ | GitHub binaries to track. Format: `owner/repo:binary,owner/repo` |
-| `DOZOR_GITHUB_TOKEN` | _(empty)_ | GitHub token for higher API rate limits (60/hr → 5000/hr) |
+| `DOZOR_GITHUB_TOKEN` | _(empty)_ | GitHub token — used for `no-auto-deploy` PR label lookup and binary update tracker. Without a token only the commit message marker is checked. |
 
 ## Docker Labels
 
@@ -317,3 +317,33 @@ rsync -a --delete dist/ /var/www/krolik-tools/
 ### Debounce Window
 
 By default, back-to-back pushes to the same repo are coalesced into a single build using a 3-minute debounce window. Override globally with `DOZOR_DEFAULT_DEBOUNCE` (any Go duration, e.g. `5m`). Per-repo `debounce_seconds: N` always wins over the global default; set `debounce_seconds: -1` to opt out of debouncing entirely for a specific repo (immediate dispatch).
+
+### Skipping Auto-Deploy
+
+You can suppress a deploy without touching repo or server configuration, using either of two mechanisms:
+
+**Commit message marker** (no token or API call required):
+
+Include `[no-deploy]` or `[no-auto-deploy]` anywhere in the commit message (subject or body). Case-insensitive; dash and underscore separators are interchangeable.
+
+```
+fix: tweak README wording [no-deploy]
+```
+
+**PR label** (requires `DOZOR_GITHUB_TOKEN`):
+
+Add the `no-auto-deploy` label to the pull request before merging. Dozor calls `GET /repos/{owner}/{repo}/commits/{sha}/pulls` after each push, caches the result for 10 minutes, and skips the deploy if any associated PR carries the label.
+
+If the API call fails for any reason (timeout, rate-limit, GH outage), the deploy **proceeds** (fail-open).
+
+**Per-repo opt-out** of both mechanisms:
+
+```yaml
+# deploy-repos.yaml
+repos:
+  owner/repo:
+    ignore_no_auto_deploy_label: true
+    # ... rest of config
+```
+
+When `ignore_no_auto_deploy_label: true` is set, all pushes to that repo always deploy, regardless of markers or labels.

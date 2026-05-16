@@ -1,6 +1,9 @@
 package deploy
 
-import "log/slog"
+import (
+	"context"
+	"log/slog"
+)
 
 // This file isolates the post-validation routing logic of the GitHub webhook
 // handler — path filtering, debounce dispatch, and queue submission. ServeHTTP
@@ -92,6 +95,27 @@ func (h *Handler) skipByPathFilter(push pushEvent, rc *RepoConfig) bool {
 // to the queue. The queue's newest-wins dedup collapses it correctly, and
 // skipping debounce eliminates 30–60 s of unnecessary latency.
 func (h *Handler) dispatchPush(push pushEvent, rc *RepoConfig) string {
+	// no-auto-deploy check: skip deploy when commit message marker is present
+	// or when any associated PR has the "no-auto-deploy" label.
+	// Fail-open: errors in the label API call return false (deploy proceeds).
+	if h.checker != nil && !rc.IgnoreNoAutoDeployLabel {
+		if h.checker.ShouldSkip(
+			context.Background(),
+			push.Repository.FullName,
+			push.HeadCommit.ID,
+			push.HeadCommit.Message,
+		) {
+			for _, svc := range rc.Services {
+				SkippedTotal.WithLabelValues(push.Repository.FullName, svc, "no_auto_deploy").Inc()
+			}
+			slog.Info("deploy skipped: no-auto-deploy",
+				"repo", push.Repository.FullName,
+				"commit", short(push.HeadCommit.ID),
+			)
+			return "skipped_no_auto_deploy"
+		}
+	}
+
 	if window := rc.DebounceWindow(); window > 0 && h.debouncer != nil {
 		// Use the queue's key (serviceKey only, no repo prefix) to match what
 		// the queue tracks internally in busySHA/pending.
