@@ -312,3 +312,8 @@ npm run build
 # Atomic swap: move built output to web root
 rsync -a --delete dist/ /var/www/krolik-tools/ 
 ```
+
+
+### Debounce Window
+
+By default, back-to-back pushes to the same repo are coalesced into a single build using a 3-minute debounce window. Override globally with `DOZOR_DEFAULT_DEBOUNCE` (any Go duration, e.g. `5m`). Per-repo `debounce_seconds: N` always wins over the global default; set `debounce_seconds: -1` to opt out of debouncing entirely for a specific repo (immediate dispatch).

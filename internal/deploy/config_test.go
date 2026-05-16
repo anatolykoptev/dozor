@@ -513,3 +513,44 @@ func TestDefaultConfigPath(t *testing.T) {
 		t.Errorf("without DOZOR_WORKSPACE: got %q, want %q", got, want)
 	}
 }
+
+func TestMain(m *testing.M) {
+	// Zero the global debounce default so pre-existing tests that expect
+	// immediate dispatch (status=queued) are not broken by the 3m default.
+	// Individual TestDebounceWindow subtests set it explicitly via withDefaultDebounce.
+	defaultDebounceWindow = 0
+	os.Exit(m.Run())
+}
+
+func withDefaultDebounce(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := defaultDebounceWindow
+	defaultDebounceWindow = d
+	t.Cleanup(func() { defaultDebounceWindow = old })
+}
+
+func TestDebounceWindow(t *testing.T) {
+	t.Run("zero uses default debounce window", func(t *testing.T) {
+		withDefaultDebounce(t, 3*time.Minute)
+		rc := RepoConfig{DebounceSeconds: 0}
+		if got := rc.DebounceWindow(); got != 3*time.Minute {
+			t.Errorf("DebounceSeconds=0: got %v, want %v", got, 3*time.Minute)
+		}
+	})
+
+	t.Run("explicit seconds overrides default", func(t *testing.T) {
+		withDefaultDebounce(t, 3*time.Minute)
+		rc := RepoConfig{DebounceSeconds: 60}
+		if got := rc.DebounceWindow(); got != 60*time.Second {
+			t.Errorf("DebounceSeconds=60: got %v, want %v", got, 60*time.Second)
+		}
+	})
+
+	t.Run("sentinel -1 opts out (immediate dispatch)", func(t *testing.T) {
+		withDefaultDebounce(t, 3*time.Minute)
+		rc := RepoConfig{DebounceSeconds: -1}
+		if got := rc.DebounceWindow(); got != 0 {
+			t.Errorf("DebounceSeconds=-1: got %v, want 0", got)
+		}
+	})
+}
