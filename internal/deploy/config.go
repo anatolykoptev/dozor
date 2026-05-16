@@ -8,6 +8,7 @@ package deploy
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -165,12 +166,28 @@ type RepoConfig struct {
 	Heavy bool `yaml:"heavy,omitempty"`
 }
 
-// DebounceWindow returns the configured debounce duration, or 0 if disabled.
-func (rc RepoConfig) DebounceWindow() time.Duration {
-	if rc.DebounceSeconds <= 0 {
-		return 0
+var defaultDebounceWindow = func() time.Duration {
+	if v := os.Getenv("DOZOR_DEFAULT_DEBOUNCE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			return d
+		}
+		slog.Warn("DOZOR_DEFAULT_DEBOUNCE invalid, using 3m", "value", v)
 	}
-	return time.Duration(rc.DebounceSeconds) * time.Second
+	return 3 * time.Minute
+}()
+
+// DebounceWindow returns the configured debounce duration.
+// Zero uses the global default (DOZOR_DEFAULT_DEBOUNCE, default 3m).
+// Negative (−1) opts out of debouncing (immediate dispatch).
+func (rc RepoConfig) DebounceWindow() time.Duration {
+	switch {
+	case rc.DebounceSeconds < 0:
+		return 0
+	case rc.DebounceSeconds == 0:
+		return defaultDebounceWindow
+	default:
+		return time.Duration(rc.DebounceSeconds) * time.Second
+	}
 }
 
 // resolvedKind returns the effective deploy kind (defaulting to KindCompose).
