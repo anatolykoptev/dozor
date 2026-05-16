@@ -164,6 +164,12 @@ type RepoConfig struct {
 	// Set heavy: true for repos with no_cache:true Rust builds or multi-stage
 	// Docker builds that pin >4 GB RAM during compile.
 	Heavy bool `yaml:"heavy,omitempty"`
+
+	// IgnoreNoAutoDeployLabel, when true, bypasses the no-auto-deploy PR label
+	// and commit message marker check for this repo. Use when all merges must
+	// deploy regardless of PR labels (e.g. a repo where the label has a
+	// different meaning in the review workflow).
+	IgnoreNoAutoDeployLabel bool `yaml:"ignore_no_auto_deploy_label,omitempty"`
 }
 
 var defaultDebounceWindow = func() time.Duration {
@@ -290,8 +296,9 @@ func resolveProfile(repo string, rc *RepoConfig) error {
 
 // Config holds the full deploy webhook configuration.
 type Config struct {
-	Repos  map[string]RepoConfig `yaml:"repos"`
-	Secret string                `yaml:"-"` // loaded from env, never from file
+	Repos       map[string]RepoConfig `yaml:"repos"`
+	Secret      string                `yaml:"-"` // loaded from env: DOZOR_GITHUB_WEBHOOK_SECRET
+	GitHubToken string                `yaml:"-"` // loaded from env: DOZOR_GITHUB_TOKEN
 }
 
 // validateRepoConfig validates and normalises a single RepoConfig entry.
@@ -361,6 +368,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	cfg.Secret = os.Getenv("DOZOR_GITHUB_WEBHOOK_SECRET")
+	cfg.GitHubToken = os.Getenv("DOZOR_GITHUB_TOKEN")
 
 	for repo, rc := range cfg.Repos {
 		if err := resolveProfile(repo, &rc); err != nil {
