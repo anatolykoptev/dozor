@@ -52,16 +52,6 @@ type BuildResult struct {
 // arriving while a build is in flight collapse into a single follow-up build
 // of the latest commit.
 //
-// Concurrency model:
-//   - Single worker goroutine drives all builds; processBuild is synchronous,
-//     so two builds can never overlap.
-//   - pending[key] holds at most one queued request per service group; arriving
-//     requests with a different SHA REPLACE the pending one (no FIFO buildup).
-//   - busySHA[key] tracks the SHA currently building, used for SHA-aware dedup
-//     ("same commit currently building" → drop, "newer commit" → queue).
-//
-// A buffered signal channel wakes the worker when new pending work appears; the
-// worker drains the entire pending map before sleeping again, so multiple
 // Queue manages Docker builds with configurable concurrency.
 //
 // Concurrency model:
@@ -213,7 +203,7 @@ func (q *Queue) Submit(req BuildRequest) bool {
 		"services", req.Config.Services,
 		"commit", short(req.CommitSHA))
 
-	// Wake worker. Non-blocking: signal channel is buffered=1, drop dup signals.
+	// Wake worker. Non-blocking: signal channel is buffered N (DOZOR_BUILD_CONCURRENCY), drop dup signals.
 	select {
 	case q.signal <- struct{}{}:
 	default:
