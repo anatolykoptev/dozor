@@ -137,10 +137,11 @@ func (h *Handler) dispatchPush(push pushEvent, rc *RepoConfig) string {
 				svcLabel = rc.Services[0]
 			}
 			h.debouncer.Submit(debounceKey, PendingEvent{
-				Repo:      push.Repository.FullName,
-				Service:   svcLabel,
-				CommitSHA: push.HeadCommit.ID,
-				Config:    *rc,
+				Repo:         push.Repository.FullName,
+				Service:      svcLabel,
+				CommitSHA:    push.HeadCommit.ID,
+				ChangedPaths: push.changedFiles(),
+				Config:       *rc,
 			}, window)
 			return "debounced"
 		}
@@ -151,9 +152,10 @@ func (h *Handler) dispatchPush(push pushEvent, rc *RepoConfig) string {
 		FiredTotal.WithLabelValues(push.Repository.FullName, svc).Inc()
 	}
 	if !h.queue.Submit(BuildRequest{
-		Repo:      push.Repository.FullName,
-		CommitSHA: push.HeadCommit.ID,
-		Config:    *rc,
+		Repo:         push.Repository.FullName,
+		CommitSHA:    push.HeadCommit.ID,
+		ChangedPaths: push.changedFiles(),
+		Config:       *rc,
 	}) {
 		return "deduplicated"
 	}
@@ -167,8 +169,9 @@ func (h *Handler) dispatch(ev PendingEvent) {
 		FiredTotal.WithLabelValues(ev.Repo, svc).Inc()
 	}
 	h.queue.Submit(BuildRequest{
-		Repo:      ev.Repo,
-		CommitSHA: ev.CommitSHA,
-		Config:    ev.Config,
+		Repo:         ev.Repo,
+		CommitSHA:    ev.CommitSHA,
+		ChangedPaths: ev.ChangedPaths,
+		Config:       ev.Config,
 	})
 }
