@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 )
 
 // staticScriptRunner is the function used to execute the static deploy script.
@@ -13,13 +14,23 @@ var staticScriptRunner = defaultStaticScriptRunner
 
 // defaultStaticScriptRunner executes the deploy script directly (no shell
 // interpolation) and returns the combined stdout+stderr.
-// args[0] is the script path; DEPLOY_REPO_PATH and DEPLOY_SHA are set via Env.
-func defaultStaticScriptRunner(ctx context.Context, script, repoPath, commitSHA string) ([]byte, error) {
+// The script receives three environment variables:
+//
+//	DEPLOY_REPO_PATH      — absolute path to the local git checkout (SourcePath)
+//	DEPLOY_SHA            — commit SHA from the webhook
+//	DEPLOY_CHANGED_PATHS  — newline-separated list of changed file paths across
+//	                        all commits in the push (union across coalesced events).
+//	                        Empty string when unknown (force-push or oversized push):
+//	                        scripts must treat empty as "all paths changed" and act
+//	                        conservatively.
+func defaultStaticScriptRunner(ctx context.Context, script, repoPath, commitSHA string, changedPaths []string) ([]byte, error) {
 	//nolint:gosec // script path comes from trusted deploy-repos.yaml, not user input
 	cmd := exec.CommandContext(ctx, script)
+	changedPathsVal := strings.Join(changedPaths, "\n")
 	cmd.Env = append(cmd.Environ(),
 		"DEPLOY_REPO_PATH="+repoPath,
 		"DEPLOY_SHA="+commitSHA,
+		"DEPLOY_CHANGED_PATHS="+changedPathsVal,
 	)
 	return cmd.CombinedOutput()
 }
@@ -44,7 +55,7 @@ func executeStaticBuild(ctx context.Context, req BuildRequest) BuildResult {
 		"commit", short(req.CommitSHA),
 	)
 
-	out, err := staticScriptRunner(ctx, script, repoPath, req.CommitSHA)
+	out, err := staticScriptRunner(ctx, script, repoPath, req.CommitSHA, req.ChangedPaths)
 	if len(out) > 0 {
 		slog.Info("deploy/static: script output",
 			"repo", req.Repo,

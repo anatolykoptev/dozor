@@ -30,9 +30,10 @@ var (
 
 // BuildRequest represents a queued build job.
 type BuildRequest struct {
-	Repo      string
-	CommitSHA string
-	Config    RepoConfig
+	Repo         string
+	CommitSHA    string
+	ChangedPaths []string // union of changed file paths across all commits in the push; nil = unknown (force-push or oversized)
+	Config       RepoConfig
 }
 
 // BuildResult holds the outcome of a build.

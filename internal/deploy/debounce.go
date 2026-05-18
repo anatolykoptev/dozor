@@ -36,13 +36,14 @@ func (r *realTimer) Stop() bool               { return r.t.Stop() }
 // On timer fire, the debouncer hands this back to the dispatcher so the build
 // uses HEAD at fire time, not the first webhook's commit.
 type PendingEvent struct {
-	Repo      string
-	Service   string
-	CommitSHA string
-	Config    RepoConfig
-	HitCount  int       // number of webhooks coalesced into this pending build
-	FirstSeen time.Time // when the first webhook of this batch arrived
-	LastSeen  time.Time // when the most recent webhook arrived
+	Repo         string
+	Service      string
+	CommitSHA    string
+	ChangedPaths []string  // union of changed paths across coalesced pushes; nil = unknown
+	Config       RepoConfig
+	HitCount     int       // number of webhooks coalesced into this pending build
+	FirstSeen    time.Time // when the first webhook of this batch arrived
+	LastSeen     time.Time // when the most recent webhook arrived
 }
 
 // DispatchFunc is invoked once per debounced batch, after the quiet window elapses.
@@ -95,6 +96,25 @@ func (d *Debouncer) Submit(key string, ev PendingEvent, window time.Duration) {
 		entry.event.Config = ev.Config
 		entry.event.HitCount++
 		entry.event.LastSeen = now
+		// Union changed paths: nil on either side means unknown (force/oversized push);
+		// in that case the union is nil so the script falls back to full-recreate.
+		if ev.ChangedPaths != nil && entry.event.ChangedPaths != nil {
+			seen := make(map[string]struct{}, len(entry.event.ChangedPaths)+len(ev.ChangedPaths))
+			for _, p := range entry.event.ChangedPaths {
+				seen[p] = struct{}{}
+			}
+			for _, p := range ev.ChangedPaths {
+				seen[p] = struct{}{}
+			}
+			union := make([]string, 0, len(seen))
+			for p := range seen {
+				union = append(union, p)
+			}
+			entry.event.ChangedPaths = union
+		} else {
+			// One side unknown — full path set unknowable.
+			entry.event.ChangedPaths = nil
+		}
 		entry.timer.Reset(window)
 		hits := entry.event.HitCount
 		d.mu.Unlock()
