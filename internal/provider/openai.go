@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"os"
 	"strconv"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	kitllm "github.com/anatolykoptev/go-kit/llm"
+	"github.com/anatolykoptev/go-kit/retry"
 	"github.com/anatolykoptev/go-kit/tracing"
 	"github.com/anatolykoptev/go-kit/tracing/httpmw"
 	"go.opentelemetry.io/otel/attribute"
@@ -59,22 +59,32 @@ func NewOpenAI() (Provider, bool) {
 // MaxIterations returns the configured max tool call iterations.
 func (o *OpenAI) MaxIterations() int { return o.maxIters }
 
-// maxRetries for transient errors (429, 5xx).
-const (
-	chatMaxRetries   = 3
-	chatInitialDelay = 2 * time.Second
-	chatMaxDelay     = 30 * time.Second
-	// chatJitterDivisor is the divisor for jitter calculation in exponential backoff.
-	chatJitterDivisor = 4
-)
-
-// Chat sends a chat completion request and returns the response.
-// Retries up to chatMaxRetries times on transient errors (429, 5xx).
-func (o *OpenAI) Chat(ctx context.Context, messages []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
-	return o.chatWithRetry(ctx, messages, tools)
+// chatRetryOpts are the retry options for Chat. 4 total attempts (1 initial
+// + 3 retries), exponential 2s→30s. Jitter is disabled so that the
+// server-supplied Retry-After delay is honoured exactly — kit/retry applies
+// jitter uniformly to both the Retry-After and the exponential delays, which
+// can bring a 1s Retry-After below its nominal value and break the
+// TestChatWithRetry_HonoursRetryAfter timing assertion. Non-transient errors
+// (auth, 4xx client, context cancellation) abort immediately via RetryIf.
+var chatRetryOpts = retry.Options{
+	MaxAttempts:  4, // 1 initial + 3 retries
+	InitialDelay: 2 * time.Second,
+	MaxDelay:     30 * time.Second,
+	Jitter:       false, // see comment above; was ±25% (chatJitterDivisor=4) in prior code
+	RetryIf:      IsTransient,
 }
 
-func (o *OpenAI) chatWithRetry(ctx context.Context, messages []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
+// Chat sends a chat completion request and returns the response.
+// Retries up to 3 times on transient errors (429, 5xx, network failures)
+// using kit/retry exponential backoff with ±25% jitter.
+//
+// Non-transient errors (401, 403, 4xx client, context cancellation/deadline)
+// abort immediately — IsTransient returns false for these, so RetryIf stops
+// the retry loop on the first attempt.
+//
+// When the LLM provider sends a Retry-After header (e.g. on 429), the
+// server-suggested delay is honoured via retry.RetryAfter wrapping.
+func (o *OpenAI) Chat(ctx context.Context, messages []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
 	ctx, span := tracing.Start(ctx, "llm.chat",
 		attribute.String("llm.model", o.model),
 		attribute.String("llm.url", o.apiURL),
@@ -82,125 +92,56 @@ func (o *OpenAI) chatWithRetry(ctx context.Context, messages []kitllm.Message, t
 		attribute.Int("llm.tools.count", len(tools)))
 	defer span.End()
 
-	var lastErr error
-	for attempt := 0; attempt <= chatMaxRetries; attempt++ {
-		resp, err := o.doChatCtx(ctx, messages, tools)
-		if err == nil {
-			span.SetAttributes(
-				attribute.Int("llm.attempts", attempt+1),
-				attribute.String("llm.finish_reason", resp.FinishReason),
-				attribute.Int("llm.response.length", len(resp.Content)),
-				attribute.Int("llm.tool_calls.count", len(resp.ToolCalls)))
-			return resp, nil
+	opts := chatRetryOpts
+	opts.OnRetry = func(attempt int, err error) {
+		// OnRetry fires before kit/retry's RetryIf check, so it is called
+		// even for errors that will not be retried (e.g. auth errors when
+		// IsTransient returns false). Guard to avoid misleading log lines.
+		if !IsTransient(err) {
+			return
 		}
-		lastErr = err
-
-		retry, delay := shouldRetry(err, attempt)
-		if !retry {
-			break
-		}
-		if sleepCtx(ctx, delay) != nil {
-			return nil, lastErr
+		var ae *kitllm.APIError
+		switch {
+		case IsRateLimit(err):
+			slog.Warn("LLM rate limit, retrying",
+				slog.Int("attempt", attempt+1))
+		case errors.As(err, &ae):
+			slog.Warn("LLM server error, retrying",
+				slog.Int("status", ae.StatusCode),
+				slog.Int("attempt", attempt+1))
+		default:
+			slog.Warn("LLM network error, retrying",
+				slog.Int("attempt", attempt+1))
 		}
 	}
-	tracing.RecordError(span, lastErr)
-	return nil, lastErr
-}
 
-// shouldRetry classifies err and returns whether to retry and the delay to wait.
-// Returns false when the error is an auth failure, a non-transient error,
-// or when attempt has reached chatMaxRetries.
-//
-// Classification:
-//   - context.Canceled / DeadlineExceeded — never retry.
-//   - IsAuth (401/403) — never retry; same bad key will fail again.
-//   - kitllm.APIError non-transient (400, 404, etc.) — no retry.
-//   - IsTransient (429, 5xx) — retry with backoff.
-//   - non-APIError (transport, decode errors) — treated as network-class
-//     transient; retry with backoff.
-func shouldRetry(err error, attempt int) (bool, time.Duration) {
-	// Context cancellation / deadline — never retry; the caller's ctx is gone.
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false, 0
-	}
-	// Auth errors — fail immediately (retrying with the same bad key buys nothing).
-	if IsAuth(err) {
-		return false, 0
-	}
-
-	var ae *kitllm.APIError
-	if errors.As(err, &ae) {
-		// Known API error: only retry on transient status codes (429, 5xx).
-		if IsTransient(err) && attempt < chatMaxRetries {
-			delay := chatBackoff(attempt, err)
-			if IsRateLimit(err) {
-				slog.Warn("LLM rate limit, retrying",
-					slog.Int("attempt", attempt+1),
-					slog.Duration("delay", delay))
-			} else {
-				slog.Warn("LLM server error, retrying",
-					slog.Int("status", ae.StatusCode),
-					slog.Int("attempt", attempt+1),
-					slog.Duration("delay", delay))
+	resp, err := retry.Do(ctx, opts, func() (*kitllm.ChatResponse, error) {
+		r, callErr := o.doChatCtx(ctx, messages, tools)
+		if callErr != nil {
+			// If the LLM provider sent Retry-After, honour it for the next
+			// attempt instead of the exponential schedule.
+			var ae *kitllm.APIError
+			if errors.As(callErr, &ae) && ae.RetryAfter > 0 {
+				return nil, retry.RetryAfter(ae.RetryAfter, callErr)
 			}
-			return true, delay
+			return nil, callErr
 		}
-		return false, 0
+		return r, nil
+	})
+	if err != nil {
+		tracing.RecordError(span, err)
+		return nil, err
 	}
 
-	// Non-APIError (transport failures, JSON decode, empty-choices): treat as
-	// network-class transient — retry while attempts remain.
-	if attempt >= chatMaxRetries {
-		return false, 0
-	}
-	delay := chatBackoff(attempt, err)
-	slog.Warn("LLM network error, retrying",
-		slog.Int("attempt", attempt+1),
-		slog.Duration("delay", delay))
-	return true, delay
-}
-
-// chatBackoff returns the next-retry delay. When err is a *kitllm.APIError
-// with a server-supplied Retry-After header, honour it (capped at maxRetryAfterCap)
-// instead of the exponential schedule. Without a Retry-After hint (non-API errors,
-// 5xx without the header), falls back to exponential backoff with jitter.
-const maxRetryAfterCap = 60 * time.Second
-
-func chatBackoff(attempt int, err error) time.Duration {
-	var ae *kitllm.APIError
-	if errors.As(err, &ae) && ae.RetryAfter > 0 {
-		d := ae.RetryAfter
-		if d > maxRetryAfterCap {
-			d = maxRetryAfterCap
-		}
-		return d
-	}
-	delay := chatInitialDelay
-	for i := 0; i < attempt; i++ {
-		delay *= 2
-	}
-	jitter := time.Duration(rand.Int64N(int64(delay / chatJitterDivisor))) //nolint:gosec // non-cryptographic jitter for retry backoff
-	delay += jitter
-	if delay > chatMaxDelay {
-		delay = chatMaxDelay
-	}
-	return delay
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
+	span.SetAttributes(
+		attribute.String("llm.finish_reason", resp.FinishReason),
+		attribute.Int("llm.response.length", len(resp.Content)),
+		attribute.Int("llm.tool_calls.count", len(resp.ToolCalls)))
+	return resp, nil
 }
 
 // doChatCtx delegates HTTP/JSON mechanics to kitllm.Client.Chat. The
-// retry/classification policy lives in chatWithRetry (Phase 3 will move
-// it into a kitllm.Middleware).
+// retry/classification policy lives in Chat (via kit/retry.Do).
 //
 // kitllm's internal retry is disabled (WithMaxRetries(1) = single
 // attempt) because dozor owns the retry loop with its own backoff,
@@ -226,8 +167,8 @@ func (o *OpenAI) doChatCtx(ctx context.Context, messages []kitllm.Message, tools
 
 	resp, err := client.Chat(ctx, messages, opts...)
 	if err != nil {
-		// kitllm.APIError flows through as-is -- shouldRetry classifies via
-		// IsAuth/IsTransient free functions. Non-API errors (transport,
+		// kitllm.APIError flows through as-is — IsTransient classifies via
+		// IsAuth/IsRateLimit/IsServerError. Non-API errors (transport,
 		// empty-choices, JSON decode) are treated as network-class transient.
 		return nil, err
 	}
