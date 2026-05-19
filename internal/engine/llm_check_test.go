@@ -226,3 +226,97 @@ func (t *hostRewriteTransport) RoundTrip(req *http.Request) (*http.Response, err
 	clone.URL.Host = hostPort
 	return t.base.RoundTrip(clone)
 }
+
+// TestCheckProxyModel_KitLLMClient tests the new checkProxyModel implementation
+// that uses kitllm.Client.Chat instead of hand-rolled HTTP.
+// The stub returns OpenAI-compat responses to /chat/completions.
+func TestCheckProxyModel_KitLLMClient(t *testing.T) {
+	cases := []struct {
+		name           string
+		statusCode     int
+		body           string
+		wantNil        bool
+		wantLevel      AlertLevel
+		wantTitlePart  string
+		wantActionPart string
+	}{
+		{
+			name:       "200 with content returns nil",
+			statusCode: http.StatusOK,
+			body:       `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+			wantNil:    true,
+		},
+		{
+			name:           "401 Unauthorized -> AlertError auth failure",
+			statusCode:     http.StatusUnauthorized,
+			body:           `{"error":{"type":"authentication_error","message":"Invalid API key"}}`,
+			wantNil:        false,
+			wantLevel:      AlertError,
+			wantTitlePart:  "auth failure",
+			wantActionPart: "DOZOR_LLM_CHECK_API_KEY",
+		},
+		{
+			name:           "429 Too Many Requests -> AlertWarning rate limited",
+			statusCode:     http.StatusTooManyRequests,
+			body:           `{"error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}`,
+			wantNil:        false,
+			wantLevel:      AlertWarning,
+			wantTitlePart:  "rate limited",
+			wantActionPart: "quota",
+		},
+		{
+			name:           "503 Service Unavailable -> AlertWarning upstream error",
+			statusCode:     http.StatusServiceUnavailable,
+			body:           `{"error":{"type":"service_unavailable","message":"Service unavailable"}}`,
+			wantNil:        false,
+			wantLevel:      AlertWarning,
+			wantTitlePart:  "upstream error",
+			wantActionPart: "CLIProxyAPI",
+		},
+		{
+			name:           "400 Bad Request -> AlertError",
+			statusCode:     http.StatusBadRequest,
+			body:           `{"error":{"type":"invalid_request_error","message":"model not found"}}`,
+			wantNil:        false,
+			wantLevel:      AlertError,
+			wantTitlePart:  "error (HTTP 400)",
+			wantActionPart: "model availability",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.statusCode)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer srv.Close()
+
+			alert := checkProxyModel(t.Context(), srv.URL, "test-api-key", "test-model")
+
+			if tc.wantNil {
+				if alert != nil {
+					t.Fatalf("expected nil alert, got: %+v", alert)
+				}
+				return
+			}
+
+			if alert == nil {
+				t.Fatal("expected non-nil alert, got nil")
+			}
+
+			if alert.Level != tc.wantLevel {
+				t.Errorf("Level: want %q, got %q", tc.wantLevel, alert.Level)
+			}
+
+			if tc.wantTitlePart != "" && !strings.Contains(alert.Title, tc.wantTitlePart) {
+				t.Errorf("Title: want to contain %q, got %q", tc.wantTitlePart, alert.Title)
+			}
+
+			if tc.wantActionPart != "" && !strings.Contains(alert.SuggestedAction, tc.wantActionPart) {
+				t.Errorf("SuggestedAction: want to contain %q, got %q", tc.wantActionPart, alert.SuggestedAction)
+			}
+		})
+	}
+}

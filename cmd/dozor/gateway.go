@@ -225,7 +225,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	}
 
 	// 9c. Vendor quota probes.
-	go runQuotasWatch(sigCtx, quotas.LoadConfig(), notifyFn)
+	go runQuotasWatch(sigCtx, quotas.LoadConfigFrom(cfg.LLMCfg), notifyFn)
 
 	// 10. HTTP server (blocks until shutdown).
 	bindHost := resolveBindHost()
