@@ -31,15 +31,18 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
         run: |
+          set -e
           mkdir -p ~/.ssh
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H -p "$SSH_PORT" -T 10 "$SSH_HOST" >> ~/.ssh/known_hosts
 
           cat > ~/.ssh/config << EOF
           Host server
             HostName $SSH_HOST
+            Port $SSH_PORT
             User $SSH_USER
             IdentityFile ~/.ssh/id_rsa
             StrictHostKeyChecking no
