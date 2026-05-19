@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -101,6 +102,48 @@ func TestExecuteStaticBuild_RoutedFromExecuteBuild(t *testing.T) {
 	}
 	if !result.Success {
 		t.Fatalf("expected success, got: %s", result.Error)
+	}
+}
+
+func TestDefaultStaticScriptRunner_CmdDirIsRepoPath(t *testing.T) {
+	// Verify that defaultStaticScriptRunner sets cmd.Dir to repoPath so scripts
+	// inherit the deploy worktree as their working directory by default.
+	// We run a real shell one-liner that checks $PWD == DEPLOY_REPO_PATH.
+	t.Parallel()
+
+	// Use /tmp as a stable, existing directory we can pass as repoPath.
+	repoPath := t.TempDir()
+	// Script: exit 0 if PWD matches DEPLOY_REPO_PATH, exit 1 otherwise.
+	script := "/bin/sh"
+	ctx := context.Background()
+
+	// We can't inject into defaultStaticScriptRunner directly since it takes a
+	// script path, not a script body. Instead we use a tiny inline script via
+	// the sh -c convention by using sh as the executable.
+	// Use exec.Command directly to mirror what defaultStaticScriptRunner does.
+	// The real check: call defaultStaticScriptRunner with a helper script.
+	//
+	// We write a small script to a temp file that asserts PWD == DEPLOY_REPO_PATH.
+	scriptBody := `#!/bin/sh
+if [ "$PWD" = "$DEPLOY_REPO_PATH" ]; then
+  echo "ok: pwd=$PWD"
+  exit 0
+fi
+echo "fail: pwd=$PWD expected=$DEPLOY_REPO_PATH"
+exit 1
+`
+	scriptFile := repoPath + "/check_pwd.sh"
+	if err := os.WriteFile(scriptFile, []byte(scriptBody), 0o700); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	_ = script
+
+	out, err := defaultStaticScriptRunner(ctx, scriptFile, repoPath, "deadbeef", nil)
+	if err != nil {
+		t.Fatalf("script failed: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(string(out), "ok:") {
+		t.Errorf("expected 'ok:' in output, got: %s", out)
 	}
 }
 

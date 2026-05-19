@@ -46,6 +46,13 @@ type PendingEvent struct {
 	LastSeen     time.Time // when the most recent webhook arrived
 }
 
+// maxChangedPathsCap is the maximum number of unique paths kept in a
+// coalesced PendingEvent.ChangedPaths. If the union exceeds this limit the
+// slice is set to nil, which downstream consumers treat as "unknown →
+// full/conservative deploy". Keeps unbounded growth from large doc or
+// vendor-bump pushes from leaking into the debounce window.
+const maxChangedPathsCap = 256
+
 // DispatchFunc is invoked once per debounced batch, after the quiet window elapses.
 type DispatchFunc func(PendingEvent)
 
@@ -106,11 +113,27 @@ func (d *Debouncer) Submit(key string, ev PendingEvent, window time.Duration) {
 			for _, p := range ev.ChangedPaths {
 				seen[p] = struct{}{}
 			}
-			union := make([]string, 0, len(seen))
-			for p := range seen {
-				union = append(union, p)
+			if len(seen) > maxChangedPathsCap {
+				// Union exceeded cap — fall back to conservative full-deploy.
+				// Log only on the transition (first time a non-nil ChangedPaths
+				// becomes nil for this entry) to avoid duplicate INFO lines on
+				// every subsequent coalesce of an already-nil entry.
+				if entry.event.ChangedPaths != nil {
+					slog.Info("deploy debounced: changed paths union exceeded cap, falling back to conservative full-deploy",
+						"repo", ev.Repo,
+						"service", ev.Service,
+						"union_size", len(seen),
+						"cap", maxChangedPathsCap,
+					)
+				}
+				entry.event.ChangedPaths = nil
+			} else {
+				union := make([]string, 0, len(seen))
+				for p := range seen {
+					union = append(union, p)
+				}
+				entry.event.ChangedPaths = union
 			}
-			entry.event.ChangedPaths = union
 		} else {
 			// One side unknown — full path set unknowable.
 			entry.event.ChangedPaths = nil
@@ -132,6 +155,18 @@ func (d *Debouncer) Submit(key string, ev PendingEvent, window time.Duration) {
 	ev.HitCount = 1
 	ev.FirstSeen = now
 	ev.LastSeen = now
+	// Cap initial ChangedPaths too — a single huge push (monorepo backfill,
+	// docs sweep) that dispatches without ever coalescing would otherwise
+	// carry an unbounded slice to the static script.
+	if len(ev.ChangedPaths) > maxChangedPathsCap {
+		slog.Info("deploy debounced: initial changed paths exceeded cap, falling back to conservative full-deploy",
+			"repo", ev.Repo,
+			"service", ev.Service,
+			"size", len(ev.ChangedPaths),
+			"cap", maxChangedPathsCap,
+		)
+		ev.ChangedPaths = nil
+	}
 	cancel := make(chan struct{})
 	entry := &pendingEntry{
 		event:  ev,
