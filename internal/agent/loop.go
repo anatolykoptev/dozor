@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -80,6 +81,12 @@ func (l *Loop) Process(ctx context.Context, sessionKey, message string) (string,
 
 		resp, err := l.provider.Chat(messages, l.registry.ToLLMTools())
 		if err != nil {
+			if errors.Is(err, provider.ErrUnavailable) {
+				// LLM not configured. Return a structured response instead of a
+				// 500/error to the MCP caller — they get clean visibility that the
+				// service is up but the LLM backend is off.
+				return "LLM unavailable (set DOZOR_LLM_API_KEY)", nil
+			}
 			return "", fmt.Errorf("LLM call failed (iteration %d): %w", iteration, err)
 		}
 

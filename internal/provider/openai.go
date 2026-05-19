@@ -35,12 +35,13 @@ type OpenAI struct {
 	maxIters int
 }
 
-// NewOpenAI creates a provider from environment variables.
-// DOZOR_LLM_URL (default http://127.0.0.1:8787/v1)
-// DOZOR_LLM_MODEL (default gemini-3.1-flash-lite-preview)
-// DOZOR_LLM_API_KEY
-// DOZOR_MAX_TOOL_ITERATIONS (default 10)
-func NewOpenAI() *OpenAI {
+// NewOpenAI constructs an OpenAI-compat LLM provider from env. On empty
+// DOZOR_LLM_API_KEY, returns (unavailable{}, false) — callers should log
+// and degrade. The bool reports whether a real client was built.
+//
+// Never returns nil. The Provider returned is always usable; on the
+// disabled path it returns ErrUnavailable from every Chat call.
+func NewOpenAI() (Provider, bool) {
 	apiURL := os.Getenv("DOZOR_LLM_URL")
 	if apiURL == "" {
 		apiURL = "http://127.0.0.1:8787/v1"
@@ -49,15 +50,19 @@ func NewOpenAI() *OpenAI {
 	if model == "" {
 		model = "gemini-3.1-flash-lite-preview"
 	}
+	apiKey := os.Getenv("DOZOR_LLM_API_KEY")
+	if apiKey == "" {
+		return unavailable{}, false
+	}
 	maxIters := 10
 	if v := os.Getenv("DOZOR_MAX_TOOL_ITERATIONS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			maxIters = n
 		}
 	}
-	return &OpenAI{
+	o := &OpenAI{
 		apiURL:   apiURL,
-		apiKey:   os.Getenv("DOZOR_LLM_API_KEY"),
+		apiKey:   apiKey,
 		model:    model,
 		maxIters: maxIters,
 		// 90s — under burst, 300s pinned message-slices for 5 min × N goroutines
@@ -68,6 +73,7 @@ func NewOpenAI() *OpenAI {
 		// constructed by NewOpenAI, including the fallback chain's secondary.
 		client: &http.Client{Timeout: 90 * time.Second, Transport: httpmw.WrapTransport(&http.Transport{})},
 	}
+	return o, true
 }
 
 // MaxIterations returns the configured max tool call iterations.
