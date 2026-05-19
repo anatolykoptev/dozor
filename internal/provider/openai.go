@@ -127,40 +127,56 @@ func (o *OpenAI) chatWithRetry(ctx context.Context, messages []kitllm.Message, t
 }
 
 // shouldRetry classifies err and returns whether to retry and the delay to wait.
-// Returns false when the error is an auth failure, a non-transient provider error,
+// Returns false when the error is an auth failure, a non-transient error,
 // or when attempt has reached chatMaxRetries.
+//
+// Classification:
+//   - context.Canceled / DeadlineExceeded — never retry.
+//   - IsAuth (401/403) — never retry; same bad key will fail again.
+//   - kitllm.APIError non-transient (400, 404, etc.) — no retry.
+//   - IsTransient (429, 5xx) — retry with backoff.
+//   - non-APIError (transport, decode errors) — treated as network-class
+//     transient; retry with backoff.
 func shouldRetry(err error, attempt int) (bool, time.Duration) {
 	// Context cancellation / deadline — never retry; the caller's ctx is gone.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false, 0
 	}
-	var pe *ProviderError
-	if !errors.As(err, &pe) {
-		// Network error — retry with backoff.
-		if attempt >= chatMaxRetries {
-			return false, 0
-		}
-		delay := chatBackoff(attempt)
-		slog.Warn("LLM network error, retrying", slog.Int("attempt", attempt+1), slog.Duration("delay", delay))
-		return true, delay
-	}
-	// Auth errors — fail immediately.
-	if pe.IsAuth() {
+	// Auth errors — fail immediately (retrying with the same bad key buys nothing).
+	if IsAuth(err) {
 		return false, 0
 	}
-	// Transient (429, 5xx) — retry with backoff.
-	if pe.IsTransient() && attempt < chatMaxRetries {
-		delay := chatBackoff(attempt)
-		if pe.IsRateLimit() && pe.RetryAfter > delay && pe.RetryAfter <= chatMaxDelay {
-			delay = pe.RetryAfter
+
+	var ae *kitllm.APIError
+	if errors.As(err, &ae) {
+		// Known API error: only retry on transient status codes (429, 5xx).
+		if IsTransient(err) && attempt < chatMaxRetries {
+			delay := chatBackoff(attempt)
+			if IsRateLimit(err) {
+				slog.Warn("LLM rate limit, retrying",
+					slog.Int("attempt", attempt+1),
+					slog.Duration("delay", delay))
+			} else {
+				slog.Warn("LLM server error, retrying",
+					slog.Int("status", ae.StatusCode),
+					slog.Int("attempt", attempt+1),
+					slog.Duration("delay", delay))
+			}
+			return true, delay
 		}
-		slog.Warn("LLM transient error, retrying",
-			slog.Int("status", pe.StatusCode),
-			slog.Int("attempt", attempt+1),
-			slog.Duration("delay", delay))
-		return true, delay
+		return false, 0
 	}
-	return false, 0
+
+	// Non-APIError (transport failures, JSON decode, empty-choices): treat as
+	// network-class transient — retry while attempts remain.
+	if attempt >= chatMaxRetries {
+		return false, 0
+	}
+	delay := chatBackoff(attempt)
+	slog.Warn("LLM network error, retrying",
+		slog.Int("attempt", attempt+1),
+		slog.Duration("delay", delay))
+	return true, delay
 }
 
 func chatBackoff(attempt int) time.Duration {
@@ -193,7 +209,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 //
 // kitllm's internal retry is disabled (WithMaxRetries(1) = single
 // attempt) because dozor owns the retry loop with its own backoff,
-// jitter, and ProviderError-aware classification.
+// jitter, and free-function classification over kitllm.APIError.
 //
 // kitllm types are passed through directly — no adapter conversion needed.
 func (o *OpenAI) doChatCtx(ctx context.Context, messages []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
@@ -215,14 +231,9 @@ func (o *OpenAI) doChatCtx(ctx context.Context, messages []kitllm.Message, tools
 
 	resp, err := client.Chat(ctx, messages, opts...)
 	if err != nil {
-		// Map kitllm.APIError -> dozor.ProviderError so shouldRetry can
-		// classify auth/rate-limit/server semantics. Non-API errors
-		// (transport, empty-choices, JSON decode) flow through as-is —
-		// shouldRetry treats them as network-class transient errors.
-		var apiErr *kitllm.APIError
-		if errors.As(err, &apiErr) {
-			return nil, parseProviderError(apiErr.StatusCode, []byte(apiErr.Body))
-		}
+		// kitllm.APIError flows through as-is -- shouldRetry classifies via
+		// IsAuth/IsTransient free functions. Non-API errors (transport,
+		// empty-choices, JSON decode) are treated as network-class transient.
 		return nil, err
 	}
 
