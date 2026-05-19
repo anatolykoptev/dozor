@@ -295,8 +295,8 @@ func TestChat_ServerErrorRetry(t *testing.T) {
 // --- TestChat_MaxRetriesExhausted -------------------------------------------
 
 // TestChat_MaxRetriesExhausted verifies that when the server always returns
-// 500, Chat returns an error after exactly chatMaxRetries+1 attempts and the
-// returned error is a kitllm.APIError with IsServerError() == true.
+// 500, Chat returns an error after exactly 4 attempts (1 initial + 3 retries)
+// and the returned error is a kitllm.APIError with IsServerError() == true.
 //
 // NOTE: incurs up to ~14 s of sleep. Use -short to skip.
 func TestChat_MaxRetriesExhausted(t *testing.T) {
@@ -328,10 +328,10 @@ func TestChat_MaxRetriesExhausted(t *testing.T) {
 		t.Errorf("IsServerError() = false for status %d", ae.StatusCode)
 	}
 
-	// chatMaxRetries=3, so initial attempt + 3 retries = 4 total.
-	const wantHits = chatMaxRetries + 1
-	if n := hitCount.Load(); n != int32(wantHits) {
-		t.Errorf("server hit count = %d, want %d (initial + %d retries)", n, wantHits, chatMaxRetries)
+	// 4 total attempts: 1 initial + 3 retries (chatRetryOpts.MaxAttempts = 4).
+	const wantHits = 4
+	if n := hitCount.Load(); n != wantHits {
+		t.Errorf("server hit count = %d, want %d (initial + 3 retries)", n, wantHits)
 	}
 }
 
@@ -369,9 +369,8 @@ func TestChat_NetworkError(t *testing.T) {
 // TestChat_EmptyChoices verifies that an empty choices array in the response
 // causes Chat to return a descriptive error.
 //
-// NOTE: empty-choices errors are not *kitllm.APIError, so chatWithRetry treats
-// them as network errors and applies full retry backoff (~14 s). Use -short to
-// skip.
+// NOTE: empty-choices errors are not *kitllm.APIError; IsTransient returns false
+// for them, so Chat returns immediately without retrying. Use -short to skip.
 func TestChat_EmptyChoices(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping retry sleep test in short mode")
@@ -395,8 +394,8 @@ func TestChat_EmptyChoices(t *testing.T) {
 // TestChat_BlockedResponse verifies that a response with promptFeedback
 // blockReason returns a descriptive error.
 //
-// NOTE: blocked-response errors are not *kitllm.APIError, so chatWithRetry
-// applies full retry backoff (~14 s). Use -short to skip.
+// NOTE: blocked-response errors are not *kitllm.APIError; IsTransient returns
+// false for them, so Chat returns immediately without retrying. Use -short to skip.
 func TestChat_BlockedResponse(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping retry sleep test in short mode")
@@ -417,67 +416,3 @@ func TestChat_BlockedResponse(t *testing.T) {
 	}
 }
 
-// --- TestShouldRetry_Classification -----------------------------------------
-
-// TestShouldRetry_Classification unit-tests shouldRetry directly for all
-// relevant error kinds and attempt values. No HTTP or sleep is involved.
-func TestShouldRetry_Classification(t *testing.T) {
-	authErr := &kitllm.APIError{StatusCode: http.StatusUnauthorized, Body: "unauthorized"}
-	forbiddenErr := &kitllm.APIError{StatusCode: http.StatusForbidden, Body: "forbidden"}
-	rateLimitErr := &kitllm.APIError{StatusCode: http.StatusTooManyRequests, Body: "rate limited"}
-	serverErr := &kitllm.APIError{StatusCode: http.StatusInternalServerError, Body: "internal error"}
-	badGatewayErr := &kitllm.APIError{StatusCode: http.StatusBadGateway, Body: "bad gateway"}
-	notFoundErr := &kitllm.APIError{StatusCode: http.StatusNotFound, Body: "not found"}
-	networkErr := errors.New("connection refused")
-
-	cases := []struct {
-		name        string
-		err         error
-		attempt     int
-		wantRetry   bool
-		wantNonZero bool // delay > 0
-	}{
-		// Auth errors — never retry regardless of attempt.
-		{name: "auth_401_attempt0", err: authErr, attempt: 0, wantRetry: false},
-		{name: "auth_401_attempt1", err: authErr, attempt: 1, wantRetry: false},
-		{name: "auth_403_attempt0", err: forbiddenErr, attempt: 0, wantRetry: false},
-
-		// 429 rate limit — retry while attempts remain, stop at chatMaxRetries.
-		{name: "ratelimit_attempt0", err: rateLimitErr, attempt: 0, wantRetry: true, wantNonZero: true},
-		{name: "ratelimit_attempt1", err: rateLimitErr, attempt: 1, wantRetry: true, wantNonZero: true},
-		{name: "ratelimit_attempt2", err: rateLimitErr, attempt: 2, wantRetry: true, wantNonZero: true},
-		{name: "ratelimit_atMaxRetries", err: rateLimitErr, attempt: chatMaxRetries, wantRetry: false},
-
-		// 5xx server errors — retry while attempts remain.
-		{name: "server500_attempt0", err: serverErr, attempt: 0, wantRetry: true, wantNonZero: true},
-		{name: "server502_attempt0", err: badGatewayErr, attempt: 0, wantRetry: true, wantNonZero: true},
-		{name: "server500_atMaxRetries", err: serverErr, attempt: chatMaxRetries, wantRetry: false},
-
-		// Non-transient provider errors (4xx non-auth) — do not retry.
-		{name: "notfound_404_attempt0", err: notFoundErr, attempt: 0, wantRetry: false},
-
-		// Network errors (non-APIError) — retry while attempts remain.
-		{name: "network_attempt0", err: networkErr, attempt: 0, wantRetry: true, wantNonZero: true},
-		{name: "network_attempt2", err: networkErr, attempt: 2, wantRetry: true, wantNonZero: true},
-		{name: "network_atMaxRetries", err: networkErr, attempt: chatMaxRetries, wantRetry: false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			retry, delay := shouldRetry(tc.err, tc.attempt)
-			if retry != tc.wantRetry {
-				t.Errorf("shouldRetry(%T, %d) retry = %v, want %v", tc.err, tc.attempt, retry, tc.wantRetry)
-			}
-			if tc.wantNonZero && delay == 0 {
-				t.Errorf("shouldRetry(%T, %d) delay = 0, want > 0", tc.err, tc.attempt)
-			}
-			if !tc.wantRetry && delay != 0 {
-				t.Errorf("shouldRetry(%T, %d) delay = %v, want 0 when not retrying", tc.err, tc.attempt, delay)
-			}
-		})
-	}
-}
-
-// NOTE: RetryAfter (Google retryDelay metadata) was dropped in PR4 when
-// ProviderError was deleted. kitllm.APIError does not carry RetryAfter.
-// PR5 or a future PR may restore Retry-After via HTTP response header parsing.
