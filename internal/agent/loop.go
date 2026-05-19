@@ -79,7 +79,7 @@ func (l *Loop) Process(ctx context.Context, sessionKey, message string) (string,
 		default:
 		}
 
-		resp, err := l.provider.Chat(messages, l.registry.ToLLMTools())
+		resp, err := l.provider.Chat(ctx, messages, l.registry.ToLLMTools())
 		if err != nil {
 			if errors.Is(err, provider.ErrUnavailable) {
 				// LLM not configured. Return a structured response instead of a

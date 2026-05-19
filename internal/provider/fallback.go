@@ -92,32 +92,32 @@ func (w *withFallback) MaxIterations() int {
 // fallback — re-running with the same misconfigured key buys nothing,
 // and we'd rather surface the auth failure than mask it with a
 // fallback-success.
-func (w *withFallback) Chat(messages []Message, tools []ToolDefinition) (*Response, error) {
+func (w *withFallback) Chat(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
 	if w.fallback == nil {
-		return w.primary.Chat(messages, tools)
+		return w.primary.Chat(ctx, messages, tools)
 	}
 
 	hedgeDelay := hedgeDelayFromEnv()
 	if hedgeDelay <= 0 {
 		// Sequential fallback: primary first, fallback only on error.
-		return w.chatSequential(messages, tools)
+		return w.chatSequential(ctx, messages, tools)
 	}
 
-	primaryFn := func(_ context.Context) (*Response, error) {
-		return w.primary.Chat(messages, tools)
+	primaryFn := func(hCtx context.Context) (*Response, error) {
+		return w.primary.Chat(hCtx, messages, tools)
 	}
-	fallbackFn := func(_ context.Context) (*Response, error) {
+	fallbackFn := func(hCtx context.Context) (*Response, error) {
 		slog.Info("LLM fallback engaged",
 			slog.Duration("hedge.delay", hedgeDelay))
-		return w.fallback.Chat(messages, tools)
+		return w.fallback.Chat(hCtx, messages, tools)
 	}
-	return hedge.DoFallback(context.Background(), hedgeDelay, primaryFn, fallbackFn)
+	return hedge.DoFallback(ctx, hedgeDelay, primaryFn, fallbackFn)
 }
 
 // chatSequential preserves the historical primary→fallback-on-error
 // behaviour for cost-conscious deployments.
-func (w *withFallback) chatSequential(messages []Message, tools []ToolDefinition) (*Response, error) {
-	resp, err := w.primary.Chat(messages, tools)
+func (w *withFallback) chatSequential(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
+	resp, err := w.primary.Chat(ctx, messages, tools)
 	if err == nil {
 		return resp, nil
 	}
@@ -126,7 +126,7 @@ func (w *withFallback) chatSequential(messages []Message, tools []ToolDefinition
 	}
 	slog.Warn("primary LLM failed, trying fallback",
 		slog.String("error", err.Error()))
-	return w.fallback.Chat(messages, tools)
+	return w.fallback.Chat(ctx, messages, tools)
 }
 
 // hedgeDelayFromEnv reads DOZOR_LLM_HEDGE_DELAY as a Go duration.

@@ -25,7 +25,7 @@ type mockProvider struct {
 	callCount int
 }
 
-func (m *mockProvider) Chat(_ []provider.Message, _ []provider.ToolDefinition) (*provider.Response, error) {
+func (m *mockProvider) Chat(_ context.Context, _ []provider.Message, _ []provider.ToolDefinition) (*provider.Response, error) {
 	if m.callCount >= len(m.responses) {
 		return nil, errors.New("mockProvider: no more responses queued")
 	}
@@ -408,9 +408,9 @@ type capturingProvider struct {
 	inner  *mockProvider
 }
 
-func (c *capturingProvider) Chat(msgs []provider.Message, tools []provider.ToolDefinition) (*provider.Response, error) {
+func (c *capturingProvider) Chat(ctx context.Context, msgs []provider.Message, tools []provider.ToolDefinition) (*provider.Response, error) {
 	c.onChat(msgs)
-	return c.inner.Chat(msgs, tools)
+	return c.inner.Chat(ctx, msgs, tools)
 }
 
 // max returns the larger of two ints (stdlib min/max available since Go 1.21).
