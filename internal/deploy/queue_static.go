@@ -14,7 +14,13 @@ var staticScriptRunner = defaultStaticScriptRunner
 
 // defaultStaticScriptRunner executes the deploy script directly (no shell
 // interpolation) and returns the combined stdout+stderr.
-// The script receives three environment variables:
+//
+// Scripts execute with cwd set to the deploy worktree root (repoPath).
+// DEPLOY_REPO_PATH is also set to the same value for legacy compatibility —
+// scripts that relied on `cd "${DEPLOY_REPO_PATH}"` continue to work, but
+// the cwd default is now safe even for scripts that omit that line.
+//
+// Environment variables provided to the script:
 //
 //	DEPLOY_REPO_PATH      — absolute path to the local git checkout (SourcePath)
 //	DEPLOY_SHA            — commit SHA from the webhook
@@ -26,6 +32,7 @@ var staticScriptRunner = defaultStaticScriptRunner
 func defaultStaticScriptRunner(ctx context.Context, script, repoPath, commitSHA string, changedPaths []string) ([]byte, error) {
 	//nolint:gosec // script path comes from trusted deploy-repos.yaml, not user input
 	cmd := exec.CommandContext(ctx, script)
+	cmd.Dir = repoPath
 	changedPathsVal := strings.Join(changedPaths, "\n")
 	cmd.Env = append(cmd.Environ(),
 		"DEPLOY_REPO_PATH="+repoPath,

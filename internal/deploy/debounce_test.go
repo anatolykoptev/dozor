@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -172,6 +173,98 @@ func TestDebouncer_SeparateKeysAreIndependent(t *testing.T) {
 		defer mu.Unlock()
 		return len(fired) == 2
 	}, time.Second, "two dispatches")
+}
+
+func TestDebouncer_ChangedPathsCapFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("union under cap carries through", func(t *testing.T) {
+		t.Parallel()
+		clock := newFakeClock(time.Unix(0, 0))
+		var mu sync.Mutex
+		var fired []PendingEvent
+		deb := NewDebouncer(clock, func(ev PendingEvent) { mu.Lock(); fired = append(fired, ev); mu.Unlock() })
+		window := 10 * time.Second
+
+		// Two pushes with 5 unique paths each → 10 total, well under 256.
+		paths1 := make([]string, 5)
+		paths2 := make([]string, 5)
+		for i := range 5 {
+			paths1[i] = "file-a-" + string(rune('0'+i))
+			paths2[i] = "file-b-" + string(rune('0'+i))
+		}
+		deb.Submit("k", PendingEvent{Repo: "r", Service: "s", ChangedPaths: paths1}, window)
+		deb.Submit("k", PendingEvent{Repo: "r", Service: "s", ChangedPaths: paths2}, window)
+		clock.Advance(window + time.Second)
+		waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(fired) == 1 }, time.Second, "dispatch")
+
+		mu.Lock()
+		defer mu.Unlock()
+		if fired[0].ChangedPaths == nil {
+			t.Error("want non-nil ChangedPaths for union under cap")
+		}
+		if len(fired[0].ChangedPaths) != 10 {
+			t.Errorf("union len = %d, want 10", len(fired[0].ChangedPaths))
+		}
+	})
+
+	t.Run("single push with 300 paths causes nil", func(t *testing.T) {
+		t.Parallel()
+		clock := newFakeClock(time.Unix(0, 0))
+		var mu sync.Mutex
+		var fired []PendingEvent
+		deb := NewDebouncer(clock, func(ev PendingEvent) { mu.Lock(); fired = append(fired, ev); mu.Unlock() })
+		window := 10 * time.Second
+
+		// First push — sets entry with 300 paths.
+		big := make([]string, 300)
+		for i := range 300 {
+			big[i] = "path-" + strings.Repeat("x", 4) + string(rune(i))
+		}
+		deb.Submit("k", PendingEvent{Repo: "r", Service: "s", ChangedPaths: big}, window)
+		// Second push — triggers coalesce; union = 300+ → nil.
+		deb.Submit("k", PendingEvent{Repo: "r", Service: "s", ChangedPaths: []string{"extra"}}, window)
+		clock.Advance(window + time.Second)
+		waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(fired) == 1 }, time.Second, "dispatch")
+
+		mu.Lock()
+		defer mu.Unlock()
+		if fired[0].ChangedPaths != nil {
+			t.Errorf("want nil ChangedPaths when union > cap, got %v (len=%d)", fired[0].ChangedPaths, len(fired[0].ChangedPaths))
+		}
+	})
+
+	t.Run("three pushes totaling 300 unique paths causes nil", func(t *testing.T) {
+		t.Parallel()
+		clock := newFakeClock(time.Unix(0, 0))
+		var mu sync.Mutex
+		var fired []PendingEvent
+		deb := NewDebouncer(clock, func(ev PendingEvent) { mu.Lock(); fired = append(fired, ev); mu.Unlock() })
+		window := 10 * time.Second
+
+		// Push 1: 200 unique paths.
+		batch1 := make([]string, 200)
+		for i := range 200 {
+			batch1[i] = "set1/file-" + string(rune(i))
+		}
+		// Push 2: 100 additional unique paths (200 + 100 = 300 > 256).
+		batch2 := make([]string, 100)
+		for i := range 100 {
+			batch2[i] = "set2/file-" + string(rune(i))
+		}
+		// Push 3: 1 more path (union still nil from push 2 coalesce).
+		deb.Submit("k", PendingEvent{Repo: "r", Service: "s", ChangedPaths: batch1}, window)
+		deb.Submit("k", PendingEvent{Repo: "r", Service: "s", ChangedPaths: batch2}, window)
+		deb.Submit("k", PendingEvent{Repo: "r", Service: "s", ChangedPaths: []string{"one-more"}}, window)
+		clock.Advance(window + time.Second)
+		waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(fired) == 1 }, time.Second, "dispatch")
+
+		mu.Lock()
+		defer mu.Unlock()
+		if fired[0].ChangedPaths != nil {
+			t.Errorf("want nil ChangedPaths for 3-push 300-path burst, got len=%d", len(fired[0].ChangedPaths))
+		}
+	})
 }
 
 func TestDebouncer_ResetExtendsWindow(t *testing.T) {
