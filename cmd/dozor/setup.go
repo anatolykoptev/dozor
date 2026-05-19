@@ -65,7 +65,7 @@ func buildAgentStack(eng *engine.ServerAgent) *agentStack {
 		slog.Int("tools", len(registry.List())),
 		slog.Int("skills", len(skillsLoader.ListSkills())))
 
-	llm := provider.NewFromEnv()
+	llm, _ := provider.NewFromEnv()
 	maxIters := llm.MaxIterations()
 
 	sessionsDir := workspacePath + "/sessions"
