@@ -1,59 +1,8 @@
 package engine
 
 import (
-	"log/slog"
-	"os"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
-
-// cliProxyConfig is a partial representation of CLIProxyAPI config.yaml.
-type cliProxyConfig struct {
-	APIKeys      []string `yaml:"api-keys"` //nolint:gosec // Not a hardcoded credential
-	GeminiAPIKey []struct {
-		APIKey string `yaml:"api-key"` //nolint:gosec // Not a hardcoded credential
-	} `yaml:"gemini-api-key"`
-}
-
-// parsedProxyConfig holds values extracted from CLIProxyAPI config.yaml.
-type parsedProxyConfig struct {
-	ProxyAPIKey   string   // first entry from api-keys
-	GeminiAPIKeys []string // all gemini-api-key entries
-}
-
-// parseLLMConfig reads CLIProxyAPI config.yaml and extracts proxy API key + Gemini keys.
-func parseLLMConfig(path string) parsedProxyConfig {
-	var result parsedProxyConfig
-	if path == "" {
-		return result
-	}
-	path = expandHome(path)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		slog.Warn("failed to read LLM config", slog.String("path", path), slog.Any("error", err))
-		return result
-	}
-	var cfg cliProxyConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		slog.Warn("failed to parse LLM config", slog.String("path", path), slog.Any("error", err))
-		return result
-	}
-	if len(cfg.APIKeys) > 0 {
-		result.ProxyAPIKey = cfg.APIKeys[0]
-	}
-	result.GeminiAPIKeys = make([]string, 0, len(cfg.GeminiAPIKey))
-	for _, k := range cfg.GeminiAPIKey {
-		if k.APIKey != "" {
-			result.GeminiAPIKeys = append(result.GeminiAPIKeys, k.APIKey)
-		}
-	}
-	slog.Info("loaded LLM config",
-		slog.Int("gemini_keys", len(result.GeminiAPIKeys)),
-		slog.Bool("proxy_key", result.ProxyAPIKey != ""),
-		slog.String("path", path))
-	return result
-}
 
 // defaultSuppressWarnings are the built-in benign service warnings suppressed by default.
 // These can be overridden entirely by setting DOZOR_SUPPRESS_WARNINGS.

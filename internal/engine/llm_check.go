@@ -1,15 +1,18 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/anatolykoptev/dozor/internal/provider"
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 )
 
 const (
@@ -30,17 +33,18 @@ func CheckLLMKeys(ctx context.Context, cfg Config) []Alert {
 
 	client := newHTTPClient(llmCheckTimeout)
 
-	// A) Direct Gemini API key validation (cheap — no tokens consumed).
+	// A) Direct Gemini API key validation via Google REST API (cheap — no tokens consumed).
+	// Uses raw HTTP GET to ?key=... endpoint; different protocol from OpenAI-compat.
 	for _, key := range cfg.GeminiAPIKeys {
 		if a := checkGeminiKey(ctx, client, key); a != nil {
 			alerts = append(alerts, *a)
 		}
 	}
 
-	// B) Proxy channel tests (1 token each via CLIProxyAPI).
+	// B) Proxy channel tests (1 token each via CLIProxyAPI, kitllm.Client.Chat).
 	if cfg.LLMCheckURL != "" && cfg.LLMCheckAPIKey != "" {
 		for _, model := range cfg.LLMCheckModels {
-			if a := checkProxyModel(ctx, client, cfg.LLMCheckURL, cfg.LLMCheckAPIKey, model); a != nil {
+			if a := checkProxyModel(ctx, cfg.LLMCheckURL, cfg.LLMCheckAPIKey, model); a != nil {
 				alerts = append(alerts, *a)
 			}
 		}
@@ -199,103 +203,75 @@ func buildGoogleAPIDesc(body []byte, statusCode int) string {
 	return fmt.Sprintf("HTTP %d", statusCode)
 }
 
-// chatRequest is the minimal request body for proxy channel tests.
-type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	MaxToks  int           `json:"max_tokens"`
-}
+// checkProxyModel tests a single model through the LLM proxy using kitllm.Client.Chat.
+// Replaces the previous hand-rolled HTTP POST with chatRequest/chatResponse types.
+// Uses max_tokens=1 to minimise cost; any successful response means the model is reachable.
+// Error classification uses provider.IsAuth/IsRateLimit/IsServerError over kitllm.APIError.
+func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert {
+	kitClient := kitllm.NewClient(baseURL, apiKey, model,
+		kitllm.WithMaxRetries(1), // single attempt — health check, not production call
+	)
 
-// chatMessage is a single message in a chat request.
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// chatResponse is the minimal response from proxy channel tests.
-type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-// checkProxyModel tests a single model through the LLM proxy.
-func checkProxyModel(ctx context.Context, client *http.Client, baseURL, apiKey, model string) *Alert {
-	body, _ := json.Marshal(chatRequest{
-		Model:    model,
-		Messages: []chatMessage{{Role: "user", Content: "ok"}},
-		MaxToks:  llmCheckMaxTokens,
-	})
-
-	url := baseURL + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return &Alert{
-			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("LLM proxy %s: request error", model),
-			Description:     err.Error(),
-			SuggestedAction: "Check proxy configuration",
-			Timestamp:       time.Now(),
-		}
+	msgs := []kitllm.Message{{Role: "user", Content: "."}}
+	_, err := kitClient.Chat(ctx, msgs, kitllm.WithChatMaxTokens(llmCheckMaxTokens))
+	if err == nil {
+		slog.Debug("proxy model ok", slog.String("model", model))
+		return nil
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := client.Do(req) //nolint:gosec // proxied request
-	if err != nil {
-		return &Alert{
-			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("LLM proxy %s: unreachable", model),
-			Description:     err.Error(),
-			SuggestedAction: "Check CLIProxyAPI is running",
-			Timestamp:       time.Now(),
+	// Classify via kitllm.APIError using provider free-funcs.
+	var ae *kitllm.APIError
+	if errors.As(err, &ae) {
+		if provider.IsAuth(err) {
+			return &Alert{
+				Level:           AlertError,
+				Service:         "llm",
+				Title:           fmt.Sprintf("LLM proxy %s: auth failure (HTTP %d)", model, ae.StatusCode),
+				Description:     ae.Body,
+				SuggestedAction: "Check DOZOR_LLM_CHECK_API_KEY / DOZOR_LLM_API_KEY credentials",
+				Timestamp:       time.Now(),
+			}
 		}
-	}
-	defer resp.Body.Close()
-
-	var cr chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		if provider.IsRateLimit(err) {
+			return &Alert{
+				Level:           AlertWarning,
+				Service:         "llm",
+				Title:           fmt.Sprintf("LLM proxy %s: rate limited (HTTP %d)", model, ae.StatusCode),
+				Description:     ae.Body,
+				SuggestedAction: "Wait for quota reset or reduce probe frequency",
+				Timestamp:       time.Now(),
+			}
+		}
+		if provider.IsServerError(err) {
+			return &Alert{
+				Level:           AlertWarning,
+				Service:         "llm",
+				Title:           fmt.Sprintf("LLM proxy %s: upstream error (HTTP %d)", model, ae.StatusCode),
+				Description:     ae.Body,
+				SuggestedAction: "Transient outage — retry; if persistent check CLIProxyAPI logs",
+				Timestamp:       time.Now(),
+			}
+		}
+		// Other API error (e.g. 400 bad request, 404 model not found).
 		return &Alert{
 			Level:           AlertError,
 			Service:         "llm",
-			Title:           fmt.Sprintf("LLM proxy %s: bad response", model),
-			Description:     err.Error(),
-			SuggestedAction: "Check proxy response format",
+			Title:           fmt.Sprintf("LLM proxy %s: error (HTTP %d)", model, ae.StatusCode),
+			Description:     ae.Body,
+			SuggestedAction: "Check model availability and proxy configuration",
 			Timestamp:       time.Now(),
 		}
 	}
 
-	if cr.Error != nil {
-		return &Alert{
-			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("LLM proxy %s: error", model),
-			Description:     cr.Error.Message,
-			SuggestedAction: "Check model availability and credentials",
-			Timestamp:       time.Now(),
-		}
+	// Non-API error: network/transport failure.
+	return &Alert{
+		Level:           AlertError,
+		Service:         "llm",
+		Title:           fmt.Sprintf("LLM proxy %s: unreachable", model),
+		Description:     err.Error(),
+		SuggestedAction: "Check CLIProxyAPI is running and DOZOR_LLM_CHECK_URL is correct",
+		Timestamp:       time.Now(),
 	}
-
-	if len(cr.Choices) == 0 || cr.Choices[0].Message.Content == "" {
-		return &Alert{
-			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("LLM proxy %s: empty response", model),
-			Description:     "No choices returned",
-			SuggestedAction: "Check model availability",
-			Timestamp:       time.Now(),
-		}
-	}
-
-	slog.Debug("proxy model ok", slog.String("model", model))
-	return nil
 }
 
 // FormatLLMAlerts formats LLM health check alerts for text display.
