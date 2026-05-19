@@ -20,8 +20,13 @@ type withFallback struct {
 // If DOZOR_LLM_FALLBACK_URL (or DOZOR_LLM_FALLBACK_API_KEY) is set,
 // a fallback provider is chained after the primary.
 func NewFromEnv() *withFallback {
-	primaryOpenAI := NewOpenAI()
-	primary := Provider(primaryOpenAI)
+	primary, hasKey := NewOpenAI()
+	if !hasKey {
+		slog.Warn("dozor: LLM disabled (DOZOR_LLM_API_KEY unset) — agent loop will return structured 'LLM unavailable' on tool calls")
+		return &withFallback{primary: primary, fallback: nil}
+	}
+	// primary is a real *OpenAI when hasKey is true.
+	primaryOpenAI := primary.(*OpenAI)
 
 	fallbackURL := os.Getenv("DOZOR_LLM_FALLBACK_URL")
 	fallbackKey := os.Getenv("DOZOR_LLM_FALLBACK_API_KEY")
@@ -62,7 +67,7 @@ func NewFromEnv() *withFallback {
 		slog.String("url", fallbackURL),
 		slog.String("model", fallbackModel))
 
-	return &withFallback{primary: primary, fallback: fb}
+	return &withFallback{primary: primaryOpenAI, fallback: fb}
 }
 
 // MaxIterations delegates to the primary provider's iteration limit.
