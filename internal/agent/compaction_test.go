@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anatolykoptev/dozor/internal/provider"
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 )
 
 func TestCompact_UnderThreshold(t *testing.T) {
@@ -18,7 +18,7 @@ func TestCompact_UnderThreshold(t *testing.T) {
 	})
 
 	for range 5 {
-		store.Add("chat1", provider.Message{Role: "user", Content: "msg"})
+		store.Add("chat1", kitllm.Message{Role: "user", Content: "msg"})
 	}
 
 	store.Compact(context.Background(), "chat1")
@@ -39,7 +39,7 @@ func TestCompact_OverThreshold(t *testing.T) {
 
 	threshold, keep := compactionConfig()
 	for range threshold + 5 {
-		store.Add("chat1", provider.Message{
+		store.Add("chat1", kitllm.Message{
 			Role:    "user",
 			Content: "message " + strings.Repeat("x", 10),
 		})
@@ -65,7 +65,7 @@ func TestCompact_NoCompactor(t *testing.T) {
 	store := NewSessionStore("")
 	threshold, _ := compactionConfig()
 	for range threshold + 5 {
-		store.Add("chat1", provider.Message{Role: "user", Content: "msg"})
+		store.Add("chat1", kitllm.Message{Role: "user", Content: "msg"})
 	}
 
 	// Must not panic when no compactor attached.

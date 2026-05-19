@@ -5,19 +5,19 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/anatolykoptev/dozor/internal/provider"
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 )
 
 func TestSessionStore_AddGet(t *testing.T) {
 	s := NewSessionStore("")
-	s.Add("chat1", provider.Message{Role: "user", Content: "hello"})
-	s.Add("chat1", provider.Message{Role: "assistant", Content: "hi"})
+	s.Add("chat1", kitllm.Message{Role: "user", Content: "hello"})
+	s.Add("chat1", kitllm.Message{Role: "assistant", Content: "hi"})
 
 	msgs := s.Get("chat1")
 	if len(msgs) != 2 {
 		t.Fatalf("got %d messages, want 2", len(msgs))
 	}
-	if msgs[0].Content != "hello" || msgs[1].Content != "hi" {
+	if contentStr(msgs[0]) != "hello" || contentStr(msgs[1]) != "hi" {
 		t.Errorf("unexpected messages: %+v", msgs)
 	}
 }
@@ -32,16 +32,16 @@ func TestSessionStore_GetEmpty(t *testing.T) {
 
 func TestSessionStore_IsolatedSessions(t *testing.T) {
 	s := NewSessionStore("")
-	s.Add("a", provider.Message{Role: "user", Content: "msg-a"})
-	s.Add("b", provider.Message{Role: "user", Content: "msg-b"})
+	s.Add("a", kitllm.Message{Role: "user", Content: "msg-a"})
+	s.Add("b", kitllm.Message{Role: "user", Content: "msg-b"})
 
 	if s.Len("a") != 1 || s.Len("b") != 1 {
 		t.Errorf("sessions not isolated: a=%d, b=%d", s.Len("a"), s.Len("b"))
 	}
-	if s.Get("a")[0].Content != "msg-a" {
+	if contentStr(s.Get("a")[0]) != "msg-a" {
 		t.Error("session a has wrong content")
 	}
-	if s.Get("b")[0].Content != "msg-b" {
+	if contentStr(s.Get("b")[0]) != "msg-b" {
 		t.Error("session b has wrong content")
 	}
 }
@@ -51,7 +51,7 @@ func TestSessionStore_Persistence(t *testing.T) {
 
 	// Write session.
 	s1 := NewSessionStore(dir)
-	s1.Add("key1", provider.Message{Role: "user", Content: "persisted"})
+	s1.Add("key1", kitllm.Message{Role: "user", Content: "persisted"})
 	if err := s1.Save("key1"); err != nil {
 		t.Fatalf("save failed: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestSessionStore_Persistence(t *testing.T) {
 	// Load into new store.
 	s2 := NewSessionStore(dir)
 	msgs := s2.Get("key1")
-	if len(msgs) != 1 || msgs[0].Content != "persisted" {
+	if len(msgs) != 1 || contentStr(msgs[0]) != "persisted" {
 		t.Errorf("persistence failed: got %+v", msgs)
 	}
 }
@@ -85,11 +85,11 @@ func TestSessionStore_Summary(t *testing.T) {
 
 func TestSessionStore_ToolCallRoundtrip(t *testing.T) {
 	s := NewSessionStore("")
-	orig := provider.Message{
-		Role:       "assistant",
-		Content:    "",
-		ToolCalls: []provider.ToolCall{
-			{ID: "call_1", Name: "my_tool", Args: map[string]any{"x": float64(1)}},
+	orig := kitllm.Message{
+		Role:    "assistant",
+		Content: "",
+		ToolCalls: []kitllm.ToolCall{
+			{ID: "call_1", Type: "function", Function: kitllm.FunctionCall{Name: "my_tool", Arguments: `{"x":1}`}},
 		},
 	}
 	s.Add("chat1", orig)
@@ -102,10 +102,13 @@ func TestSessionStore_ToolCallRoundtrip(t *testing.T) {
 		t.Fatalf("got %d tool calls, want 1", len(msgs[0].ToolCalls))
 	}
 	tc := msgs[0].ToolCalls[0]
-	if tc.ID != "call_1" || tc.Name != "my_tool" {
-		t.Errorf("tool call id/name mismatch: %+v", tc)
+	if tc.ID != "call_1" {
+		t.Errorf("tool call ID mismatch: got %q, want %q", tc.ID, "call_1")
 	}
-	if tc.Args["x"] != float64(1) {
-		t.Errorf("tool call args mismatch: %+v", tc.Args)
+	if tc.Function.Name != "my_tool" {
+		t.Errorf("tool call Function.Name mismatch: got %q, want %q", tc.Function.Name, "my_tool")
+	}
+	if tc.Function.Arguments != `{"x":1}` {
+		t.Errorf("tool call Function.Arguments mismatch: got %q", tc.Function.Arguments)
 	}
 }

@@ -2,19 +2,21 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 	"github.com/anatolykoptev/dozor/internal/provider"
 	"github.com/anatolykoptev/dozor/internal/toolreg"
 )
 
 // ---- mockProvider ----
 
-// mockResponse pairs a provider.Response with an optional error.
+// mockResponse pairs a kitllm.ChatResponse with an optional error.
 type mockResponse struct {
-	resp *provider.Response
+	resp *kitllm.ChatResponse
 	err  error
 }
 
@@ -25,7 +27,7 @@ type mockProvider struct {
 	callCount int
 }
 
-func (m *mockProvider) Chat(_ context.Context, _ []provider.Message, _ []provider.ToolDefinition) (*provider.Response, error) {
+func (m *mockProvider) Chat(_ context.Context, _ []kitllm.Message, _ []kitllm.Tool) (*kitllm.ChatResponse, error) {
 	if m.callCount >= len(m.responses) {
 		return nil, errors.New("mockProvider: no more responses queued")
 	}
@@ -36,15 +38,22 @@ func (m *mockProvider) Chat(_ context.Context, _ []provider.Message, _ []provide
 
 // textResp is a convenience constructor for a plain-text response (no tool calls).
 func textResp(content string) mockResponse {
-	return mockResponse{resp: &provider.Response{Content: content, FinishReason: "stop"}}
+	return mockResponse{resp: &kitllm.ChatResponse{Content: content, FinishReason: "stop"}}
 }
 
 // toolCallResp returns a response that contains a single tool call.
+// args is marshalled to JSON and stored in Function.Arguments.
 func toolCallResp(id, name string, args map[string]any) mockResponse {
-	return mockResponse{resp: &provider.Response{
+	argJSON := "{}"
+	if args != nil {
+		if b, err := json.Marshal(args); err == nil {
+			argJSON = string(b)
+		}
+	}
+	return mockResponse{resp: &kitllm.ChatResponse{
 		Content: "",
-		ToolCalls: []provider.ToolCall{
-			{ID: id, Name: name, Args: args},
+		ToolCalls: []kitllm.ToolCall{
+			{ID: id, Type: "function", Function: kitllm.FunctionCall{Name: name, Arguments: argJSON}},
 		},
 		FinishReason: "tool_calls",
 	}}
@@ -91,6 +100,15 @@ func toolResult(out string, err error) struct {
 }
 
 // ---- helpers ----
+
+
+// contentStr extracts string content from a kitllm.Message, which has Content as `any`.
+func contentStr(m kitllm.Message) string {
+	if s, ok := m.Content.(string); ok {
+		return s
+	}
+	return ""
+}
 
 // newLoop creates a Loop with empty workspace/skills so BuildSystemPrompt uses the
 // fallback identity string — no disk I/O is performed.
@@ -369,11 +387,13 @@ func TestProcess_ToolResultTruncation(t *testing.T) {
 	// Capture the tool message content by inspecting what the provider receives.
 	var capturedToolMsg string
 	capturingProvider := &capturingProvider{
-		onChat: func(msgs []provider.Message) {
+		onChat: func(msgs []kitllm.Message) {
 			// After tool execution, the last message is the tool result.
 			for _, m := range msgs {
 				if m.Role == "tool" {
-					capturedToolMsg = m.Content
+					if s, ok := m.Content.(string); ok {
+						capturedToolMsg = s
+					}
 				}
 			}
 		},
@@ -404,11 +424,11 @@ func TestProcess_ToolResultTruncation(t *testing.T) {
 
 // capturingProvider calls onChat before delegating to the inner provider.
 type capturingProvider struct {
-	onChat func([]provider.Message)
+	onChat func([]kitllm.Message)
 	inner  *mockProvider
 }
 
-func (c *capturingProvider) Chat(ctx context.Context, msgs []provider.Message, tools []provider.ToolDefinition) (*provider.Response, error) {
+func (c *capturingProvider) Chat(ctx context.Context, msgs []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
 	c.onChat(msgs)
 	return c.inner.Chat(ctx, msgs, tools)
 }
@@ -425,12 +445,12 @@ func max(a, b int) int {
 // LLM messages and that new exchanges are persisted.
 func TestProcess_HistoryInjected(t *testing.T) {
 	store := NewSessionStore("")
-	store.Add("chat1", provider.Message{Role: "user", Content: "old question"})
-	store.Add("chat1", provider.Message{Role: "assistant", Content: "old answer"})
+	store.Add("chat1", kitllm.Message{Role: "user", Content: "old question"})
+	store.Add("chat1", kitllm.Message{Role: "assistant", Content: "old answer"})
 
-	var capturedMsgs []provider.Message
+	var capturedMsgs []kitllm.Message
 	cp := &capturingProvider{
-		onChat: func(msgs []provider.Message) {
+		onChat: func(msgs []kitllm.Message) {
 			capturedMsgs = msgs
 		},
 		inner: &mockProvider{responses: []mockResponse{
@@ -456,14 +476,14 @@ func TestProcess_HistoryInjected(t *testing.T) {
 	if capturedMsgs[0].Role != "system" {
 		t.Error("first message should be system")
 	}
-	if capturedMsgs[1].Content != "old question" {
-		t.Errorf("expected old question, got %q", capturedMsgs[1].Content)
+	if contentStr(capturedMsgs[1]) != "old question" {
+		t.Errorf("expected old question, got %q", contentStr(capturedMsgs[1]))
 	}
-	if capturedMsgs[2].Content != "old answer" {
-		t.Errorf("expected old answer, got %q", capturedMsgs[2].Content)
+	if contentStr(capturedMsgs[2]) != "old answer" {
+		t.Errorf("expected old answer, got %q", contentStr(capturedMsgs[2]))
 	}
-	if capturedMsgs[3].Content != "new question" {
-		t.Errorf("expected new question, got %q", capturedMsgs[3].Content)
+	if contentStr(capturedMsgs[3]) != "new question" {
+		t.Errorf("expected new question, got %q", contentStr(capturedMsgs[3]))
 	}
 
 	// Verify new exchange was persisted.
@@ -471,7 +491,7 @@ func TestProcess_HistoryInjected(t *testing.T) {
 	if len(all) != 4 {
 		t.Fatalf("expected 4 stored messages, got %d", len(all))
 	}
-	if all[2].Content != "new question" || all[3].Content != "new answer" {
+	if contentStr(all[2]) != "new question" || contentStr(all[3]) != "new answer" {
 		t.Errorf("new exchange not persisted: %+v", all[2:])
 	}
 }

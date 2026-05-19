@@ -207,9 +207,13 @@ func TestToLLMTools_ParametersPreserved(t *testing.T) {
 		t.Fatalf("expected 1 definition, got %d", len(defs))
 	}
 
-	params := defs[0].Function.Parameters
-	if params == nil {
+	paramsAny := defs[0].Function.Parameters
+	if paramsAny == nil {
 		t.Fatal("Parameters is nil")
+	}
+	params, ok := paramsAny.(map[string]any)
+	if !ok {
+		t.Fatalf("Parameters is not map[string]any, got %T", paramsAny)
 	}
 	typ, _ := params["type"].(string)
 	if typ != "object" {

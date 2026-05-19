@@ -2,13 +2,13 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	kitllm "github.com/anatolykoptev/go-kit/llm"
@@ -16,9 +16,7 @@ import (
 	"github.com/anatolykoptev/go-kit/tracing/httpmw"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"sync"
 )
-
 
 // cacheHitLogOnce gates a single ops-visible log line on the first
 // observed prompt-cache hit (cached_tokens > 0 in usage). Confirms
@@ -26,6 +24,7 @@ import (
 // Per-call cached_tokens still lands on the llm.chat span attributes
 // for full visibility in Jaeger.
 var cacheHitLogOnce sync.Once
+
 // OpenAI is an OpenAI-compatible HTTP provider.
 type OpenAI struct {
 	apiURL   string
@@ -90,11 +89,11 @@ const (
 
 // Chat sends a chat completion request and returns the response.
 // Retries up to chatMaxRetries times on transient errors (429, 5xx).
-func (o *OpenAI) Chat(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
+func (o *OpenAI) Chat(ctx context.Context, messages []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
 	return o.chatWithRetry(ctx, messages, tools)
 }
 
-func (o *OpenAI) chatWithRetry(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
+func (o *OpenAI) chatWithRetry(ctx context.Context, messages []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
 	ctx, span := tracing.Start(ctx, "llm.chat",
 		attribute.String("llm.model", o.model),
 		attribute.String("llm.url", o.apiURL),
@@ -195,7 +194,9 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // kitllm's internal retry is disabled (WithMaxRetries(1) = single
 // attempt) because dozor owns the retry loop with its own backoff,
 // jitter, and ProviderError-aware classification.
-func (o *OpenAI) doChatCtx(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
+//
+// kitllm types are passed through directly — no adapter conversion needed.
+func (o *OpenAI) doChatCtx(ctx context.Context, messages []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
 	client := kitllm.NewClient(o.apiURL, o.apiKey, o.model,
 		kitllm.WithHTTPClient(o.client),
 		kitllm.WithMaxRetries(1), // dozor owns retry; 1 = single attempt
@@ -208,11 +209,11 @@ func (o *OpenAI) doChatCtx(ctx context.Context, messages []Message, tools []Tool
 	// stable across turns.
 	opts := []kitllm.ChatOption{kitllm.WithMessageTimestamps()}
 	if len(tools) > 0 {
-		opts = append(opts, kitllm.WithTools(toKitTools(tools)))
+		opts = append(opts, kitllm.WithTools(tools))
 		opts = append(opts, kitllm.WithToolChoice("auto"))
 	}
 
-	resp, err := client.Chat(ctx, toKitMessages(messages), opts...)
+	resp, err := client.Chat(ctx, messages, opts...)
 	if err != nil {
 		// Map kitllm.APIError -> dozor.ProviderError so shouldRetry can
 		// classify auth/rate-limit/server semantics. Non-API errors
@@ -244,19 +245,5 @@ func (o *OpenAI) doChatCtx(ctx context.Context, messages []Message, tools []Tool
 		})
 	}
 
-	out := fromKitResponse(resp)
-	// Pre-parse tool call arguments and populate the legacy Name field
-	// for downstream code in internal/agent that reads call.Args.
-	for i := range out.ToolCalls {
-		if out.ToolCalls[i].Function == nil {
-			continue
-		}
-		out.ToolCalls[i].Name = out.ToolCalls[i].Function.Name
-		var args map[string]any
-		if err := json.Unmarshal([]byte(out.ToolCalls[i].Function.Arguments), &args); err == nil {
-			out.ToolCalls[i].Args = args
-		}
-	}
-	return out, nil
+	return resp, nil
 }
-

@@ -2,22 +2,21 @@ package agent
 
 import (
 	"context"
-	"errors"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
-
-	"crypto/sha256"
+	"time"
 
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/provider"
 	"github.com/anatolykoptev/dozor/internal/skills"
 	"github.com/anatolykoptev/dozor/internal/toolreg"
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 	"github.com/anatolykoptev/go-kit/tracing"
 	"go.opentelemetry.io/otel/attribute"
-	kitllm "github.com/anatolykoptev/go-kit/llm"
-	"time"
 )
 
 const (
@@ -108,7 +107,7 @@ func (l *Loop) Process(ctx context.Context, sessionKey, message string) (string,
 		}
 
 		// Append assistant message with tool calls.
-		messages = append(messages, provider.Message{
+		messages = append(messages, kitllm.Message{
 			Role:      "assistant",
 			Content:   resp.Content,
 			ToolCalls: resp.ToolCalls,
@@ -128,7 +127,7 @@ func (l *Loop) Process(ctx context.Context, sessionKey, message string) (string,
 		// assistant(tool_calls) → tool(response) → ... → user(warning).
 		if iteration == l.maxIters-iterWarnThreshold {
 			slog.Warn("approaching iteration limit, injecting escalation prompt", slog.Int("iteration", iteration))
-			messages = append(messages, provider.Message{
+			messages = append(messages, kitllm.Message{
 				Role: "user",
 				Content: fmt.Sprintf(
 					"⚠️ SYSTEM: %d/%d iterations used. You have %d iterations left. "+
@@ -146,22 +145,22 @@ func (l *Loop) Process(ctx context.Context, sessionKey, message string) (string,
 
 // buildMessages constructs the initial message list with system prompt, optional
 // session history, and the current user message.
-func (l *Loop) buildMessages(sessionKey, message string) []provider.Message {
-	messages := []provider.Message{
+func (l *Loop) buildMessages(sessionKey, message string) []kitllm.Message {
+	messages := []kitllm.Message{
 		{Role: "system", Content: l.systemPrompt},
 	}
 
 	if l.sessions != nil && sessionKey != "" {
 		if summary := l.sessions.GetSummary(sessionKey); summary != "" {
 			messages = append(messages,
-				provider.Message{Role: "user", Content: "[Previous conversation summary]\n" + summary},
-				provider.Message{Role: "assistant", Content: "Understood, I have the context from our previous conversation."},
+				kitllm.Message{Role: "user", Content: "[Previous conversation summary]\n" + summary},
+				kitllm.Message{Role: "assistant", Content: "Understood, I have the context from our previous conversation."},
 			)
 		}
 		messages = append(messages, l.sessions.Get(sessionKey)...)
 	}
 
-	messages = append(messages, provider.Message{
+	messages = append(messages, kitllm.Message{
 		Role:     "user",
 		Content:  message,
 		ChatTime: kitllm.FormatChatTime(time.Now()),
@@ -174,8 +173,8 @@ func (l *Loop) persistExchange(sessionKey, userMsg, assistantMsg string) {
 	if l.sessions == nil || sessionKey == "" {
 		return
 	}
-	l.sessions.Add(sessionKey, provider.Message{Role: "user", Content: userMsg})
-	l.sessions.Add(sessionKey, provider.Message{Role: "assistant", Content: assistantMsg})
+	l.sessions.Add(sessionKey, kitllm.Message{Role: "user", Content: userMsg})
+	l.sessions.Add(sessionKey, kitllm.Message{Role: "assistant", Content: assistantMsg})
 	if err := l.sessions.Save(sessionKey); err != nil {
 		slog.Warn("session save failed", slog.String("key", sessionKey), slog.Any("error", err))
 	}
@@ -187,7 +186,7 @@ func (l *Loop) persistExchange(sessionKey, userMsg, assistantMsg string) {
 	}
 }
 
-func (l *Loop) executeToolCalls(ctx context.Context, messages []provider.Message, toolCalls []provider.ToolCall, iteration int, failCounts map[failKey]int) ([]provider.Message, error) {
+func (l *Loop) executeToolCalls(ctx context.Context, messages []kitllm.Message, toolCalls []kitllm.ToolCall, iteration int, failCounts map[failKey]int) ([]kitllm.Message, error) {
 	for _, tc := range toolCalls {
 		name, args := parseToolCall(tc)
 
@@ -218,7 +217,7 @@ func (l *Loop) executeToolCalls(ctx context.Context, messages []provider.Message
 			callID = fmt.Sprintf("call_%d_%s", iteration, name)
 		}
 
-		messages = append(messages, provider.Message{
+		messages = append(messages, kitllm.Message{
 			Role:       "tool",
 			Content:    result,
 			ToolCallID: callID,
@@ -228,15 +227,13 @@ func (l *Loop) executeToolCalls(ctx context.Context, messages []provider.Message
 	return messages, nil
 }
 
-func parseToolCall(tc provider.ToolCall) (name string, args map[string]any) {
-	name = tc.Name
-	if name == "" && tc.Function != nil {
-		name = tc.Function.Name
-	}
-
-	// Parse arguments if not already parsed.
-	args = tc.Args
-	if args == nil && tc.Function != nil && tc.Function.Arguments != "" {
+// parseToolCall extracts tool name and arguments from a kitllm.ToolCall.
+// Arguments is a raw JSON string in kitllm.FunctionCall.Arguments; we
+// unmarshal on demand here so the agent loop has a map[string]any to
+// forward to the tool registry.
+func parseToolCall(tc kitllm.ToolCall) (name string, args map[string]any) {
+	name = tc.Function.Name
+	if tc.Function.Arguments != "" {
 		var parsed map[string]any
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err != nil {
 			slog.Warn("failed to parse tool call arguments", slog.String("tool", name), slog.Any("error", err))
@@ -244,7 +241,6 @@ func parseToolCall(tc provider.ToolCall) (name string, args map[string]any) {
 			args = parsed
 		}
 	}
-
 	return name, args
 }
 

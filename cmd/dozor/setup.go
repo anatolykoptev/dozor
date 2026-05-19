@@ -23,6 +23,7 @@ import (
 	extmcpclient "github.com/anatolykoptev/dozor/pkg/extensions/mcpclient"
 	"github.com/anatolykoptev/dozor/pkg/extensions/websearch"
 	session "github.com/anatolykoptev/go-kit/session"
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -217,7 +218,7 @@ func startHTTPServer(ctx context.Context, srv *http.Server, label string) {
 func buildSummarizeFn(p provider.Provider) session.SummarizeFn {
 	return func(ctx context.Context, prompt string) (string, error) {
 		resp, err := p.Chat(ctx,
-			[]provider.Message{
+			[]kitllm.Message{
 				{Role: "system", Content: "You are a concise conversation summarizer. Output only the summary, no preamble."},
 				{Role: "user", Content: prompt},
 			},
