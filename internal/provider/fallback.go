@@ -2,13 +2,12 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"os"
 	"time"
 
-	kitllm "github.com/anatolykoptev/go-kit/llm"
 	"github.com/anatolykoptev/go-kit/hedge"
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 )
 
 // withFallback wraps a primary Provider and retries on any error with a fallback.
@@ -122,7 +121,7 @@ func (w *withFallback) chatSequential(ctx context.Context, messages []kitllm.Mes
 	if err == nil {
 		return resp, nil
 	}
-	if isAuthError(err) {
+	if IsAuth(err) {
 		return nil, err
 	}
 	slog.Warn("primary LLM failed, trying fallback",
@@ -145,10 +144,4 @@ func hedgeDelayFromEnv() time.Duration {
 		return d
 	}
 	return 3 * time.Second
-}
-
-// isAuthError returns true if err is a 401 or 403 ProviderError.
-func isAuthError(err error) bool {
-	var pe *ProviderError
-	return errors.As(err, &pe) && pe.IsAuth()
 }

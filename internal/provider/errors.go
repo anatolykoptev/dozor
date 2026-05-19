@@ -1,109 +1,58 @@
 package provider
 
 import (
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"strings"
-	"time"
+	"errors"
+	"net"
+	"net/url"
+
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 )
 
-const (
-	// httpStatusRateLimit is the HTTP status code for rate limiting.
-	httpStatusRateLimit = http.StatusTooManyRequests
-	// errorBodyTruncLen is the maximum length of an error body message to include.
-	errorBodyTruncLen = 300
-	// httpServerErrorMin is the minimum HTTP status for server errors.
-	httpServerErrorMinProvider = 500
-	// httpServerErrorMax is the maximum HTTP status for server errors.
-	httpServerErrorMax = 600
-)
-
-// ProviderError is a structured error from an LLM provider.
-type ProviderError struct {
-	StatusCode int
-	Message    string
-	RetryAfter time.Duration
-	Raw        string
+// IsAuth reports whether err represents an authentication failure (HTTP
+// 401 or 403). The fallback decision uses this to skip the secondary
+// provider — if the primary's key is bad, the fallback's likely is too
+// (typical setup shares the upstream provider).
+func IsAuth(err error) bool {
+	var ae *kitllm.APIError
+	return errors.As(err, &ae) && (ae.StatusCode == 401 || ae.StatusCode == 403)
 }
 
-func (e *ProviderError) Error() string {
-	return fmt.Sprintf("LLM API error %d: %s", e.StatusCode, e.Message)
+// IsRateLimit reports HTTP 429.
+func IsRateLimit(err error) bool {
+	var ae *kitllm.APIError
+	return errors.As(err, &ae) && ae.StatusCode == 429
 }
 
-// IsAuth returns true for 401/403 authentication errors.
-func (e *ProviderError) IsAuth() bool {
-	return e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
+// IsServerError reports HTTP 5xx.
+func IsServerError(err error) bool {
+	var ae *kitllm.APIError
+	return errors.As(err, &ae) && ae.StatusCode >= 500
 }
 
-// IsRateLimit returns true for 429 quota/rate-limit errors.
-func (e *ProviderError) IsRateLimit() bool {
-	return e.StatusCode == httpStatusRateLimit
+// IsTransient reports whether err is worth retrying: rate-limit, server
+// error, or a network-level failure. Auth (401/403) and client errors
+// (400, 404, etc.) are not transient.
+func IsTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsRateLimit(err) || IsServerError(err) {
+		return true
+	}
+	return isNetworkErr(err)
 }
 
-// IsServerError returns true for 5xx server errors.
-func (e *ProviderError) IsServerError() bool {
-	return e.StatusCode >= httpServerErrorMinProvider && e.StatusCode < httpServerErrorMax
-}
-
-// IsTransient returns true if the error is worth retrying.
-func (e *ProviderError) IsTransient() bool {
-	return e.IsRateLimit() || e.IsServerError()
-}
-
-// parseProviderError parses a non-200 HTTP response body into a ProviderError.
-func parseProviderError(statusCode int, body []byte) *ProviderError {
-	pe := &ProviderError{
-		StatusCode: statusCode,
-		Raw:        string(body),
+func isNetworkErr(err error) bool {
+	if err == nil {
+		return false
 	}
-
-	// Google/Gemini format with details array (includes retry delay).
-	var googleErr struct {
-		Error struct {
-			Message string `json:"message"`
-			Details []struct {
-				Metadata map[string]string `json:"metadata"`
-			} `json:"details"`
-		} `json:"error"`
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return true
 	}
-	if json.Unmarshal(body, &googleErr) == nil && googleErr.Error.Message != "" {
-		pe.Message = googleErr.Error.Message
-		for _, d := range googleErr.Error.Details {
-			if delay, ok := d.Metadata["retryDelay"]; ok {
-				pe.RetryAfter = parseRetryDelay(delay)
-			}
-		}
-		return pe
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return true
 	}
-
-	// OpenAI-compat format: {"error": {"message": "..."}}
-	var openaiErr struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(body, &openaiErr) == nil && openaiErr.Error.Message != "" {
-		pe.Message = openaiErr.Error.Message
-		return pe
-	}
-
-	// Fallback: first line of body
-	s := strings.TrimSpace(string(body))
-	if idx := strings.IndexByte(s, '\n'); idx > 0 {
-		s = s[:idx]
-	}
-	if len(s) > errorBodyTruncLen {
-		s = s[:errorBodyTruncLen] + "..."
-	}
-	pe.Message = s
-	return pe
-}
-
-// parseRetryDelay parses strings like "30s", "2m", "5m30s".
-func parseRetryDelay(s string) time.Duration {
-	if d, err := time.ParseDuration(s); err == nil {
-		return d
-	}
-	return 0
+	return false
 }

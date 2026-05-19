@@ -174,7 +174,7 @@ func TestChat_WithToolCalls(t *testing.T) {
 // --- TestChat_AuthError -----------------------------------------------------
 
 // TestChat_AuthError verifies that a 401 response is returned immediately as a
-// ProviderError without any retry attempts.
+// kitllm.APIError without any retry attempts.
 func TestChat_AuthError(t *testing.T) {
 	var hitCount atomic.Int32
 
@@ -192,14 +192,14 @@ func TestChat_AuthError(t *testing.T) {
 		t.Fatal("Chat() expected error, got nil")
 	}
 
-	var pe *ProviderError
-	if !errors.As(err, &pe) {
-		t.Fatalf("error type = %T, want *ProviderError", err)
+	var ae *kitllm.APIError
+	if !errors.As(err, &ae) {
+		t.Fatalf("error type = %T, want *kitllm.APIError", err)
 	}
-	if pe.StatusCode != http.StatusUnauthorized {
-		t.Errorf("StatusCode = %d, want 401", pe.StatusCode)
+	if ae.StatusCode != http.StatusUnauthorized {
+		t.Errorf("StatusCode = %d, want 401", ae.StatusCode)
 	}
-	if !pe.IsAuth() {
+	if !IsAuth(err) {
 		t.Error("IsAuth() = false, want true")
 	}
 
@@ -296,7 +296,7 @@ func TestChat_ServerErrorRetry(t *testing.T) {
 
 // TestChat_MaxRetriesExhausted verifies that when the server always returns
 // 500, Chat returns an error after exactly chatMaxRetries+1 attempts and the
-// returned error is a ProviderError with IsServerError() == true.
+// returned error is a kitllm.APIError with IsServerError() == true.
 //
 // NOTE: incurs up to ~14 s of sleep. Use -short to skip.
 func TestChat_MaxRetriesExhausted(t *testing.T) {
@@ -320,12 +320,12 @@ func TestChat_MaxRetriesExhausted(t *testing.T) {
 		t.Fatal("Chat() expected error when server always returns 500, got nil")
 	}
 
-	var pe *ProviderError
-	if !errors.As(err, &pe) {
-		t.Fatalf("error type = %T, want *ProviderError", err)
+	var ae *kitllm.APIError
+	if !errors.As(err, &ae) {
+		t.Fatalf("error type = %T, want *kitllm.APIError", err)
 	}
-	if !pe.IsServerError() {
-		t.Errorf("IsServerError() = false for status %d", pe.StatusCode)
+	if !IsServerError(err) {
+		t.Errorf("IsServerError() = false for status %d", ae.StatusCode)
 	}
 
 	// chatMaxRetries=3, so initial attempt + 3 retries = 4 total.
@@ -357,10 +357,10 @@ func TestChat_NetworkError(t *testing.T) {
 		t.Fatal("Chat() expected network error, got nil")
 	}
 
-	// Network errors are NOT wrapped as ProviderError.
-	var pe *ProviderError
-	if errors.As(err, &pe) {
-		t.Errorf("network error should not be a ProviderError, got %T", err)
+	// Network errors are NOT wrapped as kitllm.APIError.
+	var ae *kitllm.APIError
+	if errors.As(err, &ae) {
+		t.Errorf("network error should not be a kitllm.APIError, got %T", err)
 	}
 }
 
@@ -369,7 +369,7 @@ func TestChat_NetworkError(t *testing.T) {
 // TestChat_EmptyChoices verifies that an empty choices array in the response
 // causes Chat to return a descriptive error.
 //
-// NOTE: empty-choices errors are not *ProviderError, so chatWithRetry treats
+// NOTE: empty-choices errors are not *kitllm.APIError, so chatWithRetry treats
 // them as network errors and applies full retry backoff (~14 s). Use -short to
 // skip.
 func TestChat_EmptyChoices(t *testing.T) {
@@ -395,7 +395,7 @@ func TestChat_EmptyChoices(t *testing.T) {
 // TestChat_BlockedResponse verifies that a response with promptFeedback
 // blockReason returns a descriptive error.
 //
-// NOTE: blocked-response errors are not *ProviderError, so chatWithRetry
+// NOTE: blocked-response errors are not *kitllm.APIError, so chatWithRetry
 // applies full retry backoff (~14 s). Use -short to skip.
 func TestChat_BlockedResponse(t *testing.T) {
 	if testing.Short() {
@@ -422,17 +422,12 @@ func TestChat_BlockedResponse(t *testing.T) {
 // TestShouldRetry_Classification unit-tests shouldRetry directly for all
 // relevant error kinds and attempt values. No HTTP or sleep is involved.
 func TestShouldRetry_Classification(t *testing.T) {
-	authErr := &ProviderError{StatusCode: http.StatusUnauthorized, Message: "unauthorized"}
-	forbiddenErr := &ProviderError{StatusCode: http.StatusForbidden, Message: "forbidden"}
-	rateLimitErr := &ProviderError{StatusCode: http.StatusTooManyRequests, Message: "rate limited"}
-	rateLimitWithRetryAfter := &ProviderError{
-		StatusCode: http.StatusTooManyRequests,
-		Message:    "rate limited",
-		RetryAfter: 5 * time.Second,
-	}
-	serverErr := &ProviderError{StatusCode: http.StatusInternalServerError, Message: "internal error"}
-	badGatewayErr := &ProviderError{StatusCode: http.StatusBadGateway, Message: "bad gateway"}
-	notFoundErr := &ProviderError{StatusCode: http.StatusNotFound, Message: "not found"}
+	authErr := &kitllm.APIError{StatusCode: http.StatusUnauthorized, Body: "unauthorized"}
+	forbiddenErr := &kitllm.APIError{StatusCode: http.StatusForbidden, Body: "forbidden"}
+	rateLimitErr := &kitllm.APIError{StatusCode: http.StatusTooManyRequests, Body: "rate limited"}
+	serverErr := &kitllm.APIError{StatusCode: http.StatusInternalServerError, Body: "internal error"}
+	badGatewayErr := &kitllm.APIError{StatusCode: http.StatusBadGateway, Body: "bad gateway"}
+	notFoundErr := &kitllm.APIError{StatusCode: http.StatusNotFound, Body: "not found"}
 	networkErr := errors.New("connection refused")
 
 	cases := []struct {
@@ -453,9 +448,6 @@ func TestShouldRetry_Classification(t *testing.T) {
 		{name: "ratelimit_attempt2", err: rateLimitErr, attempt: 2, wantRetry: true, wantNonZero: true},
 		{name: "ratelimit_atMaxRetries", err: rateLimitErr, attempt: chatMaxRetries, wantRetry: false},
 
-		// 429 with Retry-After: delay should be at least RetryAfter value.
-		{name: "ratelimit_retry_after_attempt0", err: rateLimitWithRetryAfter, attempt: 0, wantRetry: true, wantNonZero: true},
-
 		// 5xx server errors — retry while attempts remain.
 		{name: "server500_attempt0", err: serverErr, attempt: 0, wantRetry: true, wantNonZero: true},
 		{name: "server502_attempt0", err: badGatewayErr, attempt: 0, wantRetry: true, wantNonZero: true},
@@ -464,7 +456,7 @@ func TestShouldRetry_Classification(t *testing.T) {
 		// Non-transient provider errors (4xx non-auth) — do not retry.
 		{name: "notfound_404_attempt0", err: notFoundErr, attempt: 0, wantRetry: false},
 
-		// Network errors (non-ProviderError) — retry while attempts remain.
+		// Network errors (non-APIError) — retry while attempts remain.
 		{name: "network_attempt0", err: networkErr, attempt: 0, wantRetry: true, wantNonZero: true},
 		{name: "network_attempt2", err: networkErr, attempt: 2, wantRetry: true, wantNonZero: true},
 		{name: "network_atMaxRetries", err: networkErr, attempt: chatMaxRetries, wantRetry: false},
@@ -486,121 +478,6 @@ func TestShouldRetry_Classification(t *testing.T) {
 	}
 }
 
-// TestShouldRetry_RateLimitRetryAfterDelay verifies that when RetryAfter is
-// set on a rate-limit error, the returned delay is at least RetryAfter.
-func TestShouldRetry_RateLimitRetryAfterDelay(t *testing.T) {
-	const retryAfter = 5 * time.Second
-	pe := &ProviderError{
-		StatusCode: http.StatusTooManyRequests,
-		RetryAfter: retryAfter,
-	}
-	retry, delay := shouldRetry(pe, 0)
-	if !retry {
-		t.Fatal("shouldRetry() = false, want true for 429 at attempt 0")
-	}
-	if delay < retryAfter {
-		t.Errorf("delay = %v, want >= %v (RetryAfter respected)", delay, retryAfter)
-	}
-}
-
-// --- TestProviderError_Methods ----------------------------------------------
-
-// TestProviderError_Methods verifies the ProviderError helper methods cover
-// all status code boundaries correctly.
-func TestProviderError_Methods(t *testing.T) {
-	cases := []struct {
-		status      int
-		wantAuth    bool
-		wantRate    bool
-		wantServer  bool
-		wantTransient bool
-	}{
-		{http.StatusUnauthorized, true, false, false, false},
-		{http.StatusForbidden, true, false, false, false},
-		{http.StatusTooManyRequests, false, true, false, true},
-		{http.StatusInternalServerError, false, false, true, true},
-		{http.StatusBadGateway, false, false, true, true},
-		{http.StatusServiceUnavailable, false, false, true, true},
-		{http.StatusGatewayTimeout, false, false, true, true},
-		{http.StatusNotFound, false, false, false, false},
-		{http.StatusBadRequest, false, false, false, false},
-	}
-
-	for _, tc := range cases {
-		pe := &ProviderError{StatusCode: tc.status}
-		t.Run(http.StatusText(tc.status), func(t *testing.T) {
-			if got := pe.IsAuth(); got != tc.wantAuth {
-				t.Errorf("IsAuth() = %v, want %v for %d", got, tc.wantAuth, tc.status)
-			}
-			if got := pe.IsRateLimit(); got != tc.wantRate {
-				t.Errorf("IsRateLimit() = %v, want %v for %d", got, tc.wantRate, tc.status)
-			}
-			if got := pe.IsServerError(); got != tc.wantServer {
-				t.Errorf("IsServerError() = %v, want %v for %d", got, tc.wantServer, tc.status)
-			}
-			if got := pe.IsTransient(); got != tc.wantTransient {
-				t.Errorf("IsTransient() = %v, want %v for %d", got, tc.wantTransient, tc.status)
-			}
-		})
-	}
-}
-
-// --- TestParseProviderError -------------------------------------------------
-
-// TestParseProviderError verifies that parseProviderError extracts the message
-// from both OpenAI-format and plain-text error bodies.
-func TestParseProviderError(t *testing.T) {
-	cases := []struct {
-		name       string
-		statusCode int
-		body       []byte
-		wantMsg    string
-	}{
-		{
-			name:       "openai_format",
-			statusCode: http.StatusUnauthorized,
-			body:       []byte(`{"error":{"message":"invalid api key"}}`),
-			wantMsg:    "invalid api key",
-		},
-		{
-			name:       "google_format",
-			statusCode: http.StatusTooManyRequests,
-			body:       []byte(`{"error":{"message":"quota exceeded","details":[{"metadata":{"retryDelay":"30s"}}]}}`),
-			wantMsg:    "quota exceeded",
-		},
-		{
-			name:       "plain_text_fallback",
-			statusCode: http.StatusInternalServerError,
-			body:       []byte("Internal Server Error\nsome extra details"),
-			wantMsg:    "Internal Server Error",
-		},
-		{
-			name:       "empty_body",
-			statusCode: http.StatusBadGateway,
-			body:       []byte(""),
-			wantMsg:    "",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			pe := parseProviderError(tc.statusCode, tc.body)
-			if pe.StatusCode != tc.statusCode {
-				t.Errorf("StatusCode = %d, want %d", pe.StatusCode, tc.statusCode)
-			}
-			if pe.Message != tc.wantMsg {
-				t.Errorf("Message = %q, want %q", pe.Message, tc.wantMsg)
-			}
-		})
-	}
-}
-
-// TestParseProviderError_GoogleRetryAfter verifies that the Retry-After is
-// parsed from the Google error details metadata.
-func TestParseProviderError_GoogleRetryAfter(t *testing.T) {
-	body := []byte(`{"error":{"message":"quota exceeded","details":[{"metadata":{"retryDelay":"30s"}}]}}`)
-	pe := parseProviderError(http.StatusTooManyRequests, body)
-	if pe.RetryAfter != 30*time.Second {
-		t.Errorf("RetryAfter = %v, want 30s", pe.RetryAfter)
-	}
-}
+// NOTE: RetryAfter (Google retryDelay metadata) was dropped in PR4 when
+// ProviderError was deleted. kitllm.APIError does not carry RetryAfter.
+// PR5 or a future PR may restore Retry-After via HTTP response header parsing.
