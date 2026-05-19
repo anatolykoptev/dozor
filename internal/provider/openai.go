@@ -132,7 +132,7 @@ func shouldRetry(err error, attempt int) (bool, time.Duration) {
 	if errors.As(err, &ae) {
 		// Known API error: only retry on transient status codes (429, 5xx).
 		if IsTransient(err) && attempt < chatMaxRetries {
-			delay := chatBackoff(attempt)
+			delay := chatBackoff(attempt, err)
 			if IsRateLimit(err) {
 				slog.Warn("LLM rate limit, retrying",
 					slog.Int("attempt", attempt+1),
@@ -153,18 +153,28 @@ func shouldRetry(err error, attempt int) (bool, time.Duration) {
 	if attempt >= chatMaxRetries {
 		return false, 0
 	}
-	delay := chatBackoff(attempt)
+	delay := chatBackoff(attempt, err)
 	slog.Warn("LLM network error, retrying",
 		slog.Int("attempt", attempt+1),
 		slog.Duration("delay", delay))
 	return true, delay
 }
 
-// TODO(kit-v0.63): kitllm.APIError does not surface the HTTP Retry-After header
-// (v0.62.0 fields: StatusCode, Body, Type, Retryable). Once upstreamed, parse
-// APIError.RetryAfter here and substitute it for exponential backoff on 429.
-// PR4 dropped the Google retryDelay metadata path; this is the way back.
-func chatBackoff(attempt int) time.Duration {
+// chatBackoff returns the next-retry delay. When err is a *kitllm.APIError
+// with a server-supplied Retry-After header, honour it (capped at maxRetryAfterCap)
+// instead of the exponential schedule. Without a Retry-After hint (non-API errors,
+// 5xx without the header), falls back to exponential backoff with jitter.
+const maxRetryAfterCap = 60 * time.Second
+
+func chatBackoff(attempt int, err error) time.Duration {
+	var ae *kitllm.APIError
+	if errors.As(err, &ae) && ae.RetryAfter > 0 {
+		d := ae.RetryAfter
+		if d > maxRetryAfterCap {
+			d = maxRetryAfterCap
+		}
+		return d
+	}
 	delay := chatInitialDelay
 	for i := 0; i < attempt; i++ {
 		delay *= 2
