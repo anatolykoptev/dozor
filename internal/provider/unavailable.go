@@ -19,7 +19,7 @@ var ErrUnavailable = kitllm.ErrUnavailable
 // ErrUnavailable from Chat. Used when DOZOR_LLM_API_KEY is empty.
 type unavailable struct{}
 
-func (unavailable) Chat(_ context.Context, _ []Message, _ []ToolDefinition) (*Response, error) {
+func (unavailable) Chat(_ context.Context, _ []kitllm.Message, _ []kitllm.Tool) (*kitllm.ChatResponse, error) {
 	return nil, ErrUnavailable
 }
 
@@ -29,4 +29,4 @@ func (unavailable) Chat(_ context.Context, _ []Message, _ []ToolDefinition) (*Re
 func (unavailable) MaxIterations() int { return 0 }
 
 // Compile-time assert that unavailable satisfies the optional interface.
-var _ interface{ MaxIterations() int } = unavailable{}
+var _ MaxIterationsProvider = unavailable{}

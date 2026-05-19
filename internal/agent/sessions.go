@@ -2,13 +2,12 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
 	"strconv"
 
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 	session "github.com/anatolykoptev/go-kit/session"
-	"github.com/anatolykoptev/dozor/internal/provider"
 )
 
 const (
@@ -16,7 +15,7 @@ const (
 	defaultCompactionKeep      = 8
 )
 
-// SessionStore wraps session.Store, translating between provider.Message and session.Message.
+// SessionStore wraps session.Store, translating between kitllm.Message and session.Message.
 type SessionStore struct {
 	store     session.Store
 	compactor *session.Compactor
@@ -59,20 +58,20 @@ func compactionConfig() (threshold, keep int) {
 	return threshold, keep
 }
 
-// Add appends a provider message to the session.
-func (ss *SessionStore) Add(key string, msg provider.Message) {
+// Add appends a kitllm message to the session.
+func (ss *SessionStore) Add(key string, msg kitllm.Message) {
 	ss.store.AddMessage(key, toSessionMsg(msg))
 }
 
-// Get returns the session history as provider messages.
-func (ss *SessionStore) Get(key string) []provider.Message {
+// Get returns the session history as kitllm messages.
+func (ss *SessionStore) Get(key string) []kitllm.Message {
 	msgs := ss.store.GetHistory(key)
 	if msgs == nil {
 		return nil
 	}
-	out := make([]provider.Message, len(msgs))
+	out := make([]kitllm.Message, len(msgs))
 	for i, m := range msgs {
-		out[i] = toProviderMsg(m)
+		out[i] = toKitMessage(m)
 	}
 	return out
 }
@@ -103,11 +102,18 @@ func (ss *SessionStore) Compact(ctx context.Context, key string) {
 	}
 }
 
-// toSessionMsg converts provider.Message to session.Message.
-func toSessionMsg(m provider.Message) session.Message {
+// toSessionMsg converts kitllm.Message to session.Message.
+// kitllm.Message.Content is `any` (string or []ContentPart); we store
+// only the string form since session.Message.Content is string. Multimodal
+// messages are not used in dozor today.
+func toSessionMsg(m kitllm.Message) session.Message {
+	content := ""
+	if s, ok := m.Content.(string); ok {
+		content = s
+	}
 	sm := session.Message{
 		Role:       m.Role,
-		Content:    m.Content,
+		Content:    content,
 		ToolCallID: m.ToolCallID,
 		ChatTime:   m.ChatTime,
 		MessageID:  m.MessageID,
@@ -116,29 +122,24 @@ func toSessionMsg(m provider.Message) session.Message {
 	if len(m.ToolCalls) > 0 {
 		sm.ToolCalls = make([]session.ToolCall, len(m.ToolCalls))
 		for i, tc := range m.ToolCalls {
+			// kitllm.ToolCall.Function is a value type; session.ToolCall.Function is a pointer.
 			sm.ToolCalls[i] = session.ToolCall{
-				ID:   tc.ID,
-				Name: tc.Name,
-			}
-			if tc.Function != nil {
-				sm.ToolCalls[i].Function = &session.FunctionCall{
+				ID: tc.ID,
+				Function: &session.FunctionCall{
 					Name:      tc.Function.Name,
 					Arguments: tc.Function.Arguments,
-				}
-			}
-			if tc.Args != nil {
-				if b, err := json.Marshal(tc.Args); err == nil {
-					sm.ToolCalls[i].Args = string(b)
-				}
+				},
 			}
 		}
 	}
 	return sm
 }
 
-// toProviderMsg converts session.Message to provider.Message.
-func toProviderMsg(m session.Message) provider.Message {
-	pm := provider.Message{
+// toKitMessage converts session.Message to kitllm.Message.
+// session.ToolCall.Function is a pointer; kitllm.ToolCall.Function is a value.
+// A nil Function pointer maps to a zero-value kitllm.FunctionCall.
+func toKitMessage(m session.Message) kitllm.Message {
+	km := kitllm.Message{
 		Role:       m.Role,
 		Content:    m.Content,
 		ToolCallID: m.ToolCallID,
@@ -147,25 +148,19 @@ func toProviderMsg(m session.Message) provider.Message {
 		Name:       m.Name,
 	}
 	if len(m.ToolCalls) > 0 {
-		pm.ToolCalls = make([]provider.ToolCall, len(m.ToolCalls))
+		km.ToolCalls = make([]kitllm.ToolCall, len(m.ToolCalls))
 		for i, tc := range m.ToolCalls {
-			pm.ToolCalls[i] = provider.ToolCall{
+			km.ToolCalls[i] = kitllm.ToolCall{
 				ID:   tc.ID,
-				Name: tc.Name,
+				Type: "function",
 			}
 			if tc.Function != nil {
-				pm.ToolCalls[i].Function = &provider.FunctionCall{
+				km.ToolCalls[i].Function = kitllm.FunctionCall{
 					Name:      tc.Function.Name,
 					Arguments: tc.Function.Arguments,
 				}
 			}
-			if tc.Args != "" {
-				var args map[string]any
-				if err := json.Unmarshal([]byte(tc.Args), &args); err == nil {
-					pm.ToolCalls[i].Args = args
-				}
-			}
 		}
 	}
-	return pm
+	return km
 }

@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 )
 
 // apiToolCall is a test-only fixture for building tool_calls JSON in
@@ -96,7 +98,7 @@ func TestChat_Success(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	msgs := []Message{{Role: "user", Content: "ping"}}
+	msgs := []kitllm.Message{{Role: "user", Content: "ping"}}
 
 	resp, err := p.Chat(context.Background(), msgs, nil)
 	if err != nil {
@@ -137,7 +139,7 @@ func TestChat_WithToolCalls(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	resp, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "check status"}}, nil)
+	resp, err := p.Chat(context.Background(), []kitllm.Message{{Role: "user", Content: "check status"}}, nil)
 	if err != nil {
 		t.Fatalf("Chat() unexpected error: %v", err)
 	}
@@ -152,12 +154,6 @@ func TestChat_WithToolCalls(t *testing.T) {
 	if tc.Type != "function" {
 		t.Errorf("ToolCall.Type = %q, want %q", tc.Type, "function")
 	}
-	if tc.Name != "get_server_status" {
-		t.Errorf("ToolCall.Name = %q, want %q", tc.Name, "get_server_status")
-	}
-	if tc.Function == nil {
-		t.Fatal("ToolCall.Function is nil")
-	}
 	if tc.Function.Name != "get_server_status" {
 		t.Errorf("Function.Name = %q, want %q", tc.Function.Name, "get_server_status")
 	}
@@ -165,12 +161,13 @@ func TestChat_WithToolCalls(t *testing.T) {
 		t.Errorf("Function.Arguments = %q, want raw JSON", tc.Function.Arguments)
 	}
 
-	// Verify pre-parsed args.
-	if tc.Args == nil {
-		t.Fatal("ToolCall.Args is nil — pre-parsing failed")
+	// Verify args can be parsed from the raw JSON string.
+	var parsedArgs map[string]any
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsedArgs); err != nil {
+		t.Fatalf("failed to parse Function.Arguments: %v", err)
 	}
-	if host, _ := tc.Args["host"].(string); host != "prod-1" {
-		t.Errorf("Args[host] = %q, want %q", host, "prod-1")
+	if host, _ := parsedArgs["host"].(string); host != "prod-1" {
+		t.Errorf("parsed args host = %q, want %q", host, "prod-1")
 	}
 }
 
@@ -190,7 +187,7 @@ func TestChat_AuthError(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	_, err := p.Chat(context.Background(), []kitllm.Message{{Role: "user", Content: "hi"}}, nil)
 	if err == nil {
 		t.Fatal("Chat() expected error, got nil")
 	}
@@ -243,7 +240,7 @@ func TestChat_RateLimitRetry(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	resp, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil)
+	resp, err := p.Chat(context.Background(), []kitllm.Message{{Role: "user", Content: "hello"}}, nil)
 	if err != nil {
 		t.Fatalf("Chat() unexpected error after retry: %v", err)
 	}
@@ -283,7 +280,7 @@ func TestChat_ServerErrorRetry(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	resp, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "test"}}, nil)
+	resp, err := p.Chat(context.Background(), []kitllm.Message{{Role: "user", Content: "test"}}, nil)
 	if err != nil {
 		t.Fatalf("Chat() unexpected error after retries: %v", err)
 	}
@@ -318,7 +315,7 @@ func TestChat_MaxRetriesExhausted(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "test"}}, nil)
+	_, err := p.Chat(context.Background(), []kitllm.Message{{Role: "user", Content: "test"}}, nil)
 	if err == nil {
 		t.Fatal("Chat() expected error when server always returns 500, got nil")
 	}
@@ -355,7 +352,7 @@ func TestChat_NetworkError(t *testing.T) {
 	srv.Close() // closed before any request is made
 
 	p := newTestOpenAI(addr)
-	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "ping"}}, nil)
+	_, err := p.Chat(context.Background(), []kitllm.Message{{Role: "user", Content: "ping"}}, nil)
 	if err == nil {
 		t.Fatal("Chat() expected network error, got nil")
 	}
@@ -387,7 +384,7 @@ func TestChat_EmptyChoices(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	_, err := p.Chat(context.Background(), []kitllm.Message{{Role: "user", Content: "hi"}}, nil)
 	if err == nil {
 		t.Fatal("Chat() expected error for empty choices, got nil")
 	}
@@ -414,7 +411,7 @@ func TestChat_BlockedResponse(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "evil prompt"}}, nil)
+	_, err := p.Chat(context.Background(), []kitllm.Message{{Role: "user", Content: "evil prompt"}}, nil)
 	if err == nil {
 		t.Fatal("Chat() expected error for blocked response, got nil")
 	}

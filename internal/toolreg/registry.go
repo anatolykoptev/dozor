@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/anatolykoptev/dozor/internal/provider"
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 	"github.com/anatolykoptev/go-kit/tracing"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -77,15 +77,16 @@ func (r *Registry) List() []string {
 	return names
 }
 
-// ToLLMTools converts all registered tools to OpenAI-compatible tool definitions.
-func (r *Registry) ToLLMTools() []provider.ToolDefinition {
+// ToLLMTools converts all registered tools to kitllm.Tool definitions
+// for direct use with Provider.Chat.
+func (r *Registry) ToLLMTools() []kitllm.Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	defs := make([]provider.ToolDefinition, 0, len(r.tools))
+	defs := make([]kitllm.Tool, 0, len(r.tools))
 	for _, t := range r.tools {
-		defs = append(defs, provider.ToolDefinition{
+		defs = append(defs, kitllm.Tool{
 			Type: "function",
-			Function: provider.FunctionDefinition{
+			Function: kitllm.ToolFunction{
 				Name:        t.Name(),
 				Description: t.Description(),
 				Parameters:  t.Parameters(),

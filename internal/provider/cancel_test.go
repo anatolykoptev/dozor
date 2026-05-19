@@ -8,6 +8,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 )
 
 // TestChatRespectsCancel verifies that cancelling ctx mid-flight causes
@@ -41,7 +43,7 @@ func TestChatRespectsCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := p.Chat(ctx, []Message{{Role: "user", Content: "test"}}, nil)
+		_, err := p.Chat(ctx, []kitllm.Message{{Role: "user", Content: "test"}}, nil)
 		done <- err
 	}()
 

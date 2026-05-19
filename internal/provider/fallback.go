@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 	"github.com/anatolykoptev/go-kit/hedge"
 )
 
@@ -92,7 +93,7 @@ func (w *withFallback) MaxIterations() int {
 // fallback — re-running with the same misconfigured key buys nothing,
 // and we'd rather surface the auth failure than mask it with a
 // fallback-success.
-func (w *withFallback) Chat(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
+func (w *withFallback) Chat(ctx context.Context, messages []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
 	if w.fallback == nil {
 		return w.primary.Chat(ctx, messages, tools)
 	}
@@ -103,10 +104,10 @@ func (w *withFallback) Chat(ctx context.Context, messages []Message, tools []Too
 		return w.chatSequential(ctx, messages, tools)
 	}
 
-	primaryFn := func(hCtx context.Context) (*Response, error) {
+	primaryFn := func(hCtx context.Context) (*kitllm.ChatResponse, error) {
 		return w.primary.Chat(hCtx, messages, tools)
 	}
-	fallbackFn := func(hCtx context.Context) (*Response, error) {
+	fallbackFn := func(hCtx context.Context) (*kitllm.ChatResponse, error) {
 		slog.Info("LLM fallback engaged",
 			slog.Duration("hedge.delay", hedgeDelay))
 		return w.fallback.Chat(hCtx, messages, tools)
@@ -116,7 +117,7 @@ func (w *withFallback) Chat(ctx context.Context, messages []Message, tools []Too
 
 // chatSequential preserves the historical primary→fallback-on-error
 // behaviour for cost-conscious deployments.
-func (w *withFallback) chatSequential(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
+func (w *withFallback) chatSequential(ctx context.Context, messages []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
 	resp, err := w.primary.Chat(ctx, messages, tools)
 	if err == nil {
 		return resp, nil
