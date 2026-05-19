@@ -90,8 +90,8 @@ const (
 
 // Chat sends a chat completion request and returns the response.
 // Retries up to chatMaxRetries times on transient errors (429, 5xx).
-func (o *OpenAI) Chat(messages []Message, tools []ToolDefinition) (*Response, error) {
-	return o.chatWithRetry(context.Background(), messages, tools)
+func (o *OpenAI) Chat(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
+	return o.chatWithRetry(ctx, messages, tools)
 }
 
 func (o *OpenAI) chatWithRetry(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error) {
@@ -131,6 +131,10 @@ func (o *OpenAI) chatWithRetry(ctx context.Context, messages []Message, tools []
 // Returns false when the error is an auth failure, a non-transient provider error,
 // or when attempt has reached chatMaxRetries.
 func shouldRetry(err error, attempt int) (bool, time.Duration) {
+	// Context cancellation / deadline — never retry; the caller's ctx is gone.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false, 0
+	}
 	var pe *ProviderError
 	if !errors.As(err, &pe) {
 		// Network error — retry with backoff.

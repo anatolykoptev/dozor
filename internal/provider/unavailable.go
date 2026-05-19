@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"context"
+
 	kitllm "github.com/anatolykoptev/go-kit/llm"
 )
 
@@ -17,7 +19,7 @@ var ErrUnavailable = kitllm.ErrUnavailable
 // ErrUnavailable from Chat. Used when DOZOR_LLM_API_KEY is empty.
 type unavailable struct{}
 
-func (unavailable) Chat(messages []Message, tools []ToolDefinition) (*Response, error) {
+func (unavailable) Chat(_ context.Context, _ []Message, _ []ToolDefinition) (*Response, error) {
 	return nil, ErrUnavailable
 }
 

@@ -1,5 +1,7 @@
 package provider
 
+import "context"
+
 // Message represents a chat message in the LLM conversation.
 //
 // ChatTime, MessageID, and Name mirror the MemDB ingest schema (memdb-go
@@ -61,5 +63,5 @@ type FunctionDefinition struct {
 
 // Provider is the interface for LLM backends.
 type Provider interface {
-	Chat(messages []Message, tools []ToolDefinition) (*Response, error)
+	Chat(ctx context.Context, messages []Message, tools []ToolDefinition) (*Response, error)
 }

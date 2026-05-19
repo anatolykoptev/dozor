@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,7 +98,7 @@ func TestChat_Success(t *testing.T) {
 	p := newTestOpenAI(srv.URL)
 	msgs := []Message{{Role: "user", Content: "ping"}}
 
-	resp, err := p.Chat(msgs, nil)
+	resp, err := p.Chat(context.Background(), msgs, nil)
 	if err != nil {
 		t.Fatalf("Chat() unexpected error: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestChat_WithToolCalls(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	resp, err := p.Chat([]Message{{Role: "user", Content: "check status"}}, nil)
+	resp, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "check status"}}, nil)
 	if err != nil {
 		t.Fatalf("Chat() unexpected error: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestChat_AuthError(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	_, err := p.Chat([]Message{{Role: "user", Content: "hi"}}, nil)
+	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
 	if err == nil {
 		t.Fatal("Chat() expected error, got nil")
 	}
@@ -242,7 +243,7 @@ func TestChat_RateLimitRetry(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	resp, err := p.Chat([]Message{{Role: "user", Content: "hello"}}, nil)
+	resp, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "hello"}}, nil)
 	if err != nil {
 		t.Fatalf("Chat() unexpected error after retry: %v", err)
 	}
@@ -282,7 +283,7 @@ func TestChat_ServerErrorRetry(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	resp, err := p.Chat([]Message{{Role: "user", Content: "test"}}, nil)
+	resp, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "test"}}, nil)
 	if err != nil {
 		t.Fatalf("Chat() unexpected error after retries: %v", err)
 	}
@@ -317,7 +318,7 @@ func TestChat_MaxRetriesExhausted(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	_, err := p.Chat([]Message{{Role: "user", Content: "test"}}, nil)
+	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "test"}}, nil)
 	if err == nil {
 		t.Fatal("Chat() expected error when server always returns 500, got nil")
 	}
@@ -354,7 +355,7 @@ func TestChat_NetworkError(t *testing.T) {
 	srv.Close() // closed before any request is made
 
 	p := newTestOpenAI(addr)
-	_, err := p.Chat([]Message{{Role: "user", Content: "ping"}}, nil)
+	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "ping"}}, nil)
 	if err == nil {
 		t.Fatal("Chat() expected network error, got nil")
 	}
@@ -386,7 +387,7 @@ func TestChat_EmptyChoices(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	_, err := p.Chat([]Message{{Role: "user", Content: "hi"}}, nil)
+	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
 	if err == nil {
 		t.Fatal("Chat() expected error for empty choices, got nil")
 	}
@@ -413,7 +414,7 @@ func TestChat_BlockedResponse(t *testing.T) {
 	defer srv.Close()
 
 	p := newTestOpenAI(srv.URL)
-	_, err := p.Chat([]Message{{Role: "user", Content: "evil prompt"}}, nil)
+	_, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "evil prompt"}}, nil)
 	if err == nil {
 		t.Fatal("Chat() expected error for blocked response, got nil")
 	}

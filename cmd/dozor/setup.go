@@ -215,8 +215,8 @@ func startHTTPServer(ctx context.Context, srv *http.Server, label string) {
 
 // buildSummarizeFn creates a session.SummarizeFn backed by the LLM provider.
 func buildSummarizeFn(p provider.Provider) session.SummarizeFn {
-	return func(_ context.Context, prompt string) (string, error) {
-		resp, err := p.Chat(
+	return func(ctx context.Context, prompt string) (string, error) {
+		resp, err := p.Chat(ctx,
 			[]provider.Message{
 				{Role: "system", Content: "You are a concise conversation summarizer. Output only the summary, no preamble."},
 				{Role: "user", Content: prompt},

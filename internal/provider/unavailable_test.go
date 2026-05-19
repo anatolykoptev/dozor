@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"os"
 	"testing"
@@ -22,7 +23,7 @@ func TestNewOpenAI_EmptyKeyReturnsUnavailable(t *testing.T) {
 	if p == nil {
 		t.Fatal("expected non-nil provider")
 	}
-	_, err := p.Chat(nil, nil)
+	_, err := p.Chat(context.Background(), nil, nil)
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("want errors.Is(err, ErrUnavailable), got %v", err)
 	}
