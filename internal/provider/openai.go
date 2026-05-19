@@ -53,26 +53,7 @@ func NewOpenAI() (Provider, bool) {
 	if apiKey == "" {
 		return unavailable{}, false
 	}
-	maxIters := 10
-	if v := os.Getenv("DOZOR_MAX_TOOL_ITERATIONS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			maxIters = n
-		}
-	}
-	o := &OpenAI{
-		apiURL:   apiURL,
-		apiKey:   apiKey,
-		model:    model,
-		maxIters: maxIters,
-		// 90s — under burst, 300s pinned message-slices for 5 min × N goroutines
-		// → 6.3 GB RSS peak (incident 2026-05-12). Monitoring/triage rarely
-		// needs >60s; streaming not used.
-		// NOTE: fallback chain (internal/provider/fallback.go) wraps each provider
-		// with its own client; this timeout applies to every OpenAI instance
-		// constructed by NewOpenAI, including the fallback chain's secondary.
-		client: &http.Client{Timeout: 90 * time.Second, Transport: httpmw.WrapTransport(&http.Transport{})},
-	}
-	return o, true
+	return newOpenAIWithConfig(apiURL, apiKey, model, maxItersFromEnv()), true
 }
 
 // MaxIterations returns the configured max tool call iterations.
@@ -179,6 +160,10 @@ func shouldRetry(err error, attempt int) (bool, time.Duration) {
 	return true, delay
 }
 
+// TODO(kit-v0.63): kitllm.APIError does not surface the HTTP Retry-After header
+// (v0.62.0 fields: StatusCode, Body, Type, Retryable). Once upstreamed, parse
+// APIError.RetryAfter here and substitute it for exponential backoff on 429.
+// PR4 dropped the Google retryDelay metadata path; this is the way back.
 func chatBackoff(attempt int) time.Duration {
 	delay := chatInitialDelay
 	for i := 0; i < attempt; i++ {
@@ -257,4 +242,30 @@ func (o *OpenAI) doChatCtx(ctx context.Context, messages []kitllm.Message, tools
 	}
 
 	return resp, nil
+}
+
+// newOpenAIWithConfig constructs an *OpenAI directly from explicit values
+// (url, key, model, maxIters) rather than reading from env. Used by
+// newFallbackFromEnv to build the fallback provider without a type
+// assertion into the primary — both callers compose via the Provider
+// interface only.
+func newOpenAIWithConfig(url, key, model string, maxIters int) *OpenAI {
+	return &OpenAI{
+		apiURL:   url,
+		apiKey:   key,
+		model:    model,
+		maxIters: maxIters,
+		client:   &http.Client{Timeout: 90 * time.Second, Transport: httpmw.WrapTransport(&http.Transport{})},
+	}
+}
+
+// maxItersFromEnv reads DOZOR_MAX_TOOL_ITERATIONS, returning 10 as default.
+// Shared by NewOpenAI and newFallbackFromEnv so both honour the same env.
+func maxItersFromEnv() int {
+	if v := os.Getenv("DOZOR_MAX_TOOL_ITERATIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 10
 }
