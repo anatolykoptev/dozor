@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"log/slog"
+	"strings"
 )
 
 // This file isolates the post-validation routing logic of the GitHub webhook
@@ -129,9 +130,15 @@ func (h *Handler) dispatchPush(push pushEvent, rc *RepoConfig) string {
 				"commit", short(push.HeadCommit.ID),
 			)
 		} else {
-			// Key includes repo + sorted services so two services in the same
-			// repo debounce independently.
-			debounceKey := push.Repository.FullName + "#" + queueKey
+			// Key includes repo + branch + sorted services so that:
+			//   1. Two service groups in the same repo debounce independently.
+			//   2. Two branches of the same repo (multi-branch deploy) debounce
+			//      independently even when they map to services with identical names.
+			branch := ""
+			if idx := strings.LastIndex(push.Ref, "/"); idx >= 0 {
+				branch = push.Ref[idx+1:]
+			}
+			debounceKey := push.Repository.FullName + "@" + branch + "#" + queueKey
 			svcLabel := ""
 			if len(rc.Services) > 0 {
 				svcLabel = rc.Services[0]

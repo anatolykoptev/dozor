@@ -5,11 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
 )
 
 // maxWebhookBody bounds the request body. Push events with many commits and
@@ -180,32 +180,45 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// Lookup repo config before branch check so per-repo Branch is available.
-	rc := h.config.Lookup(push.Repository.FullName)
-
-	// For push events, reject non-target branches. For releases, already validated.
+	// For push events, find a config entry matching (repo, branch).
+	// For releases, look up by repo only (no branch concept for tags).
+	var rc *RepoConfig
 	if event == "push" {
-		expectedBranch := "main"
-		if rc != nil && rc.Branch != "" {
-			expectedBranch = rc.Branch
-		}
-		if push.Ref != "refs/heads/"+expectedBranch {
+		// Extract short branch name from "refs/heads/<branch>".
+		const headsPrefix = "refs/heads/"
+		if !strings.HasPrefix(push.Ref, headsPrefix) {
+			// Non-branch ref (e.g. refs/tags/* on a push event) — ignore.
 			respondJSON(w, http.StatusOK, map[string]string{
 				"status": "ignored",
-				"reason": fmt.Sprintf("not %s branch", expectedBranch),
+				"reason": "not a branch push",
 			})
 			return
 		}
-	}
-
-	if rc == nil {
-		slog.Info("deploy/webhook: unknown repo",
-			"repo", push.Repository.FullName)
-		respondJSON(w, http.StatusOK, map[string]string{
-			"status": "ignored",
-			"reason": "repo not configured",
-		})
-		return
+		branch := push.Ref[len(headsPrefix):]
+		rc = h.config.LookupBranch(push.Repository.FullName, branch)
+		if rc == nil {
+			// No config entry matches this (repo, branch) pair.
+			slog.Info("deploy/webhook: no config for repo+branch",
+				"repo", push.Repository.FullName,
+				"branch", branch)
+			respondJSON(w, http.StatusOK, map[string]string{
+				"status": "ignored",
+				"reason": "no deploy config for branch " + branch,
+			})
+			return
+		}
+	} else {
+		// release event: look up by repo only.
+		rc = h.config.LookupBranch(push.Repository.FullName, "")
+		if rc == nil {
+			slog.Info("deploy/webhook: unknown repo",
+				"repo", push.Repository.FullName)
+			respondJSON(w, http.StatusOK, map[string]string{
+				"status": "ignored",
+				"reason": "repo not configured",
+			})
+			return
+		}
 	}
 
 	// Apply BuildPaths filter (no-op when not configured). On skip, respond now.

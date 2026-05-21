@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -395,10 +396,45 @@ func DefaultConfigPath() string {
 
 // Lookup returns the config for a given GitHub repo full name (e.g. "anatolykoptev/ox-browser").
 // Returns nil if the repo is not configured.
+//
+// Deprecated: use LookupBranch to support multi-branch deployments. This
+// method returns the first entry whose repo name matches, regardless of branch.
 func (c *Config) Lookup(repoFullName string) *RepoConfig {
-	rc, ok := c.Repos[repoFullName]
-	if !ok {
-		return nil
+	return c.LookupBranch(repoFullName, "")
+}
+
+// LookupBranch returns the RepoConfig whose (repo, branch) pair matches the
+// given push event. branch is the short branch name (e.g. "main", "dev").
+//
+// Matching rules:
+//   - An entry's effective branch is rc.Branch when non-empty, otherwise "main".
+//   - If branch == "" the first entry whose repo name matches is returned
+//     (backward-compat for callers that don't know the branch yet).
+//   - Returns nil if no entry matches.
+func (c *Config) LookupBranch(repoFullName, branch string) *RepoConfig {
+	for key, rc := range c.Repos {
+		// Extract the repo name from the map key (keys may be "owner/repo" or
+		// "owner/repo#branch"; the Branch field is the canonical source of truth).
+		repoKey := key
+		if idx := strings.LastIndex(key, "#"); idx >= 0 {
+			repoKey = key[:idx]
+		}
+		if repoKey != repoFullName {
+			continue
+		}
+		if branch == "" {
+			// Caller doesn't filter by branch — return first match.
+			cp := rc
+			return &cp
+		}
+		effective := rc.Branch
+		if effective == "" {
+			effective = "main"
+		}
+		if effective == branch {
+			cp := rc
+			return &cp
+		}
 	}
-	return &rc
+	return nil
 }

@@ -187,8 +187,9 @@ func TestHandler_NonMainBranch(t *testing.T) {
 	if resp["status"] != "ignored" {
 		t.Errorf("status = %q, want %q", resp["status"], "ignored")
 	}
-	if resp["reason"] != "not main branch" {
-		t.Errorf("reason = %q, want %q", resp["reason"], "not main branch")
+	// feature-x has no deploy config entry → new reason format.
+	if resp["reason"] != "no deploy config for branch feature-x" {
+		t.Errorf("reason = %q, want %q", resp["reason"], "no deploy config for branch feature-x")
 	}
 }
 
@@ -244,8 +245,10 @@ func TestHandler_UnknownRepo(t *testing.T) {
 	if resp["status"] != "ignored" {
 		t.Errorf("status = %q, want %q", resp["status"], "ignored")
 	}
-	if resp["reason"] != "repo not configured" {
-		t.Errorf("reason = %q, want %q", resp["reason"], "repo not configured")
+	// Unknown repo: LookupBranch returns nil → "no deploy config for branch main".
+	// The old "repo not configured" message merged into the branch-aware path.
+	if resp["reason"] != "no deploy config for branch main" {
+		t.Errorf("reason = %q, want %q", resp["reason"], "no deploy config for branch main")
 	}
 }
 
@@ -387,7 +390,8 @@ func TestWebhook_PushEvent_PerRepoBranch_Mismatch(t *testing.T) {
 	if resp["status"] != "ignored" {
 		t.Errorf("status = %q, want ignored", resp["status"])
 	}
-	if resp["reason"] != "not develop branch" {
-		t.Errorf("reason = %q, want %q", resp["reason"], "not develop branch")
+	// "master" has no deploy config entry (only "develop" does) → new reason format.
+	if resp["reason"] != "no deploy config for branch master" {
+		t.Errorf("reason = %q, want %q", resp["reason"], "no deploy config for branch master")
 	}
 }
