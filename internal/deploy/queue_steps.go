@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -58,9 +59,9 @@ func gitPrepare(ctx context.Context, sourcePath, commitSHA string) (worktreePath
 }
 
 // detectDefaultBranch returns "main" or "master" based on which remote branch exists.
-func detectDefaultBranch(ctx context.Context, sourcePath string) string {
+func detectDefaultBranch(ctx context.Context, sourcePath string) string { //nolint:goconst // "main" vs "master" are branch names, not the deploy default
 	if err := runCmd(ctx, sourcePath, "git", "rev-parse", "--verify", "origin/main"); err == nil {
-		return "main"
+		return "main" //nolint:goconst
 	}
 	return "master"
 }
@@ -70,7 +71,20 @@ func detectDefaultBranch(ctx context.Context, sourcePath string) string {
 // If worktreePath is non-empty, a temporary compose override redirects the build
 // context for all target services to the worktree directory — preserving each
 // service's original subdirectory offset relative to sourcePath.
+//
+// Before building, two additional steps run:
+//  1. If DeployClonePath is set, the deploy clone is auto-pulled to
+//     origin/<branch> so the compose config is never stale.
+//  2. OXPULSE_GIT_SHA and BUILD_TIMESTAMP build-args are injected so
+//     Dockerfiles that declare these ARGs get the correct values baked in.
 func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) string {
+	// Part A: auto-pull the deploy clone before reading its compose config.
+	branch := req.Config.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	pullDeployClone(ctx, req.Repo, req.Config.DeployClonePath, branch)
+
 	// Invalidate BuildKit exec cache mounts when requested (Rust services with
 	// --mount=type=cache,target=target/ — see RepoConfig.PruneBuildkitCache).
 	pruneBuildkitCacheMount(ctx, req)
@@ -110,6 +124,21 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) st
 	if req.Config.NoCache {
 		buildArgs = append(buildArgs, "--no-cache")
 	}
+
+	// Part B: inject build-time env vars so Dockerfiles that declare
+	// ARG OXPULSE_GIT_SHA / ARG BUILD_TIMESTAMP get the right values.
+	// worktreePath is the source worktree; fall back to SourcePath if absent.
+	shaDir := worktreePath
+	if shaDir == "" {
+		shaDir = req.Config.SourcePath
+	}
+	gitSHA := resolveGitSHA(ctx, shaDir)
+	buildTimestamp := strconv.FormatInt(time.Now().Unix(), 10) //nolint:mnd // base-10 decimal
+	buildArgs = append(buildArgs,
+		"--build-arg", "OXPULSE_GIT_SHA="+gitSHA,
+		"--build-arg", "BUILD_TIMESTAMP="+buildTimestamp,
+	)
+
 	buildArgs = append(buildArgs, req.Config.Services...)
 
 	if errMsg := runBuildWithFullLog(ctx, req, buildArgs); errMsg != "" {

@@ -171,6 +171,24 @@ type RepoConfig struct {
 	// deploy regardless of PR labels (e.g. a repo where the label has a
 	// different meaning in the review workflow).
 	IgnoreNoAutoDeployLabel bool `yaml:"ignore_no_auto_deploy_label,omitempty"`
+
+	// DeployClonePath is the absolute path to the deploy clone whose
+	// docker-compose files dozor reads (compose_path lives here).
+	// When set, dozor auto-pulls this clone to origin/<branch> before every
+	// build, ensuring the compose config is never stale.
+	//
+	// If the clone is dirty (uncommitted local edits) the pull is skipped with
+	// a WARN log and the build proceeds with the current state — operator is
+	// notified via the deploy_clone_pull_total{outcome="dirty_skipped"} counter.
+	//
+	// If --ff-only pull fails (e.g. diverged) the pull is skipped with a WARN
+	// log; the build proceeds with the current state.
+	//
+	// If omitted, no auto-pull is performed (backward-compatible default).
+	//
+	// Example (krolik-server deploy clone):
+	//   deploy_clone_path: /home/krolik/deploy/krolik-server
+	DeployClonePath string `yaml:"deploy_clone_path,omitempty"`
 }
 
 var defaultDebounceWindow = func() time.Duration {

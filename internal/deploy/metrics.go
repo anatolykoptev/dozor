@@ -67,4 +67,19 @@ var (
 		Name: "dozor_build_inflight",
 		Help: "Builds currently executing, by class (heavy|light).",
 	}, []string{"class"})
+
+	// DeployClonePullTotal counts auto-pull attempts on deploy clones before
+	// each compose build. outcome label values:
+	//   "up_to_date"      — remote had no new commits, nothing to do
+	//   "fast_forward"    — clone was successfully fast-forwarded to origin/<branch>
+	//   "dirty_skipped"   — clone had local edits; pull skipped, build uses stale compose
+	//   "diverged_skipped"— ff-only pull failed (diverged history); build uses current state
+	//   "error"           — git command failed unexpectedly; build uses current state
+	//
+	// If "dirty_skipped" ticks, reconcile the deploy clone manually:
+	//   git -C <deploy_clone_path> status && git stash && git pull
+	DeployClonePullTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_deploy_clone_pull_total",
+		Help: "Auto-pull attempts on deploy clones before compose builds, by outcome.",
+	}, []string{"repo", "outcome"})
 )

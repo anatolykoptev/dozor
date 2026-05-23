@@ -1,0 +1,186 @@
+package deploy
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os/exec"
+	"strings"
+)
+
+// pullOutcome classifies the result of a deploy-clone pull attempt.
+type pullOutcome string
+
+const (
+	pullUpToDate     pullOutcome = "up_to_date"
+	pullFastForward  pullOutcome = "fast_forward"
+	pullDirtySkipped pullOutcome = "dirty_skipped"
+	pullDiverged     pullOutcome = "diverged_skipped"
+	pullError        pullOutcome = "error"
+
+	defaultBranch = "main"
+)
+
+// gitStatusRunner executes `git status --porcelain` in clonePath.
+// Replaceable in tests.
+var gitStatusRunner = defaultGitStatusRunner
+
+func defaultGitStatusRunner(ctx context.Context, clonePath string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain") //nolint:gosec // trusted config
+	cmd.Dir = clonePath
+	return cmd.Output()
+}
+
+// gitFetchRunner executes `git fetch origin <branch> --no-tags --quiet` in clonePath.
+// Replaceable in tests.
+var gitFetchRunner = defaultGitFetchRunner
+
+func defaultGitFetchRunner(ctx context.Context, clonePath, branch string) error {
+	cmd := exec.CommandContext(ctx, "git", "fetch", "origin", branch, "--no-tags", "--quiet") //nolint:gosec // trusted config
+	cmd.Dir = clonePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, truncate(string(out), maxOutputLen))
+	}
+	return nil
+}
+
+// gitRevParseRunner executes `git rev-parse FETCH_HEAD` and `git rev-parse HEAD`
+// in clonePath to determine whether a pull would advance HEAD.
+// Returns (fetchHead, head, error).
+// Replaceable in tests.
+var gitRevParseRunner = defaultGitRevParseRunner
+
+func defaultGitRevParseRunner(ctx context.Context, clonePath, ref string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", ref) //nolint:gosec // trusted config
+	cmd.Dir = clonePath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("rev-parse %s: %w", ref, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// gitPullFFRunner executes `git pull --ff-only origin <branch>` in clonePath.
+// Replaceable in tests.
+var gitPullFFRunner = defaultGitPullFFRunner
+
+func defaultGitPullFFRunner(ctx context.Context, clonePath, branch string) error {
+	cmd := exec.CommandContext(ctx, "git", "pull", "--ff-only", "origin", branch) //nolint:gosec // trusted config
+	cmd.Dir = clonePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, truncate(string(out), maxOutputLen))
+	}
+	return nil
+}
+
+// gitShortSHARunner executes `git rev-parse --short HEAD` in dir.
+// Replaceable in tests.
+var gitShortSHARunner = defaultGitShortSHARunner
+
+func defaultGitShortSHARunner(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--short", "HEAD") //nolint:gosec // trusted config
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --short HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// pullDeployClone auto-pulls the deploy clone at clonePath to origin/<branch>
+// before a compose build. It is a best-effort operation: failures are logged
+// and counted but never abort the build.
+//
+// Decision table:
+//
+//	dirty working tree → pullDirtySkipped  (WARN log, build proceeds)
+//	fetch fails        → pullError         (WARN log, build proceeds)
+//	FETCH_HEAD == HEAD → pullUpToDate      (INFO log)
+//	ff-only pull ok    → pullFastForward   (INFO log)
+//	ff-only pull fails → pullDiverged      (WARN log, build proceeds)
+func pullDeployClone(ctx context.Context, repo, clonePath, branch string) pullOutcome {
+	if clonePath == "" {
+		return pullUpToDate // no-op, nothing to do
+	}
+	if branch == "" {
+		branch = defaultBranch
+	}
+
+	// 1. Check for local modifications — never overwrite operator edits.
+	statusOut, err := gitStatusRunner(ctx, clonePath)
+	if err != nil {
+		slog.Warn("deploy: clone pull — git status failed",
+			"repo", repo, "clone", clonePath, "error", err)
+		DeployClonePullTotal.WithLabelValues(repo, string(pullError)).Inc()
+		return pullError
+	}
+	if len(strings.TrimSpace(string(statusOut))) > 0 {
+		slog.Warn("deploy: clone pull skipped — working tree is dirty; compose config may be stale",
+			"repo", repo,
+			"clone", clonePath,
+			"status", truncate(string(statusOut), maxOutputLen),
+		)
+		DeployClonePullTotal.WithLabelValues(repo, string(pullDirtySkipped)).Inc()
+		return pullDirtySkipped
+	}
+
+	// 2. Fetch latest refs.
+	if err := gitFetchRunner(ctx, clonePath, branch); err != nil {
+		slog.Warn("deploy: clone pull — git fetch failed; proceeding with current state",
+			"repo", repo, "clone", clonePath, "branch", branch, "error", err)
+		DeployClonePullTotal.WithLabelValues(repo, string(pullError)).Inc()
+		return pullError
+	}
+
+	// 3. Compare FETCH_HEAD with HEAD to detect no-op.
+	fetchHead, err := gitRevParseRunner(ctx, clonePath, "FETCH_HEAD")
+	if err != nil {
+		slog.Warn("deploy: clone pull — cannot resolve FETCH_HEAD; proceeding",
+			"repo", repo, "clone", clonePath, "error", err)
+		DeployClonePullTotal.WithLabelValues(repo, string(pullError)).Inc()
+		return pullError
+	}
+	head, err := gitRevParseRunner(ctx, clonePath, "HEAD")
+	if err != nil {
+		slog.Warn("deploy: clone pull — cannot resolve HEAD; proceeding",
+			"repo", repo, "clone", clonePath, "error", err)
+		DeployClonePullTotal.WithLabelValues(repo, string(pullError)).Inc()
+		return pullError
+	}
+	if fetchHead == head {
+		slog.Info("deploy: clone pull — already up to date",
+			"repo", repo, "clone", clonePath, "sha", short(head))
+		DeployClonePullTotal.WithLabelValues(repo, string(pullUpToDate)).Inc()
+		return pullUpToDate
+	}
+
+	// 4. Fast-forward pull.
+	if err := gitPullFFRunner(ctx, clonePath, branch); err != nil {
+		slog.Warn("deploy: clone pull — ff-only failed (diverged?); proceeding with current state",
+			"repo", repo, "clone", clonePath, "branch", branch, "error", err)
+		DeployClonePullTotal.WithLabelValues(repo, string(pullDiverged)).Inc()
+		return pullDiverged
+	}
+
+	newHead, _ := gitRevParseRunner(ctx, clonePath, "HEAD")
+	slog.Info("deploy: clone pull — fast-forwarded",
+		"repo", repo, "clone", clonePath, "from", short(head), "to", short(newHead))
+	DeployClonePullTotal.WithLabelValues(repo, string(pullFastForward)).Inc()
+	return pullFastForward
+}
+
+// resolveGitSHA returns the short SHA of HEAD in dir.
+// Falls back to "unknown" with a WARN log on any error.
+func resolveGitSHA(ctx context.Context, dir string) string {
+	if dir == "" {
+		return "unknown"
+	}
+	sha, err := gitShortSHARunner(ctx, dir)
+	if err != nil {
+		slog.Warn("deploy: cannot resolve git SHA for build-arg", "dir", dir, "error", err)
+		return "unknown"
+	}
+	return sha
+}
