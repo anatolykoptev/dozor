@@ -27,11 +27,12 @@ var cacheHitLogOnce sync.Once
 
 // OpenAI is an OpenAI-compatible HTTP provider.
 type OpenAI struct {
-	apiURL   string
-	apiKey   string
-	model    string
-	client   *http.Client
-	maxIters int
+	apiURL        string
+	apiKey        string
+	model         string
+	fallbackChain []string // optional cross-provider model chain (via cliproxyapi); empty = single-model
+	client        *http.Client
+	maxIters      int
 }
 
 // NewOpenAI constructs an OpenAI-compat LLM provider from env. On empty
@@ -53,7 +54,27 @@ func NewOpenAI() (Provider, bool) {
 	if apiKey == "" {
 		return unavailable{}, false
 	}
-	return newOpenAIWithConfig(apiURL, apiKey, model, maxItersFromEnv()), true
+	// CSV cross-provider chain. DOZOR_LLM_MODEL_FALLBACK takes precedence;
+	// fall through to fleet-wide LLM_MODEL_FALLBACK когда не задано (consistent
+	// SOT с другими сервисами через config/llm.env). Sanitized + deduped by kit.
+	chainCSV := os.Getenv("DOZOR_LLM_MODEL_FALLBACK")
+	if chainCSV == "" {
+		chainCSV = os.Getenv("LLM_MODEL_FALLBACK")
+	}
+	chain := kitllm.ParseModelFallbackChain(chainCSV)
+	// Strip primary model out of chain to avoid duplicate first attempt.
+	if len(chain) > 0 {
+		out := chain[:0]
+		for _, m := range chain {
+			if m != model {
+				out = append(out, m)
+			}
+		}
+		chain = out
+	}
+	o := newOpenAIWithConfig(apiURL, apiKey, model, maxItersFromEnv())
+	o.fallbackChain = chain
+	return o, true
 }
 
 // MaxIterations returns the configured max tool call iterations.
@@ -149,10 +170,20 @@ func (o *OpenAI) Chat(ctx context.Context, messages []kitllm.Message, tools []ki
 //
 // kitllm types are passed through directly — no adapter conversion needed.
 func (o *OpenAI) doChatCtx(ctx context.Context, messages []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
-	client := kitllm.NewClient(o.apiURL, o.apiKey, o.model,
+	clientOpts := []kitllm.Option{
 		kitllm.WithHTTPClient(o.client),
 		kitllm.WithMaxRetries(1), // dozor owns retry; 1 = single attempt
-	)
+	}
+	// Cross-provider model chain: при rate-limit/недоступности primary
+	// model на cliproxyapi — kit's WithEndpoints проходит по chain models
+	// (same baseURL+apiKey, разный model id, fail-fast на non-retryable).
+	// Hedge layer (withFallback) поверх работает orthogonal — fallback
+	// Provider остаётся single-model, distinct provider.
+	if len(o.fallbackChain) > 0 {
+		eps := kitllm.BuildModelChainEndpoints(o.apiURL, o.apiKey, o.model, o.fallbackChain)
+		clientOpts = append(clientOpts, kitllm.WithEndpoints(eps))
+	}
+	client := kitllm.NewClient(o.apiURL, o.apiKey, o.model, clientOpts...)
 
 	// WithMessageTimestamps materialises Message.ChatTime as a bracketed
 	// "[YYYY-MM-DD HH:MM UTC] " prefix on user/assistant text so the model
