@@ -224,3 +224,30 @@ func TestComputeDockerReclaimableMB(t *testing.T) {
 		})
 	}
 }
+
+// TestCleanDockerBuilderAll_Unconditional is the guard for RCA 2026-05-25:
+// the CRITICAL-tier build-cache prune must carry NO `until=` age filter, so
+// same-day (<24h) cache that fills the docker volume is actually reclaimed.
+// Age-filtered prunes (cleanDockerBuilderAged 72h, PruneDocker until=24h) left
+// sdc at 91% because all 65GB of cache was created that same day.
+func TestCleanDockerBuilderAll_Unconditional(t *testing.T) {
+	t.Parallel()
+	rec := &recordingTransport{inner: &dockerOutputTransport{output: "Total reclaimed space: 0B"}}
+	c := &CleanupCollector{transport: rec}
+	tgt := c.cleanDockerBuilderAll(context.Background())
+	if tgt.Name != "docker_builder_all" {
+		t.Errorf("expected target name docker_builder_all, got %q", tgt.Name)
+	}
+	found := false
+	for _, cmd := range rec.dockerCmds {
+		if strings.Contains(cmd, "builder prune -af") {
+			if strings.Contains(cmd, "until=") {
+				t.Errorf("CRITICAL build-cache prune must be unconditional (no until=); got %q", cmd)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an unconditional 'builder prune -af' command; got %v", rec.dockerCmds)
+	}
+}

@@ -188,3 +188,26 @@ func (c *CleanupCollector) cleanDockerBuilderAged(ctx context.Context, age strin
 	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
 }
+
+// cleanDockerBuilderAll removes ALL Docker builder cache unconditionally (no age
+// filter). Last-resort target for CRITICAL/ERROR disk pressure: a single heavy
+// build day can fill the docker volume with <24h cache that age-filtered prunes
+// (cleanDockerBuilderAged 72h, PruneDocker until=24h) never reclaim, leaving the
+// host alerting without self-healing (RCA 2026-05-25: sdc hit 91% from same-day
+// cache; the filtered remediation freed 0). Mirrors cleanDockerBuilderAged's
+// freed-bytes accounting (docker self-report preferred, df-delta fallback).
+func (c *CleanupCollector) cleanDockerBuilderAll(ctx context.Context) CleanupTarget {
+	t := CleanupTarget{Name: "docker_builder_all", Available: true}
+	var dockerFreedMB float64
+	dfFreed := c.measureFreedMB(ctx, func() {
+		res := c.transport.DockerCommand(ctx, "builder prune -af")
+		dockerFreedMB = extractDockerFreed(res.Output())
+	})
+	freed := dfFreed
+	if dockerFreedMB > 0 {
+		freed = dockerFreedMB
+	}
+	t.FreedMB = freed
+	t.Freed = fmt.Sprintf("%.1f MB", freed)
+	return t
+}

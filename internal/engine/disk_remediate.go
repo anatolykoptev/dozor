@@ -13,7 +13,7 @@ type DiskRemediateResult struct {
 //
 //   - AlertWarning (80-84%): journal(7d) + tmp(7d) + caches + apt + sccache + npm_yarn + docker dangling.
 //   - AlertWarningHigh (85-94%): all WARNING targets + lang caches (go/npm/uv/pip) + docker builder prune (until=72h).
-//   - AlertCritical / AlertError (95%+): all WARNING_HIGH targets + full docker system prune.
+//   - AlertCritical / AlertError (95%+): all WARNING_HIGH targets + unconditional build-cache prune + age-bounded docker system prune.
 //
 // Returns nil if cleanup collector unavailable or level is not Warning/WarningHigh/Critical/Error.
 func (a *ServerAgent) AutoRemediateDisk(ctx context.Context, level AlertLevel) *DiskRemediateResult {
@@ -52,6 +52,10 @@ func (a *ServerAgent) AutoRemediateDisk(ctx context.Context, level AlertLevel) *
 
 	// CRITICAL / ERROR — full docker system prune.
 	if level == AlertCritical || level == AlertError {
+		// Unconditional build-cache prune FIRST — age-filtered prunes miss
+		// same-day cache that can fill the docker volume in a single heavy build
+		// day (RCA 2026-05-25: sdc 91%, 65GB of <24h cache, filtered prune freed 0).
+		appendTarget(res, a.cleanup.cleanDockerBuilderAll(ctx), "docker_builder_all")
 		res.Docker = a.PruneDocker(ctx, true, true, false, "24h")
 	}
 
