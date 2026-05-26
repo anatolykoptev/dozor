@@ -49,6 +49,31 @@ func withGitShortSHA(t *testing.T, fn func(context.Context, string) (string, err
 	t.Cleanup(func() { gitShortSHARunner = orig })
 }
 
+func withGitCurrentBranch(t *testing.T, fn func(context.Context, string) (string, error)) {
+	t.Helper()
+	orig := gitCurrentBranchRunner
+	gitCurrentBranchRunner = fn
+	t.Cleanup(func() { gitCurrentBranchRunner = orig })
+}
+
+// TestPullDeployClone_PrefersCloneBranch — the deploy clone's own branch must
+// win over the triggering repo's branch. Regression for the oxpulse-chat `dev`
+// → krolik-server `main` mismatch that logged "git fetch failed: couldn't find
+// remote ref dev" on every dev-branch deploy.
+func TestPullDeployClone_PrefersCloneBranch(t *testing.T) {
+	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
+	withGitCurrentBranch(t, func(_ context.Context, _ string) (string, error) { return "main", nil })
+	var fetched string
+	withGitFetch(t, func(_ context.Context, _, branch string) error { fetched = branch; return nil })
+	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "sha", nil })
+	withGitPullFF(t, func(_ context.Context, _, _ string) error { return nil })
+
+	pullDeployClone(context.Background(), "anatolykoptev/oxpulse-chat", "/fake/krolik-server", "dev")
+	if fetched != "main" {
+		t.Errorf("fetch should use the clone's branch (main), not the deploy branch (dev); got %q", fetched)
+	}
+}
+
 // TestPullDeployClone_EmptyPath is a no-op (no pull attempted).
 func TestPullDeployClone_EmptyPath(t *testing.T) {
 	// None of the runners should be called when clonePath is empty.
