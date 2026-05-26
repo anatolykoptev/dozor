@@ -45,6 +45,17 @@ func defaultGitFetchRunner(ctx context.Context, clonePath, branch string) error 
 	return nil
 }
 
+// gitCurrentBranchRunner returns the clone's current branch (rev-parse --abbrev-ref HEAD).
+// Replaceable in tests.
+var gitCurrentBranchRunner = defaultGitCurrentBranchRunner
+
+func defaultGitCurrentBranchRunner(ctx context.Context, clonePath string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD") //nolint:gosec // trusted config
+	cmd.Dir = clonePath
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}
+
 // gitRevParseRunner executes `git rev-parse FETCH_HEAD` and `git rev-parse HEAD`
 // in clonePath to determine whether a pull would advance HEAD.
 // Returns (fetchHead, head, error).
@@ -106,6 +117,14 @@ func pullDeployClone(ctx context.Context, repo, clonePath, branch string) pullOu
 	}
 	if branch == "" {
 		branch = defaultBranch
+	}
+	// The deploy clone tracks ITS OWN checked-out branch (e.g. krolik-server's
+	// main), which can differ from the triggering repo's branch (e.g. an
+	// oxpulse-chat `dev` deploy). Fetching the triggering repo's branch in a
+	// different clone fails with "couldn't find remote ref". Prefer the clone's
+	// actual branch; keep `branch` as the fallback for detached HEAD / errors.
+	if cur, err := gitCurrentBranchRunner(ctx, clonePath); err == nil && cur != "" && cur != "HEAD" {
+		branch = cur
 	}
 
 	// 1. Check for local modifications — never overwrite operator edits.
