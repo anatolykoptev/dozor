@@ -6,6 +6,7 @@ services:
   oxpulse-chat:
     prom_job: oxpulse-chat
     container: oxpulse-chat
+    jaeger_service: oxpulse-chat
     categories:
       calls:  ["^signaling_.*", "^call_.*", "^client_ice_.*", "^client_call_quality_.*", "^client_mic_revoked.*", "^outcome_total$", "^ended_error.*", "^rooms_active$", "^room_opened_total$"]
       turn:   ["^turn_.*", "^partner_node_.*"]
@@ -16,6 +17,7 @@ services:
   go-code:
     prom_job: go-code
     container: go-code
+    jaeger_service: go-code
     categories:
       tools:    ["^go_code_tool_.*", "^gocode_tools_.*"]
       embed:    ["^embed_.*", "^semantic_fallback_.*"]
@@ -25,6 +27,7 @@ services:
   memdb:
     prom_job: memdb
     container: memdb
+    jaeger_service: memdb
     categories:
       storage: ["^memdb_storage_.*", "^memdb_atomic_.*"]
       api:     ["^memdb_api_.*", "^memdb_http_.*"]
@@ -33,6 +36,7 @@ services:
   dozor:
     prom_job: dozor
     container: dozor
+    jaeger_service: dozor
     categories:
       deploy: ["^dozor_deploy_.*", "^dozor_build_.*"]
       queue:  ["^dozor_queue_.*"]
@@ -43,6 +47,7 @@ services:
   go-search:
     prom_job: go-search
     container: go-search
+    jaeger_service: go-search
     categories:
       api:   ["^go_search_api_.*"]
       cache: ["^go_search_cache_.*"]

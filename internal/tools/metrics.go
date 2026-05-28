@@ -24,13 +24,17 @@ var embeddedRegistryYAML []byte
 
 // MetricsInput is the input schema for the `metrics` MCP tool.
 type MetricsInput struct {
-	Service     string `json:"service"`
-	Category    string `json:"category,omitempty"`
-	Filter      string `json:"filter,omitempty"`
-	Range       string `json:"range,omitempty"`
-	Format      string `json:"format,omitempty"`
-	IncludeLogs bool   `json:"include_logs,omitempty"`
-	MaxResults  int    `json:"max_results,omitempty"`
+	Service       string `json:"service"`
+	Category      string `json:"category,omitempty"`
+	Filter        string `json:"filter,omitempty"`
+	Range         string `json:"range,omitempty"`
+	Format        string `json:"format,omitempty"`
+	IncludeLogs   bool   `json:"include_logs,omitempty"`
+	MaxResults    int    `json:"max_results,omitempty"`
+	IncludeTraces bool   `json:"include_traces,omitempty"` // pull recent failed Jaeger traces for the service
+	LogQuery      string `json:"log_query,omitempty"`      // regex override for Loki filter; default keeps "error|warn|panic|fail" behaviour
+	TraceQuery    string `json:"trace_query,omitempty"`    // Jaeger tag filter, e.g. 'error=true' or 'http.status_code=500'
+	TraceLimit    int    `json:"trace_limit,omitempty"`    // max traces returned, default 20, hard cap 100
 }
 
 // MetricsOutput is the output schema for the `metrics` MCP tool.
@@ -41,7 +45,19 @@ type MetricsOutput struct {
 	Categories []string       `json:"categories"`
 	Metrics    []MetricSample `json:"metrics"`
 	Logs       []LogLine      `json:"logs,omitempty"`
+	Traces     []TraceSummary `json:"traces,omitempty"` // only when include_traces=true
 	Warnings   []string       `json:"warnings,omitempty"`
+}
+
+// TraceSummary holds a single Jaeger trace summary.
+type TraceSummary struct {
+	TraceID   string            `json:"trace_id"`
+	Operation string            `json:"operation"`
+	Duration  string            `json:"duration"`   // human-readable, e.g. "1.2s", "340ms"
+	StartTime string            `json:"start_time"` // ISO 8601
+	Spans     int               `json:"spans"`
+	Tags      map[string]string `json:"tags,omitempty"` // top-level interesting tags (error, http.status_code, etc.)
+	HasError  bool              `json:"has_error"`
 }
 
 // MetricSample holds a single Prometheus metric series.
@@ -65,9 +81,10 @@ type metricsRegistry struct {
 }
 
 type serviceEntry struct {
-	PromJob    string              `yaml:"prom_job"`
-	Container  string              `yaml:"container"`
-	Categories map[string][]string `yaml:"categories"`
+	PromJob       string              `yaml:"prom_job"`
+	Container     string              `yaml:"container"`
+	JaegerService string              `yaml:"jaeger_service"` // optional — defaults to service key
+	Categories    map[string][]string `yaml:"categories"`
 }
 
 // loadMetricsRegistry loads the registry from a file path (if non-empty and
@@ -145,6 +162,10 @@ func handleMetrics(ctx context.Context, input MetricsInput) (*MetricsOutput, err
 	if lokiURL == "" {
 		lokiURL = "http://127.0.0.1:3100"
 	}
+	jaegerURL := os.Getenv("DOZOR_JAEGER_URL")
+	if jaegerURL == "" {
+		jaegerURL = "http://127.0.0.1:16686"
+	}
 
 	maxResults := input.MaxResults
 	if maxResults <= 0 {
@@ -156,13 +177,18 @@ func handleMetrics(ctx context.Context, input MetricsInput) (*MetricsOutput, err
 		format = "summary"
 	}
 
+	source := "prometheus"
+	if input.IncludeLogs && input.IncludeTraces {
+		source = "prometheus+loki+jaeger"
+	} else if input.IncludeLogs {
+		source = "prometheus+loki"
+	} else if input.IncludeTraces {
+		source = "prometheus+jaeger"
+	}
 	out := &MetricsOutput{
 		Service:  input.Service,
 		BasisURL: promURL,
-		Source:   "prometheus",
-	}
-	if input.IncludeLogs {
-		out.Source = "prometheus+loki"
+		Source:   source,
 	}
 
 	// Resolve service from registry
@@ -251,11 +277,33 @@ func handleMetrics(ctx context.Context, input MetricsInput) (*MetricsOutput, err
 		if inRegistry && svcEntry.Container != "" {
 			container = svcEntry.Container
 		}
-		logs, lokiWarn := fetchLokiLogs(ctx, lokiURL, container)
+		logs, lokiWarn := fetchLokiLogs(ctx, lokiURL, container, input.LogQuery)
 		if lokiWarn != "" {
 			out.Warnings = append(out.Warnings, lokiWarn)
 		}
 		out.Logs = logs
+	}
+
+	// 5. Optionally fetch Jaeger traces
+	if input.IncludeTraces {
+		jaegerSvc := input.Service
+		if inRegistry && svcEntry.JaegerService != "" {
+			jaegerSvc = svcEntry.JaegerService
+		}
+
+		traceLimit := input.TraceLimit
+		if traceLimit <= 0 {
+			traceLimit = 20
+		}
+		if traceLimit > 100 {
+			traceLimit = 100
+		}
+
+		traces, jaegerWarn := fetchJaegerTraces(ctx, jaegerURL, jaegerSvc, input.TraceQuery, traceLimit)
+		if jaegerWarn != "" {
+			out.Warnings = append(out.Warnings, jaegerWarn)
+		}
+		out.Traces = traces
 	}
 
 	return out, nil
@@ -422,15 +470,20 @@ func parsePromQueryResponse(resp *http.Response) ([]MetricSample, error) {
 }
 
 // fetchLokiLogs queries Loki for recent WARN/ERROR lines for a container.
+// If logQuery is non-empty it replaces the default regex filter.
 // On failure, it returns a warning string instead of an error (graceful degradation).
-func fetchLokiLogs(ctx context.Context, lokiURL, container string) ([]LogLine, string) {
+func fetchLokiLogs(ctx context.Context, lokiURL, container, logQuery string) ([]LogLine, string) {
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	now := time.Now()
 	start := now.Add(-30 * time.Minute)
 
-	logQL := fmt.Sprintf(`{container="%s"} |~ "(?i)(error|warn|panic|turn_server_down|fail)"`, container)
+	regex := logQuery
+	if regex == "" {
+		regex = "(?i)(error|warn|panic|turn_server_down|fail)"
+	}
+	logQL := fmt.Sprintf(`{container="%s"} |~ "%s"`, container, regex)
 	rawURL := fmt.Sprintf("%s/loki/api/v1/query_range?query=%s&start=%d&end=%d&limit=25&direction=backward",
 		lokiURL,
 		url.QueryEscape(logQL),
@@ -530,6 +583,172 @@ func parseLokiLogLine(raw string) (level, msg string) {
 		}
 	}
 	return "raw", raw
+}
+
+// parseTraceQuery converts a comma-separated "key=value" string into a JSON
+// tags map for Jaeger's tags query parameter. Empty input returns the default
+// failed-traces filter {"error":"true"}.
+func parseTraceQuery(q string) string {
+	tags := map[string]string{"error": "true"}
+	if q != "" {
+		tags = make(map[string]string)
+		for _, pair := range strings.Split(q, ",") {
+			pair = strings.TrimSpace(pair)
+			idx := strings.IndexByte(pair, '=')
+			if idx < 0 {
+				continue
+			}
+			tags[strings.TrimSpace(pair[:idx])] = strings.TrimSpace(pair[idx+1:])
+		}
+	}
+	b, _ := json.Marshal(tags)
+	return string(b)
+}
+
+// formatTraceDuration converts microseconds to a human-readable string.
+func formatTraceDuration(microseconds int64) string {
+	d := time.Duration(microseconds) * time.Microsecond
+	if d >= time.Second {
+		return fmt.Sprintf("%.2gs", d.Seconds())
+	}
+	return fmt.Sprintf("%dms", d.Milliseconds())
+}
+
+// fetchJaegerTraces queries the Jaeger HTTP API for recent traces of a service.
+// On failure, it returns a warning string instead of an error (graceful degradation).
+func fetchJaegerTraces(ctx context.Context, jaegerURL, service, traceQuery string, limit int) ([]TraceSummary, string) {
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	now := time.Now()
+	start := now.Add(-30 * time.Minute)
+
+	tagsJSON := parseTraceQuery(traceQuery)
+
+	rawURL := fmt.Sprintf("%s/api/traces?service=%s&start=%d&end=%d&limit=%d&tags=%s",
+		jaegerURL,
+		url.QueryEscape(service),
+		start.UnixMicro(),
+		now.UnixMicro(),
+		limit,
+		url.QueryEscape(tagsJSON),
+	)
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Sprintf("jaeger request build failed: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Sprintf("jaeger unreachable at %s: %v", jaegerURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return nil, fmt.Sprintf("jaeger returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	traces, parseErr := parseJaegerResponse(resp.Body)
+	if parseErr != nil {
+		return nil, fmt.Sprintf("parse jaeger response: %v", parseErr)
+	}
+	return traces, ""
+}
+
+// jaegerTag represents a single span tag in Jaeger's JSON format.
+type jaegerTag struct {
+	Key   string      `json:"key"`
+	Type  string      `json:"type"`
+	Value interface{} `json:"value"`
+}
+
+// parseJaegerResponse decodes Jaeger /api/traces JSON and extracts TraceSummary entries.
+func parseJaegerResponse(r io.Reader) ([]TraceSummary, error) {
+	var result struct {
+		Data []struct {
+			TraceID string `json:"traceID"`
+			Spans   []struct {
+				OperationName string      `json:"operationName"`
+				Duration      int64       `json:"duration"`  // microseconds
+				StartTime     int64       `json:"startTime"` // unix microseconds
+				Tags          []jaegerTag `json:"tags"`
+				References    []struct {
+					RefType string `json:"refType"`
+				} `json:"references"`
+			} `json:"spans"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(r).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	summaries := make([]TraceSummary, 0, len(result.Data))
+	for _, trace := range result.Data {
+		if len(trace.Spans) == 0 {
+			continue
+		}
+
+		// Root span: first span with no CHILD_OF reference (or the first span if all have refs)
+		rootSpan := trace.Spans[0]
+		for _, span := range trace.Spans {
+			isRoot := true
+			for _, ref := range span.References {
+				if ref.RefType == "CHILD_OF" {
+					isRoot = false
+					break
+				}
+			}
+			if isRoot {
+				rootSpan = span
+				break
+			}
+		}
+
+		// Collect interesting tags from all spans, detect errors
+		hasError := false
+		topTags := make(map[string]string)
+		interestingKeys := map[string]bool{
+			"error":            true,
+			"http.status_code": true,
+			"http.method":      true,
+			"http.url":         true,
+			"db.type":          true,
+			"peer.service":     true,
+		}
+
+		for _, span := range trace.Spans {
+			for _, tag := range span.Tags {
+				valStr := fmt.Sprintf("%v", tag.Value)
+				if tag.Key == "error" && (valStr == "true" || valStr == "True" || valStr == "1") {
+					hasError = true
+				}
+				if interestingKeys[tag.Key] {
+					topTags[tag.Key] = valStr
+				}
+			}
+		}
+
+		// Also treat http.status_code >= 500 as error
+		if sc, ok := topTags["http.status_code"]; ok {
+			if len(sc) == 3 && sc[0] == '5' {
+				hasError = true
+			}
+		}
+
+		startISO := time.UnixMicro(rootSpan.StartTime).UTC().Format(time.RFC3339)
+
+		summaries = append(summaries, TraceSummary{
+			TraceID:   trace.TraceID,
+			Operation: rootSpan.OperationName,
+			Duration:  formatTraceDuration(rootSpan.Duration),
+			StartTime: startISO,
+			Spans:     len(trace.Spans),
+			Tags:      topTags,
+			HasError:  hasError,
+		})
+	}
+	return summaries, nil
 }
 
 // isValidPromRange checks if s looks like a valid Prometheus range duration

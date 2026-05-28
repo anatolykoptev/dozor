@@ -532,3 +532,316 @@ func TestRegistryLoadOverridePath(t *testing.T) {
 
 // Ensure os is used (for TestRegistryLoadOverridePath)
 var _ = os.CreateTemp
+
+// ---- new tests: Jaeger + LogQuery/TraceQuery ---------------------------------
+
+// TestJaegerTracesParsed verifies that include_traces=true fetches Jaeger
+// traces, parses durations, spans, ISO timestamps, and HasError.
+func TestJaegerTracesParsed(t *testing.T) {
+	// Mock Jaeger returning 2 traces (one with error=true tag, one with
+	// http.status_code=500). Both should have HasError=true per the
+	// response structure.
+	jaegerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Validate it is the /api/traces endpoint
+		if !strings.Contains(r.URL.Path, "/api/traces") {
+			http.NotFound(w, r)
+			return
+		}
+		// Two traces: durations in microseconds, spans, tags
+		resp := `{
+			"data": [
+				{
+					"traceID": "abc123",
+					"spans": [
+						{
+							"operationName": "http.request",
+							"duration": 1200000,
+							"startTime": 1700000000000000,
+							"tags": [
+								{"key":"error","type":"bool","value":true}
+							],
+							"references": []
+						},
+						{
+							"operationName": "db.query",
+							"duration": 50000,
+							"startTime": 1700000000100000,
+							"tags": [],
+							"references": [{"refType":"CHILD_OF","traceID":"abc123","spanID":"x"}]
+						}
+					],
+					"processes": {}
+				},
+				{
+					"traceID": "def456",
+					"spans": [
+						{
+							"operationName": "grpc.call",
+							"duration": 340000,
+							"startTime": 1700000001000000,
+							"tags": [
+								{"key":"http.status_code","type":"int64","value":500}
+							],
+							"references": []
+						}
+					],
+					"processes": {}
+				}
+			],
+			"total": 2,
+			"limit": 20,
+			"errors": null
+		}`
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, resp)
+	}))
+	defer jaegerSrv.Close()
+
+	// Minimal prom mock (no metrics needed for this test focus)
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", "")
+	t.Setenv("DOZOR_JAEGER_URL", jaegerSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:       "oxpulse-chat",
+		IncludeTraces: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(out.Traces) != 2 {
+		t.Fatalf("expected 2 traces, got %d", len(out.Traces))
+	}
+
+	// Both traces must have HasError=true
+	for i, tr := range out.Traces {
+		if !tr.HasError {
+			t.Errorf("trace[%d] HasError should be true", i)
+		}
+	}
+
+	// First trace: 2 spans, duration ~1.2s (root span is 1200000 µs)
+	tr0 := out.Traces[0]
+	if tr0.TraceID != "abc123" {
+		t.Errorf("trace[0] TraceID: want abc123, got %q", tr0.TraceID)
+	}
+	if tr0.Spans != 2 {
+		t.Errorf("trace[0] Spans: want 2, got %d", tr0.Spans)
+	}
+	if tr0.Duration == "" {
+		t.Error("trace[0] Duration should not be empty")
+	}
+	if tr0.StartTime == "" {
+		t.Error("trace[0] StartTime should not be empty")
+	}
+	// StartTime should be ISO 8601
+	if !strings.Contains(tr0.StartTime, "T") || !strings.Contains(tr0.StartTime, "Z") {
+		t.Errorf("trace[0] StartTime not ISO 8601: %q", tr0.StartTime)
+	}
+
+	// Second trace: 1 span
+	tr1 := out.Traces[1]
+	if tr1.TraceID != "def456" {
+		t.Errorf("trace[1] TraceID: want def456, got %q", tr1.TraceID)
+	}
+	if tr1.Spans != 1 {
+		t.Errorf("trace[1] Spans: want 1, got %d", tr1.Spans)
+	}
+
+	// Source must include "jaeger"
+	if !strings.Contains(out.Source, "jaeger") {
+		t.Errorf("source should include jaeger, got %q", out.Source)
+	}
+}
+
+// TestJaegerUnreachable_DegradesGracefully verifies that Jaeger 500 does NOT
+// cause an error — metrics + logs are still returned, warning mentions "jaeger".
+func TestJaegerUnreachable_DegradesGracefully(t *testing.T) {
+	jaegerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "jaeger down", http.StatusInternalServerError)
+	}))
+	defer jaegerSrv.Close()
+
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lines := []struct {
+			TS    string
+			Level string
+			Msg   string
+		}{
+			{"2024-01-01T00:00:01Z", "error", "something failed"},
+		}
+		fmt.Fprint(w, lokiResponse(lines))
+	}))
+	defer lokiSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":["rooms_active"]}`)
+		} else {
+			fmt.Fprint(w, promQueryResponse("rooms_active", nil, "5"))
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+	t.Setenv("DOZOR_JAEGER_URL", jaegerSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:       "unknown-svc",
+		IncludeLogs:   true,
+		IncludeTraces: true,
+		Format:        "full",
+	})
+	if err != nil {
+		t.Fatalf("expected graceful degradation, got error: %v", err)
+	}
+
+	// Metrics must still be returned
+	if len(out.Metrics) == 0 {
+		t.Error("metrics should still be returned when jaeger is down")
+	}
+	// Traces must be empty (not an error)
+	if len(out.Traces) != 0 {
+		t.Errorf("expected empty traces on jaeger failure, got %d", len(out.Traces))
+	}
+	// Warning about jaeger must be present
+	foundJaegerWarn := false
+	for _, w := range out.Warnings {
+		if strings.Contains(strings.ToLower(w), "jaeger") {
+			foundJaegerWarn = true
+		}
+	}
+	if !foundJaegerWarn {
+		t.Errorf("expected jaeger warning, got: %v", out.Warnings)
+	}
+}
+
+// TestLogQueryOverridesDefaultFilter verifies that log_query="custom_pattern"
+// replaces the default "error|warn|panic|..." regex in the Loki request.
+func TestLogQueryOverridesDefaultFilter(t *testing.T) {
+	capturedQuery := ""
+
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Capture the raw query param to inspect the regex used
+		capturedQuery = r.URL.Query().Get("query")
+		fmt.Fprint(w, lokiResponse([]struct {
+			TS    string
+			Level string
+			Msg   string
+		}{}))
+	}))
+	defer lokiSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+
+	_, err := handleMetrics(t.Context(), MetricsInput{
+		Service:     "oxpulse-chat",
+		IncludeLogs: true,
+		LogQuery:    "custom_pattern",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The captured query must contain "custom_pattern" NOT the default filter
+	if !strings.Contains(capturedQuery, "custom_pattern") {
+		t.Errorf("Loki query should contain custom_pattern, got: %q", capturedQuery)
+	}
+	if strings.Contains(capturedQuery, "error|warn|panic") {
+		t.Errorf("Loki query should NOT contain default filter when LogQuery set, got: %q", capturedQuery)
+	}
+}
+
+// TestTraceQueryParsedToTags verifies that trace_query="error=true,http.status_code=500"
+// is parsed into JSON tags and sent to Jaeger. Also verifies that empty trace_query
+// defaults to {"error":"true"}.
+func TestTraceQueryParsedToTags(t *testing.T) {
+	capturedTagsParam := ""
+
+	jaegerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedTagsParam = r.URL.Query().Get("tags")
+		// Return empty traces response
+		fmt.Fprint(w, `{"data":[],"total":0,"limit":20,"errors":null}`)
+	}))
+	defer jaegerSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", "")
+	t.Setenv("DOZOR_JAEGER_URL", jaegerSrv.URL)
+
+	// Sub-test 1: explicit trace_query with two tags
+	t.Run("explicit_tags", func(t *testing.T) {
+		capturedTagsParam = ""
+		_, err := handleMetrics(t.Context(), MetricsInput{
+			Service:       "oxpulse-chat",
+			IncludeTraces: true,
+			TraceQuery:    "error=true,http.status_code=500",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// tags param should be a JSON object with both keys
+		var tags map[string]string
+		if err := json.Unmarshal([]byte(capturedTagsParam), &tags); err != nil {
+			t.Fatalf("tags param not valid JSON: %q, err: %v", capturedTagsParam, err)
+		}
+		if tags["error"] != "true" {
+			t.Errorf("tags[error]: want 'true', got %q", tags["error"])
+		}
+		if tags["http.status_code"] != "500" {
+			t.Errorf("tags[http.status_code]: want '500', got %q", tags["http.status_code"])
+		}
+	})
+
+	// Sub-test 2: empty trace_query → default {"error":"true"}
+	t.Run("default_error_tag", func(t *testing.T) {
+		capturedTagsParam = ""
+		_, err := handleMetrics(t.Context(), MetricsInput{
+			Service:       "oxpulse-chat",
+			IncludeTraces: true,
+			TraceQuery:    "",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var tags map[string]string
+		if err := json.Unmarshal([]byte(capturedTagsParam), &tags); err != nil {
+			t.Fatalf("default tags param not valid JSON: %q, err: %v", capturedTagsParam, err)
+		}
+		if tags["error"] != "true" {
+			t.Errorf("default tags[error]: want 'true', got %q", tags["error"])
+		}
+	})
+}
