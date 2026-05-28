@@ -1,0 +1,49 @@
+# Service → Prometheus job + category presets.
+# Categories are regex lists matched against metric __name__.
+# `prom_url` defaults to env DOZOR_PROMETHEUS_URL or http://127.0.0.1:9090.
+
+services:
+  oxpulse-chat:
+    prom_job: oxpulse-chat
+    container: oxpulse-chat
+    categories:
+      calls:  ["^signaling_.*", "^call_.*", "^client_ice_.*", "^client_call_quality_.*", "^client_mic_revoked.*", "^outcome_total$", "^ended_error.*", "^rooms_active$", "^room_opened_total$"]
+      turn:   ["^turn_.*", "^partner_node_.*"]
+      sdk:    ["^sdk_.*"]
+      build:  ["^oxpulse_chat_build_.*"]
+      sfu:    ["^sfu_.*", "^ice_.*"]
+
+  go-code:
+    prom_job: go-code
+    container: go-code
+    categories:
+      tools:    ["^go_code_tool_.*", "^gocode_tools_.*"]
+      embed:    ["^embed_.*", "^semantic_fallback_.*"]
+      index:    ["^gocode_index_.*", "^gocode_repo_.*"]
+      postgres: ["^gocode_pg_.*", "^gocode_age_.*"]
+
+  memdb:
+    prom_job: memdb
+    container: memdb
+    categories:
+      storage: ["^memdb_storage_.*", "^memdb_atomic_.*"]
+      api:     ["^memdb_api_.*", "^memdb_http_.*"]
+      embed:   ["^memdb_embed_.*", "^memdb_ner_.*"]
+
+  dozor:
+    prom_job: dozor
+    container: dozor
+    categories:
+      deploy: ["^dozor_deploy_.*", "^dozor_build_.*"]
+      queue:  ["^dozor_queue_.*"]
+      alerts: ["^dozor_alert_.*", "^dozor_remediate_.*"]
+      gateway: ["^dozor_gateway_.*", "^dozor_webhook_.*"]
+      quotas: ["^dozor_quota_.*"]
+
+  go-search:
+    prom_job: go-search
+    container: go-search
+    categories:
+      api:   ["^go_search_api_.*"]
+      cache: ["^go_search_cache_.*"]
+      llm:   ["^go_search_llm_.*", "^llm_proxy_.*"]
