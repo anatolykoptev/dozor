@@ -116,10 +116,10 @@ func loadMetricsRegistry(overridePath string) (*metricsRegistry, error) {
 	return &reg, nil
 }
 
-// registerMetrics wires the `metrics` MCP tool into the server.
+// registerMetrics wires the `metric-pull` MCP tool into the server.
 func registerMetrics(server *mcp.Server, _ *engine.ServerAgent) {
 	mcp.AddTool(server, &mcp.Tool{
-		Name: "metrics",
+		Name: "metric-pull",
 		Description: `Service-aware Prometheus metric snapshot with optional Loki log tail.
 
 Registry-driven: name a service and optional category instead of writing raw PromQL.
