@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -1057,4 +1058,258 @@ func TestTraceQueryParsedToTags(t *testing.T) {
 			t.Errorf("default tags[error]: want 'true', got %q", tags["error"])
 		}
 	})
+}
+
+// ---- 5 new quality-batch tests (PR #84) --------------------------------------
+
+// TestQueryMetrics_FallsBackToQueryNameWhenMetricNameLabelMissing verifies Fix 1:
+// when a Prometheus series lacks __name__ in its metric map (recording rules,
+// computed series), the sample's Name field must be the queried metric name, not
+// an empty string. A single fallback warning must also be emitted.
+// Cites operator empirical finding: ~10 entries with "name":"" in live call.
+func TestQueryMetrics_FallsBackToQueryNameWhenMetricNameLabelMissing(t *testing.T) {
+	const queriedName = "my_recording_rule"
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/api/v1/label/__name__/values"):
+			fmt.Fprint(w, promLabelsResponse([]string{queriedName}))
+		case strings.Contains(r.URL.Path, "/api/v1/query"):
+			// Intentionally omit __name__ from metric labels to trigger Fix 1.
+			// This mirrors what Prometheus returns for recording-rule expressions.
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"some_label":"val"},"value":[1700000000,"42"]}]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service: "unknown-svc",
+		Filter:  "^" + queriedName + "$",
+		Format:  "full",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(out.Metrics) == 0 {
+		t.Fatal("expected at least one metric sample")
+	}
+	for _, m := range out.Metrics {
+		if m.Name == "" {
+			t.Errorf("sample Name must not be empty; should fall back to queried name %q", queriedName)
+		}
+		if m.Name != queriedName {
+			t.Errorf("sample Name: want %q, got %q", queriedName, m.Name)
+		}
+	}
+
+	// Exactly one fallback warning must be present.
+	fallbackWarns := 0
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "fallback") || strings.Contains(w, "__name__") {
+			fallbackWarns++
+		}
+	}
+	if fallbackWarns == 0 {
+		t.Errorf("expected a fallback warning about missing __name__ label, got: %v", out.Warnings)
+	}
+}
+
+// TestHandleMetrics_OutputIncludesLokiAndJaegerURLs verifies Fix 2:
+// when include_logs=true and include_traces=true, the output must contain
+// populated loki_url and jaeger_url fields. basis_url (prometheus) must
+// still be present for backward compatibility.
+func TestHandleMetrics_OutputIncludesLokiAndJaegerURLs(t *testing.T) {
+	jaegerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[],"total":0,"limit":20,"errors":null}`)
+	}))
+	defer jaegerSrv.Close()
+
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"streams","result":[]}}`)
+	}))
+	defer lokiSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+	t.Setenv("DOZOR_JAEGER_URL", jaegerSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:       "oxpulse-chat",
+		IncludeLogs:   true,
+		IncludeTraces: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// basis_url must still be the prometheus URL (backward compat).
+	if out.BasisURL != promSrv.URL {
+		t.Errorf("basis_url: want %q, got %q", promSrv.URL, out.BasisURL)
+	}
+	// loki_url must be populated when include_logs=true.
+	if out.LokiURL != lokiSrv.URL {
+		t.Errorf("loki_url: want %q, got %q", lokiSrv.URL, out.LokiURL)
+	}
+	// jaeger_url must be populated when include_traces=true.
+	if out.JaegerURL != jaegerSrv.URL {
+		t.Errorf("jaeger_url: want %q, got %q", jaegerSrv.URL, out.JaegerURL)
+	}
+}
+
+// TestFetchJaegerTraces_HandlesSpecialChars verifies Fix 3:
+// a trace_query containing special characters (quotes, ampersands) must be
+// correctly encoded in the outgoing Jaeger URL so that the tags= param is valid.
+func TestFetchJaegerTraces_HandlesSpecialChars(t *testing.T) {
+	capturedRawQuery := ""
+
+	jaegerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedRawQuery = r.URL.RawQuery
+		fmt.Fprint(w, `{"data":[],"total":0,"limit":20,"errors":null}`)
+	}))
+	defer jaegerSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", "")
+	t.Setenv("DOZOR_JAEGER_URL", jaegerSrv.URL)
+
+	// trace_query with special chars: quotes and ampersand.
+	_, err := handleMetrics(t.Context(), MetricsInput{
+		Service:       "oxpulse-chat",
+		IncludeTraces: true,
+		TraceQuery:    `error=true,http.url=/api/v1?foo=bar&baz="qux"`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The raw query string must not contain an unencoded literal & or " outside
+	// the tags= value. Verify tags= is present and URL-encoded.
+	if !strings.Contains(capturedRawQuery, "tags=") {
+		t.Errorf("Jaeger request missing tags= param; raw query: %q", capturedRawQuery)
+	}
+
+	// Decode the tags param value and verify it is valid JSON.
+	decoded, decodeErr := url.QueryUnescape(capturedRawQuery)
+	if decodeErr != nil {
+		t.Fatalf("QueryUnescape failed: %v", decodeErr)
+	}
+	// Extract tags value: find "tags=" and take the value up to next "&".
+	tagsStart := strings.Index(decoded, "tags=")
+	if tagsStart < 0 {
+		t.Fatalf("tags= not found after decode: %q", decoded)
+	}
+	tagsVal := decoded[tagsStart+len("tags="):]
+	if idx := strings.Index(tagsVal, "&"); idx >= 0 {
+		tagsVal = tagsVal[:idx]
+	}
+	var tags map[string]string
+	if jsonErr := json.Unmarshal([]byte(tagsVal), &tags); jsonErr != nil {
+		t.Errorf("tags= value is not valid JSON after decode: %q, err: %v", tagsVal, jsonErr)
+	}
+}
+
+// TestFetchJaegerTraces_EmptyResultEmitsWarning verifies Fix 4:
+// when Jaeger returns HTTP 200 with {"data":[]}, a warning must be emitted so
+// the operator can distinguish "0 matching traces" from a silent failure.
+// Mirrors PR #83's Loki empty-match warning (same class of bug).
+func TestFetchJaegerTraces_EmptyResultEmitsWarning(t *testing.T) {
+	const jaegerSvc = "oxpulse-chat"
+
+	jaegerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[],"total":0,"limit":20,"errors":null}`)
+	}))
+	defer jaegerSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", "")
+	t.Setenv("DOZOR_JAEGER_URL", jaegerSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:       jaegerSvc,
+		IncludeTraces: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Must emit a warning containing "jaeger" and "0".
+	foundWarn := false
+	for _, w := range out.Warnings {
+		wLower := strings.ToLower(w)
+		if strings.Contains(wLower, "jaeger") && strings.Contains(wLower, "0") {
+			foundWarn = true
+		}
+	}
+	if !foundWarn {
+		t.Errorf("expected jaeger empty-traces warning, got: %v", out.Warnings)
+	}
+}
+
+// TestHandleMetrics_NoMatchWarningIncludesFilterInput verifies Fix 5:
+// when no metrics match the filter, the warning must include the filter value
+// so the operator can see at a glance what was excluded.
+func TestHandleMetrics_NoMatchWarningIncludesFilterInput(t *testing.T) {
+	const noMatchFilter = "^xxxx_no_match_ever_"
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return some real metric names that won't match the filter.
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, promLabelsResponse([]string{"rooms_active", "signaling_messages_total"}))
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service: "unknown-svc",
+		Filter:  noMatchFilter,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	foundWarn := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w, noMatchFilter) {
+			foundWarn = true
+		}
+	}
+	if !foundWarn {
+		t.Errorf("no-match warning must include filter %q, got: %v", noMatchFilter, out.Warnings)
+	}
 }
