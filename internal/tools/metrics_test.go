@@ -773,6 +773,219 @@ func TestLogQueryOverridesDefaultFilter(t *testing.T) {
 	}
 }
 
+// ---- new tests: Loki log_query escaping + silent-drop fixes -----------------
+
+// TestFetchLokiLogs_EscapesDoubleQuote verifies that a log_query containing a
+// double-quote character is escaped to \" in the outgoing Loki URL so that the
+// LogQL string literal is not broken. Without the fix the LogQL becomes
+//
+//	{container="X"} |~ "prefix"suffix"
+//
+// which Loki rejects with HTTP 400.
+func TestFetchLokiLogs_EscapesDoubleQuote(t *testing.T) {
+	capturedQuery := ""
+
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.Query().Get("query")
+		fmt.Fprint(w, lokiResponse([]struct {
+			TS    string
+			Level string
+			Msg   string
+		}{}))
+	}))
+	defer lokiSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+
+	// log_query that contains a literal double-quote — the bug trigger.
+	_, err := handleMetrics(t.Context(), MetricsInput{
+		Service:     "oxpulse-chat",
+		IncludeLogs: true,
+		LogQuery:    `prefix"suffix`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The raw LogQL string in the query param must contain \" (escaped), NOT a
+	// bare " that would terminate the regex literal prematurely.
+	if !strings.Contains(capturedQuery, `\"`) {
+		t.Errorf("loki query must contain escaped double-quote, got: %q", capturedQuery)
+	}
+	// And must NOT contain an unescaped bare " inside the regex part after |~
+	// i.e. split on |~ and check the regex half.
+	parts := strings.SplitN(capturedQuery, `|~ "`, 2)
+	if len(parts) == 2 {
+		regexPart := parts[1]
+		// Strip the closing " — if the regex part has a bare " before the end, it's broken.
+		if idx := strings.Index(regexPart, `"`); idx >= 0 && !strings.HasSuffix(regexPart[:idx+1], `\"`) {
+			// bare unescaped " in the middle of the regex literal
+			t.Errorf("unescaped double-quote inside LogQL regex: %q", capturedQuery)
+		}
+	}
+}
+
+// TestFetchLokiLogs_4xxResponseSurfacedAsWarning verifies that a Loki HTTP 400
+// response (e.g. LogQL parse error) is surfaced as a warning string containing
+// the status code and the response body — not silently swallowed.
+// Relates to investigator report: 2026-05-30-ios-reconnect-video-asymmetry.md.
+func TestFetchLokiLogs_4xxResponseSurfacedAsWarning(t *testing.T) {
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `parse error at line 1, col 49: syntax error: unexpected IDENTIFIER`)
+	}))
+	defer lokiSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:     "oxpulse-chat",
+		IncludeLogs: true,
+		LogQuery:    "iphone|iOS",
+	})
+	if err != nil {
+		t.Fatalf("expected graceful degradation, got error: %v", err)
+	}
+
+	// Must emit a warning containing the HTTP status code.
+	foundWarn := false
+	for _, w := range out.Warnings {
+		wLower := strings.ToLower(w)
+		if strings.Contains(wLower, "loki") && strings.Contains(w, "400") {
+			foundWarn = true
+		}
+	}
+	if !foundWarn {
+		t.Errorf("expected warning containing 'loki' and '400', got: %v", out.Warnings)
+	}
+
+	// The warning must also carry enough of the body to be useful.
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "400") {
+			if !strings.Contains(strings.ToLower(w), "parse error") &&
+				!strings.Contains(strings.ToLower(w), "syntax error") &&
+				!strings.Contains(strings.ToLower(w), "unexpected") {
+				t.Errorf("warning should include body snippet, got: %q", w)
+			}
+		}
+	}
+}
+
+// TestFetchLokiLogs_EmptyMatchEmitsWarning verifies that when Loki returns
+// HTTP 200 with an empty result set (0 log lines), the caller receives a
+// warning. Without the fix, the caller cannot distinguish "no matching logs"
+// from "query silently failed" — the silent-drop bug from the empirical repro.
+func TestFetchLokiLogs_EmptyMatchEmitsWarning(t *testing.T) {
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Loki 200 OK but empty result
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"streams","result":[]}}`)
+	}))
+	defer lokiSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:     "oxpulse-chat",
+		IncludeLogs: true,
+		LogQuery:    "iphone|iOS|reconnect",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Must emit a warning containing "0 matching" or similar signal.
+	foundWarn := false
+	for _, w := range out.Warnings {
+		wLower := strings.ToLower(w)
+		if strings.Contains(wLower, "loki") && strings.Contains(wLower, "0") {
+			foundWarn = true
+		}
+	}
+	if !foundWarn {
+		t.Errorf("expected loki empty-match warning, got: %v", out.Warnings)
+	}
+}
+
+// TestFetchLokiLogs_HappyPath verifies the existing happy-path (Loki 200 with
+// results) still works after the escape + warning changes.
+// Mirrors the pattern from TestLokiTailParsesJsonLines but exercises the
+// log_query override path to confirm escaping doesn't break valid ASCII queries.
+func TestFetchLokiLogs_HappyPath(t *testing.T) {
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lines := []struct {
+			TS    string
+			Level string
+			Msg   string
+		}{
+			{"2024-01-01T00:00:01Z", "error", "video track ended unexpectedly"},
+			{"2024-01-01T00:00:02Z", "warn", "replaceTrack called after close"},
+		}
+		fmt.Fprint(w, lokiResponse(lines))
+	}))
+	defer lokiSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:     "oxpulse-chat",
+		IncludeLogs: true,
+		LogQuery:    "track_ended|replaceTrack",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(out.Logs) == 0 {
+		t.Fatal("expected log lines, got none")
+	}
+	// No loki-error warning must be present (happy path).
+	for _, w := range out.Warnings {
+		if strings.Contains(strings.ToLower(w), "loki http") {
+			t.Errorf("unexpected loki error warning on happy path: %q", w)
+		}
+	}
+}
+
 // TestTraceQueryParsedToTags verifies that trace_query="error=true,http.status_code=500"
 // is parsed into JSON tags and sent to Jaeger. Also verifies that empty trace_query
 // defaults to {"error":"true"}.

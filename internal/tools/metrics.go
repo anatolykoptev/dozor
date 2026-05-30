@@ -469,6 +469,17 @@ func parsePromQueryResponse(resp *http.Response) ([]MetricSample, error) {
 	return samples, nil
 }
 
+// escapeLogQLStringLiteral escapes a string for safe embedding inside a LogQL
+// double-quoted string literal. It backslash-escapes backslashes first, then
+// double-quotes, so that user-supplied regex values cannot break the LogQL
+// syntax (e.g. a bare " would terminate the literal prematurely, causing Loki
+// to return HTTP 400 with "syntax error: unexpected IDENTIFIER").
+func escapeLogQLStringLiteral(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
+}
+
 // fetchLokiLogs queries Loki for recent WARN/ERROR lines for a container.
 // If logQuery is non-empty it replaces the default regex filter.
 // On failure, it returns a warning string instead of an error (graceful degradation).
@@ -483,7 +494,7 @@ func fetchLokiLogs(ctx context.Context, lokiURL, container, logQuery string) ([]
 	if regex == "" {
 		regex = "(?i)(error|warn|panic|turn_server_down|fail)"
 	}
-	logQL := fmt.Sprintf(`{container="%s"} |~ "%s"`, container, regex)
+	logQL := fmt.Sprintf(`{container="%s"} |~ "%s"`, container, escapeLogQLStringLiteral(regex))
 	rawURL := fmt.Sprintf("%s/loki/api/v1/query_range?query=%s&start=%d&end=%d&limit=25&direction=backward",
 		lokiURL,
 		url.QueryEscape(logQL),
@@ -509,6 +520,13 @@ func fetchLokiLogs(ctx context.Context, lokiURL, container, logQuery string) ([]
 	lines, parseErr := parseLokiResponse(resp.Body)
 	if parseErr != nil {
 		return nil, fmt.Sprintf("parse loki response: %v", parseErr)
+	}
+	if len(lines) == 0 {
+		// Distinguish "query ran but matched nothing" from "query didn't run at
+		// all". Without this signal, callers cannot tell whether the result is
+		// an empty match or a silent failure (empirical repro: operator-grade
+		// log_query returning 100% metrics + 0 logs + 0 warnings).
+		return lines, fmt.Sprintf("loki: 0 matching log lines for query=%s in window 30m", regex)
 	}
 	return lines, ""
 }
