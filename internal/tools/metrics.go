@@ -42,6 +42,8 @@ type MetricsOutput struct {
 	Service    string         `json:"service"`
 	Source     string         `json:"source"`
 	BasisURL   string         `json:"basis_url"`
+	LokiURL    string         `json:"loki_url,omitempty"`   // populated only when include_logs ran
+	JaegerURL  string         `json:"jaeger_url,omitempty"` // populated only when include_traces ran
 	Categories []string       `json:"categories"`
 	Metrics    []MetricSample `json:"metrics"`
 	Logs       []LogLine      `json:"logs,omitempty"`
@@ -265,14 +267,14 @@ func handleMetrics(ctx context.Context, input MetricsInput) (*MetricsOutput, err
 	out.Warnings = append(out.Warnings, queryWarnings...)
 	out.Metrics = samples
 
-	if len(filteredNames) == 0 && combinedRE != nil {
-		out.Warnings = append(out.Warnings, "no metrics matched")
-	} else if len(filteredNames) == 0 && combinedRE == nil {
-		out.Warnings = append(out.Warnings, "no metrics matched")
+	if len(filteredNames) == 0 {
+		out.Warnings = append(out.Warnings,
+			fmt.Sprintf("no metrics matched (filter=%q, categories=%v)", input.Filter, out.Categories))
 	}
 
 	// 4. Optionally fetch Loki logs
 	if input.IncludeLogs {
+		out.LokiURL = lokiURL
 		container := input.Service
 		if inRegistry && svcEntry.Container != "" {
 			container = svcEntry.Container
@@ -286,6 +288,7 @@ func handleMetrics(ctx context.Context, input MetricsInput) (*MetricsOutput, err
 
 	// 5. Optionally fetch Jaeger traces
 	if input.IncludeTraces {
+		out.JaegerURL = jaegerURL
 		jaegerSvc := input.Service
 		if inRegistry && svcEntry.JaegerService != "" {
 			jaegerSvc = svcEntry.JaegerService
@@ -363,6 +366,7 @@ func filterNames(names []string, re *regexp.Regexp, maxResults int) []string {
 func queryMetrics(ctx context.Context, promURL string, names []string, jobFilter, rangeStr, format string) ([]MetricSample, []string) {
 	samples := make([]MetricSample, 0, len(names))
 	var warnings []string
+	fallbackCount := 0
 
 	for _, name := range names {
 		query := buildQuery(name, jobFilter, rangeStr)
@@ -390,12 +394,26 @@ func queryMetrics(ctx context.Context, promURL string, names []string, jobFilter
 		}
 
 		for _, s := range parsed {
+			// Fix 1: recording-rule expressions and some computed series lack
+			// __name__ in their metric map. Fall back to the queried name so the
+			// caller is never handed an empty "name":"" field.
+			if s.Name == "" {
+				s.Name = name
+				fallbackCount++
+			}
 			if format == "summary" && s.Value == "0" {
 				continue
 			}
 			samples = append(samples, s)
 		}
 	}
+
+	// Emit a single aggregated warning if any fallback engaged (not per-sample).
+	if fallbackCount > 0 {
+		warnings = append(warnings,
+			fmt.Sprintf("%d sample(s) had no __name__ label; used query name as fallback", fallbackCount))
+	}
+
 	return samples, warnings
 }
 
@@ -641,6 +659,12 @@ func fetchJaegerTraces(ctx context.Context, jaegerURL, service, traceQuery strin
 	now := time.Now()
 	start := now.Add(-30 * time.Minute)
 
+	// parseTraceQuery converts the user's "key=value,..." DSL into a JSON object
+	// which is then url.QueryEscape'd into the tags= param. Special characters in
+	// the original traceQuery (quotes, ampersands, slashes) are safely contained
+	// inside the JSON string values and then percent-encoded by QueryEscape, so
+	// they cannot break the URL structure. Fix 3: verified correct; test
+	// TestFetchJaegerTraces_HandlesSpecialChars locks this behaviour.
 	tagsJSON := parseTraceQuery(traceQuery)
 
 	rawURL := fmt.Sprintf("%s/api/traces?service=%s&start=%d&end=%d&limit=%d&tags=%s",
@@ -670,6 +694,11 @@ func fetchJaegerTraces(ctx context.Context, jaegerURL, service, traceQuery strin
 	traces, parseErr := parseJaegerResponse(resp.Body)
 	if parseErr != nil {
 		return nil, fmt.Sprintf("parse jaeger response: %v", parseErr)
+	}
+	if len(traces) == 0 {
+		// Distinguish "query ran but matched nothing" from a silent failure.
+		// Mirrors PR #83's Loki empty-match warning (same class of bug).
+		return traces, fmt.Sprintf("jaeger: 0 matching traces for service=%s query=%s in window 30m", service, traceQuery)
 	}
 	return traces, ""
 }
