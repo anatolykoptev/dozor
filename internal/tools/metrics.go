@@ -279,7 +279,7 @@ func handleMetrics(ctx context.Context, input MetricsInput) (*MetricsOutput, err
 		if inRegistry && svcEntry.Container != "" {
 			container = svcEntry.Container
 		}
-		logs, lokiWarn := fetchLokiLogs(ctx, lokiURL, container, input.LogQuery)
+		logs, lokiWarn := fetchLokiLogs(ctx, lokiURL, container, input.LogQuery, input.Range)
 		if lokiWarn != "" {
 			out.Warnings = append(out.Warnings, lokiWarn)
 		}
@@ -501,19 +501,34 @@ func escapeLogQLStringLiteral(s string) string {
 // fetchLokiLogs queries Loki for recent WARN/ERROR lines for a container.
 // If logQuery is non-empty it replaces the default regex filter.
 // On failure, it returns a warning string instead of an error (graceful degradation).
-func fetchLokiLogs(ctx context.Context, lokiURL, container, logQuery string) ([]LogLine, string) {
+func fetchLokiLogs(ctx context.Context, lokiURL, container, logQuery, rangeStr string) ([]LogLine, string) {
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	now := time.Now()
-	start := now.Add(-30 * time.Minute)
+	// Window honours the caller's `range` (same field the metrics path uses);
+	// default 3h, not 30m. The hardcoded 30m silently returned 0 lines for any
+	// room/event tested >30m ago — a diagnostic blind spot that cost an entire
+	// debugging session (operator: "Loki returns 0 for the room"). Clamp to 24h.
+	lookback := 3 * time.Hour
+	if rangeStr != "" {
+		if d, perr := time.ParseDuration(rangeStr); perr == nil && d > 0 {
+			lookback = d
+		}
+	}
+	if lookback > 24*time.Hour {
+		lookback = 24 * time.Hour
+	}
+	start := now.Add(-lookback)
 
 	regex := logQuery
 	if regex == "" {
 		regex = "(?i)(error|warn|panic|turn_server_down|fail)"
 	}
 	logQL := fmt.Sprintf(`{container="%s"} |~ "%s"`, container, escapeLogQLStringLiteral(regex))
-	rawURL := fmt.Sprintf("%s/loki/api/v1/query_range?query=%s&start=%d&end=%d&limit=25&direction=backward",
+	// limit 200 (was 25): a busy room spams signal_relay candidate frames that
+	// would otherwise crowd out the join/leave/ice lifecycle lines under a low cap.
+	rawURL := fmt.Sprintf("%s/loki/api/v1/query_range?query=%s&start=%d&end=%d&limit=200&direction=backward",
 		lokiURL,
 		url.QueryEscape(logQL),
 		start.UnixNano(),
@@ -544,7 +559,7 @@ func fetchLokiLogs(ctx context.Context, lokiURL, container, logQuery string) ([]
 		// all". Without this signal, callers cannot tell whether the result is
 		// an empty match or a silent failure (empirical repro: operator-grade
 		// log_query returning 100% metrics + 0 logs + 0 warnings).
-		return lines, fmt.Sprintf("loki: 0 matching log lines for query=%s in window 30m", regex)
+		return lines, fmt.Sprintf("loki: 0 matching log lines for query=%s in window %s", regex, lookback)
 	}
 	return lines, ""
 }
@@ -698,7 +713,7 @@ func fetchJaegerTraces(ctx context.Context, jaegerURL, service, traceQuery strin
 	if len(traces) == 0 {
 		// Distinguish "query ran but matched nothing" from a silent failure.
 		// Mirrors PR #83's Loki empty-match warning (same class of bug).
-		return traces, fmt.Sprintf("jaeger: 0 matching traces for service=%s query=%s in window 30m", service, traceQuery)
+		return traces, fmt.Sprintf("jaeger: 0 matching traces for service=%s query=%s in window %s", service, traceQuery)
 	}
 	return traces, ""
 }
