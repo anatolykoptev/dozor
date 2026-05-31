@@ -208,13 +208,19 @@ func handleMetrics(ctx context.Context, input MetricsInput) (*MetricsOutput, err
 	categoryPatterns := []string{}
 	if inRegistry {
 		cat := input.Category
-		if cat == "" || cat == "all" {
+		// Auto-union all categories on cat=="all", OR on empty cat ONLY when no
+		// explicit Filter is given. With an empty cat + an explicit Filter, the
+		// Filter alone defines the metric set — otherwise the all-category union
+		// is OR'd with the Filter (combinedRE = "cat1|cat2|…|filter") and widens
+		// to everything, so the Filter never narrows (bug: filter=<one metric>
+		// returned 30+ unrelated metrics).
+		if cat == "all" || (cat == "" && input.Filter == "") {
 			// union of all categories
 			for catName, patterns := range svcEntry.Categories {
 				categoryPatterns = append(categoryPatterns, patterns...)
 				out.Categories = append(out.Categories, catName)
 			}
-		} else {
+		} else if cat != "" {
 			patterns, ok := svcEntry.Categories[cat]
 			if ok {
 				categoryPatterns = append(categoryPatterns, patterns...)
