@@ -671,6 +671,9 @@ func formatTraceDuration(microseconds int64) string {
 	return fmt.Sprintf("%dms", d.Milliseconds())
 }
 
+// jaegerTraceWindow is the lookback window for Jaeger trace queries.
+const jaegerTraceWindow = 30 * time.Minute
+
 // fetchJaegerTraces queries the Jaeger HTTP API for recent traces of a service.
 // On failure, it returns a warning string instead of an error (graceful degradation).
 func fetchJaegerTraces(ctx context.Context, jaegerURL, service, traceQuery string, limit int) ([]TraceSummary, string) {
@@ -678,7 +681,7 @@ func fetchJaegerTraces(ctx context.Context, jaegerURL, service, traceQuery strin
 	defer cancel()
 
 	now := time.Now()
-	start := now.Add(-30 * time.Minute)
+	start := now.Add(-jaegerTraceWindow)
 
 	// parseTraceQuery converts the user's "key=value,..." DSL into a JSON object
 	// which is then url.QueryEscape'd into the tags= param. Special characters in
@@ -719,7 +722,7 @@ func fetchJaegerTraces(ctx context.Context, jaegerURL, service, traceQuery strin
 	if len(traces) == 0 {
 		// Distinguish "query ran but matched nothing" from a silent failure.
 		// Mirrors PR #83's Loki empty-match warning (same class of bug).
-		return traces, fmt.Sprintf("jaeger: 0 matching traces for service=%s query=%s in window %s", service, traceQuery)
+		return traces, fmt.Sprintf("jaeger: 0 matching traces for service=%s query=%s in window %s", service, traceQuery, jaegerTraceWindow)
 	}
 	return traces, ""
 }
