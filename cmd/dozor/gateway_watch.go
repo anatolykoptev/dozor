@@ -421,7 +421,9 @@ func enrichWithKB(ctx context.Context, kbSearcher *mcpclient.KBSearcher, result 
 func buildKBQuery(issues []engine.TriageIssue) string {
 	parts := make([]string, 0, len(issues))
 	for _, issue := range issues {
-		parts = append(parts, issue.Description)
+		// Self-contained line for the KB similarity query — Description no
+		// longer embeds the service (see ExtractIssues).
+		parts = append(parts, issue.Service+": "+issue.Description)
 	}
 	query := strings.Join(parts, "; ")
 	if len(query) > kbQueryMaxLen {

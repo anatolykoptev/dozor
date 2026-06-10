@@ -320,3 +320,75 @@ func TestCheckProxyModel_KitLLMClient(t *testing.T) {
 		})
 	}
 }
+
+// statusHandler responds with a fixed status and body for chain tests.
+func chainStatusHandler(status int) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"error":{"message":"x","type":"server_error","code":"internal_server_error"}}`))
+	}
+}
+
+// TestCheckProxyChain_FirstAliveNoAlert: chain semantics — any healthy model
+// means production survives; no alert even when earlier models are dead.
+func TestCheckProxyChain_DegradedButAliveNoAlert(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 { // first model probe → 503
+			chainStatusHandler(http.StatusServiceUnavailable)(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"."}}]}`))
+	}))
+	defer srv.Close()
+
+	a := checkProxyChain(t.Context(), srv.URL, "k", []string{"dead-model", "alive-model"})
+	if a != nil {
+		t.Fatalf("degraded-but-alive chain must NOT alert, got: %+v", a)
+	}
+}
+
+// TestCheckProxyChain_AllDeadOneAggregateAlert: a fully dead chain raises ONE
+// alert with the stable service id, naming every failed model.
+func TestCheckProxyChain_AllDeadOneAggregateAlert(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(chainStatusHandler(http.StatusServiceUnavailable))
+	defer srv.Close()
+
+	a := checkProxyChain(t.Context(), srv.URL, "k", []string{"m1", "m2"})
+	if a == nil {
+		t.Fatal("fully dead chain must alert")
+	}
+	if a.Service != "llm:check-chain" {
+		t.Errorf("service = %q, want stable llm:check-chain", a.Service)
+	}
+	if a.Level != AlertError {
+		t.Errorf("level = %q, want error (production chain exhausted)", a.Level)
+	}
+	for _, m := range []string{"m1", "m2"} {
+		if !strings.Contains(a.Description, m) {
+			t.Errorf("description must name failed model %q: %s", m, a.Description)
+		}
+	}
+}
+
+// TestExtractIssues_DescriptionNotPrefixed locks the duplication fix: parsed
+// Description must NOT re-embed the service (report #2f4393aa36df311d showed
+// "service — service: desc" in Telegram).
+func TestExtractIssues_DescriptionNotPrefixed(t *testing.T) {
+	t.Parallel()
+
+	issues := ExtractIssues("[WARNING] llm:m1 — upstream error (HTTP 503): body\n")
+	if len(issues) != 1 {
+		t.Fatalf("want 1 issue, got %d", len(issues))
+	}
+	if got, want := issues[0].Description, "upstream error (HTTP 503): body"; got != want {
+		t.Errorf("Description = %q, want %q (no service prefix)", got, want)
+	}
+}

@@ -384,10 +384,15 @@ func ExtractIssues(report string) []TriageIssue {
 				continue
 			}
 			service := strings.TrimSpace(parts[0])
+			// Description deliberately does NOT embed the service: renderers
+			// print "service — description" and a baked-in prefix made every
+			// operator-facing line repeat the service twice (report
+			// #2f4393aa36df311d). Consumers that need a self-contained line
+			// concatenate Service themselves (KB query, issue summaries).
 			issues = append(issues, TriageIssue{
 				Service:     service,
 				Level:       level,
-				Description: service + ": " + strings.TrimSpace(parts[1]),
+				Description: strings.TrimSpace(parts[1]),
 			})
 			break
 		}
