@@ -295,3 +295,28 @@ func TestLLMKeyAlerts_ReplaysCacheBetweenGatedRuns(t *testing.T) {
 		t.Errorf("cache must be refreshed on gated run, got %q", w.cachedLLMAlerts)
 	}
 }
+
+// TestBuildMechanicalReport_ExtraAlertFallback verifies a pure-extra-alert
+// failure (LLM canary / remote check — formats ExtractIssues cannot parse)
+// still renders named issue lines instead of an empty "Issues (0):" body.
+func TestBuildMechanicalReport_ExtraAlertFallback(t *testing.T) {
+	t.Parallel()
+
+	result := "Health: degraded\n\nLLM Health Issues:\n- [ERROR] llm proxy gemini-3.1-flash-lite-preview: 429 quota exceeded"
+	issues := engine.ExtractIssues(result)
+	if len(issues) != 0 {
+		t.Fatalf("fixture must be invisible to ExtractIssues, got %d issues", len(issues))
+	}
+
+	got := buildMechanicalReport(result, issues, "cafe0001", time.Now())
+
+	if strings.Contains(got, "<b>Issues (0):</b>") {
+		t.Errorf("pure-extra-alert failure must not render an empty issue list:\n%s", got)
+	}
+	if !strings.Contains(got, "[ERROR] llm proxy gemini-3.1-flash-lite-preview: 429 quota exceeded") {
+		t.Errorf("report missing raw alert line:\n%s", got)
+	}
+	if !strings.Contains(got, "<b>Status:</b> degraded") {
+		t.Errorf("severity must rank from the raw [ERROR] marker:\n%s", got)
+	}
+}

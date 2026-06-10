@@ -228,22 +228,52 @@ func buildMechanicalReport(result string, issues []engine.TriageIssue, hash stri
 	fmt.Fprintf(&b, " — %s\n", ts.Format("2006-01-02 15:04:05 MST"))
 	b.WriteString("<b>Status:</b> ")
 	b.WriteString(reportSeverity(result))
-	fmt.Fprintf(&b, "\n<b>Issues (%d):</b>\n", len(issues))
 
-	shown := issues
+	lines := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		lines = append(lines, fmt.Sprintf("<code>%s</code> — %s",
+			html.EscapeString(issue.Service), html.EscapeString(issue.Description)))
+	}
+	if len(lines) == 0 {
+		// Extra alerts (LLM key canary, remote checks) carry [LEVEL] markers
+		// in a format ExtractIssues does not parse; without this fallback a
+		// pure-extra-alert failure rendered an empty "Issues (0):" body.
+		for _, raw := range rawAlertLines(result) {
+			lines = append(lines, html.EscapeString(raw))
+		}
+	}
+
+	fmt.Fprintf(&b, "\n<b>Issues (%d):</b>\n", len(lines))
+	shown := lines
 	if len(shown) > mechReportMaxIssues {
 		shown = shown[:mechReportMaxIssues]
 	}
-	for _, issue := range shown {
-		fmt.Fprintf(&b, "• <code>%s</code> — %s\n",
-			html.EscapeString(issue.Service), html.EscapeString(issue.Description))
+	for _, line := range shown {
+		fmt.Fprintf(&b, "• %s\n", line)
 	}
-	if hidden := len(issues) - len(shown); hidden > 0 {
+	if hidden := len(lines) - len(shown); hidden > 0 {
 		fmt.Fprintf(&b, "… and %d more\n", hidden)
 	}
 
 	b.WriteString("<b>Action:</b> auto-remediation did not cover these — manual check needed")
 	return b.String()
+}
+
+// rawAlertLines extracts [LEVEL]-marked lines whose format ExtractIssues does
+// not parse (LLM key canary "- [ERROR] ...", remote alerts) so they still
+// surface as named report lines. The leading "- " bullet is stripped.
+func rawAlertLines(result string) []string {
+	var lines []string
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimPrefix(strings.TrimSpace(line), "- ")
+		for _, lvl := range []string{"[CRITICAL]", "[ERROR]", "[WARNING_HIGH]", "[WARNING]"} {
+			if strings.HasPrefix(line, lvl) {
+				lines = append(lines, line)
+				break
+			}
+		}
+	}
+	return lines
 }
 
 // reportSeverity maps the highest triage level marker in the report to an
