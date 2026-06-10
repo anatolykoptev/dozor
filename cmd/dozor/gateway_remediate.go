@@ -84,6 +84,16 @@ func routeIssue(ctx context.Context, eng *engine.ServerAgent, cfg engine.Config,
 			unhandled = append(unhandled, issue)
 		}
 
+	case engine.IsNamespacedService(issue.Service):
+		// Namespaced services (remote:<url|unit>, llm:<model>) are NOT remediable:
+		// RestartService only knows local docker/systemd entities, so a restart
+		// of "remote:https://…" would issue a pointless local `docker compose
+		// restart` and then log a false "restart failed". Classify as report-only
+		// at ANY level (including critical) — the unified-alert change made these
+		// first-class TriageIssues, and without this guard a critical remote/LLM
+		// alert would otherwise fall straight into the restart arm below.
+		unhandled = append(unhandled, issue)
+
 	case issue.Level == engine.AlertCritical:
 		result := eng.RestartService(ctx, issue.Service)
 		if result.Success {

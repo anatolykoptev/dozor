@@ -137,6 +137,54 @@ func TestAlertIssueLine_RemoteNamespaced(t *testing.T) {
 	}
 }
 
+// TestIsNamespacedService asserts the predicate the remediation guard keys on:
+// remote:/llm: prefixed services (written by alertReportService) are namespaced
+// and therefore NOT remediable; bare local docker/systemd names are not. The
+// prefixes match what AlertIssueLine actually emits, so the producer and the
+// predicate cannot drift.
+func TestIsNamespacedService(t *testing.T) {
+	t.Parallel()
+
+	namespaced := []string{
+		"remote:https://a.example",
+		"remote:nginx",
+		"llm:LLM proxy gemini-3.1: rate limited (HTTP 429)",
+		"llm:Gemini key AIzaSyCcP...: invalid (HTTP 403)",
+	}
+	for _, s := range namespaced {
+		if !IsNamespacedService(s) {
+			t.Errorf("IsNamespacedService(%q) = false, want true (remote/llm namespace is not remediable)", s)
+		}
+	}
+
+	local := []string{"ox-whisper", "memdb-api", "disk", "go-hully", "postgres"}
+	for _, s := range local {
+		if IsNamespacedService(s) {
+			t.Errorf("IsNamespacedService(%q) = true, want false (local docker/systemd service is remediable)", s)
+		}
+	}
+}
+
+// TestIsNamespacedService_MatchesEmitter asserts the predicate accepts every
+// service name alertReportService can actually produce — the guard and the
+// emitter share the prefix constants, so a new namespace added to the emitter
+// is automatically covered by the guard.
+func TestIsNamespacedService_MatchesEmitter(t *testing.T) {
+	t.Parallel()
+
+	alerts := []Alert{
+		{Level: AlertCritical, Service: "https://x.example", Title: "Site unreachable"},
+		{Level: AlertError, Service: "nginx", Title: "Remote service nginx is failed"},
+		{Level: AlertWarning, Service: "llm", Title: "LLM proxy gemini-3.1: rate limited"},
+	}
+	for _, a := range alerts {
+		svc := alertReportService(a)
+		if !IsNamespacedService(svc) {
+			t.Errorf("emitter produced %q but IsNamespacedService returned false — emitter/guard drift", svc)
+		}
+	}
+}
+
 // TestFormatLLMAlerts_CanonicalLines asserts the LLM alert formatter now emits
 // canonical, ExtractIssues-parseable lines (not the old "- [LEVEL] title: desc"
 // shape that was invisible to the parser).

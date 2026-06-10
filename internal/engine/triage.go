@@ -327,16 +327,39 @@ func AlertIssueLine(a Alert) string {
 	return FormatIssueLine(a.Level, service, desc)
 }
 
+// Namespace prefixes for service names that denote a non-local entity — an LLM
+// model/key probe or a remote host/unit. These are written by alertReportService
+// and are the ONLY namespaces an issue service name can carry. They mark the
+// service as NOT remediable by the local auto-remediation path (which can only
+// act on local docker/systemd entities): see IsNamespacedService.
+const (
+	llmServicePrefix    = "llm:"
+	remoteServicePrefix = "remote:"
+)
+
 // alertReportService derives the stable per-entity service name used for an
 // Alert inside the watch report. See AlertIssueLine for the rationale.
 func alertReportService(a Alert) string {
 	switch a.Service {
 	case "llm":
 		// Title is unique per probed model/key within a check cycle.
-		return "llm:" + a.Title
+		return llmServicePrefix + a.Title
 	default:
-		return "remote:" + a.Service
+		return remoteServicePrefix + a.Service
 	}
+}
+
+// IsNamespacedService reports whether a triage issue's service name carries a
+// namespace prefix written by alertReportService (an LLM probe or a remote
+// host/unit). Such services are NOT remediable: local auto-remediation can only
+// restart local docker/systemd entities, never a remote URL or an LLM key. A
+// namespaced issue — at ANY level, including critical — must be report-only.
+// This is the explicit, named inverse of "is this a local docker/systemd
+// service the restart arm may act on", co-located with the prefix constants so
+// a new namespace cannot drift out of sync with the remediation guard.
+func IsNamespacedService(service string) bool {
+	return strings.HasPrefix(service, llmServicePrefix) ||
+		strings.HasPrefix(service, remoteServicePrefix)
 }
 
 // ExtractIssues parses a triage report string into searchable issue summaries.
