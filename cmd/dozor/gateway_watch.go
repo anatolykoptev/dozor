@@ -36,6 +36,9 @@ const (
 	// mechReportMaxIssues caps the number of issue lines in a mechanical
 	// report so a mass outage stays within one Telegram message.
 	mechReportMaxIssues = 12
+	// llmCheckEveryDefault gates the LLM key canary to every Nth watch
+	// tick: 6 ticks at the 5-min interval = one canary per 30 min.
+	llmCheckEveryDefault = 6
 )
 
 // watchDeps groups dependencies for the gateway watch loop.
@@ -47,6 +50,13 @@ type watchDeps struct {
 	notify         func(string)
 	lastHash       string
 	notifyCooldown *notifyCooldown
+	// tickNum counts watch ticks (1-based); llmCheckEvery gates the LLM
+	// key canary to every Nth tick (DOZOR_LLM_CHECK_EVERY, default 6 —
+	// 30 min at the 5-min watch interval). cachedLLMAlerts replays the
+	// last canary result on gated-off ticks.
+	tickNum         int
+	llmCheckEvery   int
+	cachedLLMAlerts string
 	// routeFn is called to dispatch a triage result that auto-remediation
 	// did not fully handle. Defaults to w.mechanicalReport (deterministic
 	// Telegram report, no LLM); DOZOR_WATCH_LLM=true restores the legacy
@@ -68,6 +78,7 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 		kbSearcher:     kbSearcher,
 		notify:         notify,
 		notifyCooldown: newNotifyCooldownFromEnv(),
+		llmCheckEvery:  kitenv.Int("DOZOR_LLM_CHECK_EVERY", llmCheckEveryDefault),
 	}
 	w.routeFn = w.mechanicalReport
 	if kitenv.Bool("DOZOR_WATCH_LLM", false) {
@@ -90,6 +101,7 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 }
 
 func (w *watchDeps) tick(ctx context.Context) {
+	w.tickNum++
 	slog.Info("gateway watch: running triage", slog.Bool("dev_mode", w.eng.IsDevMode()))
 
 	result := w.collectReport(ctx)
@@ -129,6 +141,7 @@ func (w *watchDeps) collectReport(ctx context.Context) string {
 	}
 
 	result += collectExtraAlerts(ctx, w.cfg)
+	result += w.llmKeyAlerts(ctx)
 	return result
 }
 
@@ -189,7 +202,7 @@ func (w *watchDeps) mechanicalReport(_ context.Context, result, hash string) {
 	}
 
 	severity := reportSeverity(result)
-	report := buildMechanicalReport(result, issues)
+	report := buildMechanicalReport(result, issues, hash, time.Now())
 	watchReportTotal.WithLabelValues(severity).Inc()
 	slog.Info("gateway watch: mechanical report sent",
 		slog.String("hash", hash),
@@ -203,26 +216,64 @@ func (w *watchDeps) mechanicalReport(_ context.Context, result, hash string) {
 // buildMechanicalReport renders the Telegram HTML body for unhandled issues.
 // Mirrors the shape the LLM route was prompted to produce (Status / Issues /
 // Action) so operator-facing alerts look the same either way.
-func buildMechanicalReport(result string, issues []engine.TriageIssue) string {
+// The header carries the send time and the dedup hash as <code>#id</code> —
+// the same id slog writes with "mechanical report sent", so a report seen in
+// Telegram can be located in journald (and vice versa) by one grep.
+func buildMechanicalReport(result string, issues []engine.TriageIssue, hash string, ts time.Time) string {
 	var b strings.Builder
+	b.WriteString("<b>Dozor Watch</b>")
+	if hash != "" {
+		fmt.Fprintf(&b, " <code>#%s</code>", hash)
+	}
+	fmt.Fprintf(&b, " — %s\n", ts.Format("2006-01-02 15:04:05 MST"))
 	b.WriteString("<b>Status:</b> ")
 	b.WriteString(reportSeverity(result))
-	fmt.Fprintf(&b, "\n<b>Issues (%d):</b>\n", len(issues))
 
-	shown := issues
+	lines := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		lines = append(lines, fmt.Sprintf("<code>%s</code> — %s",
+			html.EscapeString(issue.Service), html.EscapeString(issue.Description)))
+	}
+	if len(lines) == 0 {
+		// Extra alerts (LLM key canary, remote checks) carry [LEVEL] markers
+		// in a format ExtractIssues does not parse; without this fallback a
+		// pure-extra-alert failure rendered an empty "Issues (0):" body.
+		for _, raw := range rawAlertLines(result) {
+			lines = append(lines, html.EscapeString(raw))
+		}
+	}
+
+	fmt.Fprintf(&b, "\n<b>Issues (%d):</b>\n", len(lines))
+	shown := lines
 	if len(shown) > mechReportMaxIssues {
 		shown = shown[:mechReportMaxIssues]
 	}
-	for _, issue := range shown {
-		fmt.Fprintf(&b, "• <code>%s</code> — %s\n",
-			html.EscapeString(issue.Service), html.EscapeString(issue.Description))
+	for _, line := range shown {
+		fmt.Fprintf(&b, "• %s\n", line)
 	}
-	if hidden := len(issues) - len(shown); hidden > 0 {
+	if hidden := len(lines) - len(shown); hidden > 0 {
 		fmt.Fprintf(&b, "… and %d more\n", hidden)
 	}
 
 	b.WriteString("<b>Action:</b> auto-remediation did not cover these — manual check needed")
 	return b.String()
+}
+
+// rawAlertLines extracts [LEVEL]-marked lines whose format ExtractIssues does
+// not parse (LLM key canary "- [ERROR] ...", remote alerts) so they still
+// surface as named report lines. The leading "- " bullet is stripped.
+func rawAlertLines(result string) []string {
+	var lines []string
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimPrefix(strings.TrimSpace(line), "- ")
+		for _, lvl := range []string{"[CRITICAL]", "[ERROR]", "[WARNING_HIGH]", "[WARNING]"} {
+			if strings.HasPrefix(line, lvl) {
+				lines = append(lines, line)
+				break
+			}
+		}
+	}
+	return lines
 }
 
 // reportSeverity maps the highest triage level marker in the report to an
@@ -272,16 +323,36 @@ func collectExtraAlerts(ctx context.Context, cfg engine.Config) string {
 		}
 	}
 
-	if cfg.HasLLMKeys() {
-		llmAlerts := engine.CheckLLMKeys(ctx, cfg)
-		if len(llmAlerts) > 0 {
-			if text := engine.FormatLLMAlerts(llmAlerts); text != "" {
-				extra += "\n\n" + text
-			}
-		}
+	return extra
+}
+
+// llmKeyAlerts runs the LLM key/proxy canary, gated to every llmCheckEvery-th
+// tick. Ungated it fired every 5-min tick (288 requests/day against the
+// check-model's free-tier quota) for a signal that does not need 5-min
+// freshness. Between gated runs the last result is replayed so the overall
+// report (and its health/dedup state) does not flap with the gate.
+func (w *watchDeps) llmKeyAlerts(ctx context.Context) string {
+	if !w.cfg.HasLLMKeys() {
+		return ""
+	}
+	if !shouldRunLLMCheck(w.tickNum, w.llmCheckEvery) {
+		return w.cachedLLMAlerts
 	}
 
-	return extra
+	var text string
+	if llmAlerts := engine.CheckLLMKeys(ctx, w.cfg); len(llmAlerts) > 0 {
+		if t := engine.FormatLLMAlerts(llmAlerts); t != "" {
+			text = "\n\n" + t
+		}
+	}
+	w.cachedLLMAlerts = text
+	return text
+}
+
+// shouldRunLLMCheck reports whether the LLM canary runs on this tick.
+// Ticks are 1-based; the check always runs on the first tick after boot.
+func shouldRunLLMCheck(tickNum, every int) bool {
+	return every <= 1 || (tickNum-1)%every == 0
 }
 
 // buildWatchPrompt returns the system prompt prefix for a watch triage message.

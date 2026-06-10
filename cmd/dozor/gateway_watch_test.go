@@ -143,9 +143,11 @@ func TestBuildMechanicalReport_FormatAndEscaping(t *testing.T) {
 		t.Fatalf("fixture: want 2 issues, got %d", len(issues))
 	}
 
-	got := buildMechanicalReport(result, issues)
+	ts := time.Date(2026, 6, 10, 12, 43, 5, 0, time.UTC)
+	got := buildMechanicalReport(result, issues, "a1b2c3d4", ts)
 
 	for _, want := range []string{
+		"<b>Dozor Watch</b> <code>#a1b2c3d4</code> — 2026-06-10 12:43:05 UTC",
 		"<b>Status:</b> critical",
 		"<b>Issues (2):</b>",
 		"<code>oxpulse-chat</code>",
@@ -173,13 +175,31 @@ func TestBuildMechanicalReport_CapsIssueLines(t *testing.T) {
 	result := strings.Join(lines, "\n")
 	issues := engine.ExtractIssues(result)
 
-	got := buildMechanicalReport(result, issues)
+	got := buildMechanicalReport(result, issues, "ffff0000", time.Now())
 
 	if want := fmt.Sprintf("… and %d more", 5); !strings.Contains(got, want) {
 		t.Errorf("report missing truncation marker %q\nfull report:\n%s", want, got)
 	}
 	if strings.Count(got, "• ") != mechReportMaxIssues {
 		t.Errorf("want %d issue bullets, got %d", mechReportMaxIssues, strings.Count(got, "• "))
+	}
+}
+
+// TestBuildMechanicalReport_NoHashOmitsID verifies the header degrades
+// gracefully when no dedup hash is available: time stays, "#id" is omitted.
+func TestBuildMechanicalReport_NoHashOmitsID(t *testing.T) {
+	t.Parallel()
+
+	result := "[ERROR] postgres — connection refused"
+	issues := engine.ExtractIssues(result)
+
+	got := buildMechanicalReport(result, issues, "", time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC))
+
+	if strings.Contains(got, "#") {
+		t.Errorf("empty hash must omit the #id marker, got:\n%s", got)
+	}
+	if !strings.Contains(got, "<b>Dozor Watch</b> — 2026-06-10") {
+		t.Errorf("header must keep the timestamp without an id, got:\n%s", got)
 	}
 }
 
@@ -218,5 +238,85 @@ func TestMechanicalReport_NotifiesWithoutLLM(t *testing.T) {
 	}
 	if !strings.Contains(sent[0], "<code>postgres</code>") {
 		t.Errorf("notification missing issue line: %s", sent[0])
+	}
+	if !strings.Contains(sent[0], "<code>#h1</code>") {
+		t.Errorf("notification missing report id in header: %s", sent[0])
+	}
+}
+
+// TestShouldRunLLMCheck_Gate verifies the canary fires on the first tick
+// and then every Nth tick; every<=1 disables the gate entirely.
+func TestShouldRunLLMCheck_Gate(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		tick, every int
+		want        bool
+	}{
+		{1, 6, true},  // boot tick always checks
+		{2, 6, false},
+		{6, 6, false},
+		{7, 6, true}, // next gated run
+		{13, 6, true},
+		{1, 1, true}, // gate disabled
+		{5, 1, true},
+		{3, 0, true}, // defensive: nonsense config falls open
+	} {
+		if got := shouldRunLLMCheck(tc.tick, tc.every); got != tc.want {
+			t.Errorf("shouldRunLLMCheck(%d, %d) = %v, want %v", tc.tick, tc.every, got, tc.want)
+		}
+	}
+}
+
+// TestLLMKeyAlerts_ReplaysCacheBetweenGatedRuns verifies gated-off ticks
+// reuse the cached canary result instead of re-querying (no health flapping).
+func TestLLMKeyAlerts_ReplaysCacheBetweenGatedRuns(t *testing.T) {
+	t.Parallel()
+
+	// HasLLMKeys true via a configured check model, but empty LLMCheckURL —
+	// CheckLLMKeys then has no proxy endpoint and no Gemini keys to probe,
+	// so the gated run completes without network and yields "".
+	w := &watchDeps{
+		cfg:           engine.Config{LLMCheckModels: []string{"m"}},
+		llmCheckEvery: 6,
+	}
+
+	w.tickNum = 2 // gated off
+	w.cachedLLMAlerts = "\n\nLLM Health Issues:\n- [ERROR] proxy: stale"
+	if got := w.llmKeyAlerts(context.Background()); !strings.Contains(got, "proxy: stale") {
+		t.Errorf("gated-off tick must replay cached alerts, got %q", got)
+	}
+
+	w.tickNum = 7 // gated run refreshes the cache
+	if got := w.llmKeyAlerts(context.Background()); got != "" {
+		t.Errorf("gated run with no failing checks must clear alerts, got %q", got)
+	}
+	if w.cachedLLMAlerts != "" {
+		t.Errorf("cache must be refreshed on gated run, got %q", w.cachedLLMAlerts)
+	}
+}
+
+// TestBuildMechanicalReport_ExtraAlertFallback verifies a pure-extra-alert
+// failure (LLM canary / remote check — formats ExtractIssues cannot parse)
+// still renders named issue lines instead of an empty "Issues (0):" body.
+func TestBuildMechanicalReport_ExtraAlertFallback(t *testing.T) {
+	t.Parallel()
+
+	result := "Health: degraded\n\nLLM Health Issues:\n- [ERROR] llm proxy gemini-3.1-flash-lite-preview: 429 quota exceeded"
+	issues := engine.ExtractIssues(result)
+	if len(issues) != 0 {
+		t.Fatalf("fixture must be invisible to ExtractIssues, got %d issues", len(issues))
+	}
+
+	got := buildMechanicalReport(result, issues, "cafe0001", time.Now())
+
+	if strings.Contains(got, "<b>Issues (0):</b>") {
+		t.Errorf("pure-extra-alert failure must not render an empty issue list:\n%s", got)
+	}
+	if !strings.Contains(got, "[ERROR] llm proxy gemini-3.1-flash-lite-preview: 429 quota exceeded") {
+		t.Errorf("report missing raw alert line:\n%s", got)
+	}
+	if !strings.Contains(got, "<b>Status:</b> degraded") {
+		t.Errorf("severity must rank from the raw [ERROR] marker:\n%s", got)
 	}
 }
