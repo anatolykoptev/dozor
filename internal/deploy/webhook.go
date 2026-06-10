@@ -23,6 +23,9 @@ type pushEvent struct {
 	Repository struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
+	Pusher struct {
+		Name string `json:"name"`
+	} `json:"pusher"`
 	HeadCommit struct {
 		ID      string `json:"id"`
 		Message string `json:"message"`
@@ -198,9 +201,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rc = h.config.LookupBranch(push.Repository.FullName, branch)
 		if rc == nil {
 			// No config entry matches this (repo, branch) pair.
-			slog.Info("deploy/webhook: no config for repo+branch",
+			slog.Debug("deploy/webhook: no config for repo+branch",
 				"repo", push.Repository.FullName,
-				"branch", branch)
+				"branch", branch,
+				"pusher", push.Pusher.Name)
 			respondJSON(w, http.StatusOK, map[string]string{
 				"status": "ignored",
 				"reason": "no deploy config for branch " + branch,

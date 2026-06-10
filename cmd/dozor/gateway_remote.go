@@ -72,7 +72,7 @@ func remoteCheckTick(ctx context.Context, cfg engine.Config, notify func(string)
 		// Record success for all previously tracked keys.
 		ft.RecordSuccess("remote")
 		fd.Record("remote", true)
-		slog.Info("remote watch: healthy")
+		slog.Debug("remote watch: healthy")
 		return
 	}
 

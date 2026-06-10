@@ -80,6 +80,9 @@ func NewOpenAI() (Provider, bool) {
 // MaxIterations returns the configured max tool call iterations.
 func (o *OpenAI) MaxIterations() int { return o.maxIters }
 
+// Model returns the primary model id for structured logging.
+func (o *OpenAI) Model() string { return o.model }
+
 // chatRetryOpts are the retry options for Chat. 4 total attempts (1 initial
 // + 3 retries), exponential 2s→30s. Jitter is disabled so that the
 // server-supplied Retry-After delay is honoured exactly — kit/retry applies

@@ -50,3 +50,29 @@ func TestErrorClassification(t *testing.T) {
 		})
 	}
 }
+
+// TestErrorClass_Ordering locks the switch ordering: sentinel and specific
+// classes must win over the generic http_NNN arm (401→auth not http_401,
+// 429→rate_limit not http_429).
+func TestErrorClass_Ordering(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"unavailable", ErrUnavailable, "unavailable"},
+		{"auth_401", &kitllm.APIError{StatusCode: 401}, "auth"},
+		{"auth_403", &kitllm.APIError{StatusCode: 403}, "auth"},
+		{"rate_limit_429", &kitllm.APIError{StatusCode: 429}, "rate_limit"},
+		{"http_500", &kitllm.APIError{StatusCode: 500}, "http_500"},
+		{"http_413", &kitllm.APIError{StatusCode: 413}, "http_413"},
+		{"network", &net.OpError{Op: "dial", Err: errors.New("refused")}, "network"},
+		{"other", errors.New("boom"), "other"},
+	}
+	for _, tc := range cases {
+		if got := ErrorClass(tc.err); got != tc.want {
+			t.Errorf("%s: ErrorClass = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

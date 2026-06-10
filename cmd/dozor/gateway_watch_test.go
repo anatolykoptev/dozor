@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -253,7 +254,7 @@ func TestShouldRunLLMCheck_Gate(t *testing.T) {
 		tick, every int
 		want        bool
 	}{
-		{1, 6, true},  // boot tick always checks
+		{1, 6, true}, // boot tick always checks
 		{2, 6, false},
 		{6, 6, false},
 		{7, 6, true}, // next gated run
@@ -318,5 +319,30 @@ func TestBuildMechanicalReport_ExtraAlertFallback(t *testing.T) {
 	}
 	if !strings.Contains(got, "<b>Status:</b> degraded") {
 		t.Errorf("severity must rank from the raw [ERROR] marker:\n%s", got)
+	}
+}
+
+// TestNoteHealthy_RecoveredTransition verifies the degraded→healthy
+// transition logs Info "recovered" exactly once and resets lastHash;
+// steady healthy ticks stay at Debug (dropped by the prod LevelInfo handler).
+func TestNoteHealthy_RecoveredTransition(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(prev)
+
+	w := &watchDeps{lastHash: "deadbeef"} // previous tick was unhealthy
+	w.noteHealthy()
+	if !strings.Contains(buf.String(), "gateway watch: recovered") {
+		t.Errorf("transition must log Info recovered, got: %s", buf.String())
+	}
+	if w.lastHash != "" {
+		t.Errorf("lastHash must reset on healthy, got %q", w.lastHash)
+	}
+
+	buf.Reset()
+	w.noteHealthy() // steady healthy — Debug only, invisible at LevelInfo
+	if buf.String() != "" {
+		t.Errorf("steady healthy tick must not log at Info, got: %s", buf.String())
 	}
 }

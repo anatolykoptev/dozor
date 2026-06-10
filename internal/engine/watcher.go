@@ -46,7 +46,13 @@ func (w *ContainerWatcher) Start(ctx context.Context) {
 					case events.ActionStart, events.ActionStop, events.ActionDie,
 						events.ActionDestroy, events.ActionCreate:
 						name := msg.Actor.Attributes["name"]
-						slog.Info("[watcher] container event, cache invalidated",
+						// Start/Die are the operator-relevant lifecycle events;
+						// Create/Destroy/Stop arrive as paired noise around them.
+						lvl := slog.LevelDebug
+						if msg.Action == events.ActionStart || msg.Action == events.ActionDie {
+							lvl = slog.LevelInfo
+						}
+						slog.Log(ctx, lvl, "[watcher] container event, cache invalidated",
 							slog.String("container", name),
 							slog.String("action", string(msg.Action)))
 						w.discovery.InvalidateCache()
