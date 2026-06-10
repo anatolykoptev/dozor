@@ -274,15 +274,20 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 	}
 }
 
-// FormatLLMAlerts formats LLM health check alerts for text display.
+// FormatLLMAlerts formats LLM health-check alerts as canonical issue lines so
+// they are first-class to ExtractIssues (and therefore to dedup, severity
+// ranking, and remediation routing) when concatenated into the watch report.
+// Each alert is rendered via AlertIssueLine, which gives it a stable per-model
+// service name. Previously this emitted "- [LEVEL] title: desc", a shape
+// ExtractIssues could not parse — the failures were invisible to the watch
+// pipeline and all collapsed to a single dedup hash.
 func FormatLLMAlerts(alerts []Alert) string {
 	if len(alerts) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("LLM Health Issues:\n")
 	for _, a := range alerts {
-		fmt.Fprintf(&b, "- [%s] %s: %s\n", a.Level, a.Title, a.Description)
+		b.WriteString(AlertIssueLine(a))
 	}
 	return b.String()
 }

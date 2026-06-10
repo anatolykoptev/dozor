@@ -13,6 +13,25 @@ const (
 	AlertInfo        AlertLevel = "info"
 )
 
+// MachineToken returns the uppercase token used inside the canonical machine
+// alert line `[TOKEN] service — description` (see TriageMachineSep / FormatIssueLine).
+// AlertInfo returns "" — it has no machine marker because ExtractIssues only
+// parses the four actionable levels, so an info-level entry is not an issue.
+func (l AlertLevel) MachineToken() string {
+	switch l {
+	case AlertCritical:
+		return "CRITICAL"
+	case AlertError:
+		return "ERROR"
+	case AlertWarningHigh:
+		return "WARNING_HIGH"
+	case AlertWarning:
+		return "WARNING"
+	default:
+		return ""
+	}
+}
+
 // Display icons used in formatted output across packages.
 const (
 	displayIconCritical = "CRITICAL"

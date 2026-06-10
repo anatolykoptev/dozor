@@ -212,8 +212,8 @@ func (w *watchDeps) mechanicalReport(_ context.Context, result, hash string) {
 		)
 	}
 
-	severity := reportSeverity(result)
-	report := buildMechanicalReport(result, issues, hash, time.Now())
+	severity := reportSeverity(issues)
+	report := buildMechanicalReport(issues, hash, time.Now())
 	watchReportTotal.WithLabelValues(severity).Inc()
 	slog.Info("gateway watch: mechanical report sent",
 		slog.String("hash", hash),
@@ -230,7 +230,7 @@ func (w *watchDeps) mechanicalReport(_ context.Context, result, hash string) {
 // The header carries the send time and the dedup hash as <code>#id</code> —
 // the same id slog writes with "mechanical report sent", so a report seen in
 // Telegram can be located in journald (and vice versa) by one grep.
-func buildMechanicalReport(result string, issues []engine.TriageIssue, hash string, ts time.Time) string {
+func buildMechanicalReport(issues []engine.TriageIssue, hash string, ts time.Time) string {
 	var b strings.Builder
 	b.WriteString("<b>Dozor Watch</b>")
 	if hash != "" {
@@ -238,20 +238,12 @@ func buildMechanicalReport(result string, issues []engine.TriageIssue, hash stri
 	}
 	fmt.Fprintf(&b, " — %s\n", ts.Format("2006-01-02 15:04:05 MST"))
 	b.WriteString("<b>Status:</b> ")
-	b.WriteString(reportSeverity(result))
+	b.WriteString(reportSeverity(issues))
 
 	lines := make([]string, 0, len(issues))
 	for _, issue := range issues {
 		lines = append(lines, fmt.Sprintf("<code>%s</code> — %s",
 			html.EscapeString(issue.Service), html.EscapeString(issue.Description)))
-	}
-	if len(lines) == 0 {
-		// Extra alerts (LLM key canary, remote checks) carry [LEVEL] markers
-		// in a format ExtractIssues does not parse; without this fallback a
-		// pure-extra-alert failure rendered an empty "Issues (0):" body.
-		for _, raw := range rawAlertLines(result) {
-			lines = append(lines, html.EscapeString(raw))
-		}
 	}
 
 	fmt.Fprintf(&b, "\n<b>Issues (%d):</b>\n", len(lines))
@@ -270,32 +262,37 @@ func buildMechanicalReport(result string, issues []engine.TriageIssue, hash stri
 	return b.String()
 }
 
-// rawAlertLines extracts [LEVEL]-marked lines whose format ExtractIssues does
-// not parse (LLM key canary "- [ERROR] ...", remote alerts) so they still
-// surface as named report lines. The leading "- " bullet is stripped.
-func rawAlertLines(result string) []string {
-	var lines []string
-	for _, line := range strings.Split(result, "\n") {
-		line = strings.TrimPrefix(strings.TrimSpace(line), "- ")
-		for _, lvl := range []string{"[CRITICAL]", "[ERROR]", "[WARNING_HIGH]", "[WARNING]"} {
-			if strings.HasPrefix(line, lvl) {
-				lines = append(lines, line)
-				break
-			}
+// reportSeverity maps the highest issue level to an operator-facing status
+// word. It ranks over the parsed []TriageIssue (one ranking table) instead of
+// string-scanning the report, so LLM and remote alerts — now first-class issues
+// in the same canonical format — rank uniformly alongside docker triage lines.
+func reportSeverity(issues []engine.TriageIssue) string {
+	rank := func(l engine.AlertLevel) int {
+		switch l {
+		case engine.AlertCritical:
+			return 4
+		case engine.AlertError:
+			return 3
+		case engine.AlertWarningHigh:
+			return 2
+		case engine.AlertWarning:
+			return 1
+		default:
+			return 0
 		}
 	}
-	return lines
-}
-
-// reportSeverity maps the highest triage level marker in the report to an
-// operator-facing status word.
-func reportSeverity(result string) string {
-	switch {
-	case strings.Contains(result, "[CRITICAL]"):
+	var top engine.AlertLevel = engine.AlertWarning
+	for _, iss := range issues {
+		if rank(iss.Level) > rank(top) {
+			top = iss.Level
+		}
+	}
+	switch top {
+	case engine.AlertCritical:
 		return "critical"
-	case strings.Contains(result, "[ERROR]"):
+	case engine.AlertError:
 		return "degraded"
-	case strings.Contains(result, "[WARNING_HIGH]"):
+	case engine.AlertWarningHigh:
 		return "warning_high"
 	default:
 		return "warning"
@@ -319,22 +316,32 @@ func hashResult(result string) string {
 	return hex.EncodeToString(h[:8])
 }
 
-// collectExtraAlerts gathers alerts from remote server and LLM health checks.
+// collectExtraAlerts gathers alerts from the remote server check and renders
+// them as canonical issue lines (engine.AlertIssueLine) so they are first-class
+// to ExtractIssues — visible to dedup, severity ranking, and remediation
+// routing. The rich emoji-formatted engine.FormatRemoteAlerts is a separate,
+// operator-facing Telegram notification (remoteCheckTick); it is intentionally
+// NOT reused here, where the machine format is required.
 func collectExtraAlerts(ctx context.Context, cfg engine.Config) string {
-	var extra string
-
-	if cfg.HasRemote() {
-		remoteCtx, cancel := context.WithTimeout(ctx, remoteCheckTimeoutSec*time.Second)
-		remoteStatus := engine.CheckRemoteServer(remoteCtx, cfg)
-		cancel()
-		if remoteStatus != nil && len(remoteStatus.Alerts) > 0 {
-			if text := engine.FormatRemoteAlerts(remoteStatus); text != "" {
-				extra += "\n\n" + text
-			}
-		}
+	if !cfg.HasRemote() {
+		return ""
 	}
 
-	return extra
+	remoteCtx, cancel := context.WithTimeout(ctx, remoteCheckTimeoutSec*time.Second)
+	remoteStatus := engine.CheckRemoteServer(remoteCtx, cfg)
+	cancel()
+	if remoteStatus == nil || len(remoteStatus.Alerts) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	for _, a := range remoteStatus.Alerts {
+		b.WriteString(engine.AlertIssueLine(a))
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "\n\n" + b.String()
 }
 
 // llmKeyAlerts runs the LLM key/proxy canary, gated to every llmCheckEvery-th
@@ -449,7 +456,7 @@ func checkSystemdServices(ctx context.Context, eng *engine.ServerAgent) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Systemd services DOWN (%d):\n", len(down))
 	for _, name := range down {
-		fmt.Fprintf(&b, "[CRITICAL] %s — not active\n", name)
+		b.WriteString(engine.FormatIssueLine(engine.AlertCritical, name, "not active"))
 	}
 	return b.String()
 }

@@ -7,45 +7,35 @@ import (
 	"github.com/anatolykoptev/dozor/internal/engine"
 )
 
-func TestExtractIssueLevel(t *testing.T) {
-	triageResult := `Server Triage Report
+// TestExtractIssues_LevelPerService asserts ExtractIssues attaches the correct
+// per-line level to each issue — the level recovery that the deleted
+// extractIssueLevel helper used to do by re-scanning the report. Each line owns
+// its own service token, so there is no cross-service prefix collision (the old
+// "go-hully vs go-hully-worker" hazard): go-hully-worker is ERROR, go-hully is
+// CRITICAL, and they stay distinct.
+func TestExtractIssues_LevelPerService(t *testing.T) {
+	t.Parallel()
+
+	report := `Server Triage Report
 Health: critical | Time: 2026-02-23 12:00
 
-Services needing attention (3):
+[CRITICAL] go-hully — running, 1 restarts, 5 errors
+[ERROR] go-hully-worker — running, 0 restarts, 2 errors
+[WARNING] qdrant — running, 0 restarts, 5 errors`
 
-[CRITICAL] ox-whisper — exited, 0 restarts, 0 errors
-[WARNING] qdrant — running, 0 restarts, 5 errors
-  Issue: telemetry connection errors (5 occurrences)
-[ERROR] memdb-api — running, 2 restarts, 3 errors
-`
-
-	tests := []struct {
-		service string
-		want    string
-	}{
-		{"ox-whisper", "CRITICAL"},
-		{"qdrant", "WARNING"},
-		{"memdb-api", "ERROR"},
-		{"nonexistent", ""},
+	want := map[string]engine.AlertLevel{
+		"go-hully":        engine.AlertCritical,
+		"go-hully-worker": engine.AlertError,
+		"qdrant":          engine.AlertWarning,
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.service, func(t *testing.T) {
-			got := extractIssueLevel(triageResult, tt.service)
-			if got != tt.want {
-				t.Errorf("extractIssueLevel(%q) = %q, want %q", tt.service, got, tt.want)
-			}
-		})
+	issues := engine.ExtractIssues(report)
+	if len(issues) != len(want) {
+		t.Fatalf("want %d issues, got %d: %+v", len(want), len(issues), issues)
 	}
-}
-
-func TestExtractIssueLevel_ServiceNamePrefix(t *testing.T) {
-	// Ensure "go-hully" doesn't match "go-hully-worker" line
-	triageResult := `[WARNING] go-hully-worker — running, 0 restarts, 2 errors
-[ERROR] go-hully — running, 1 restarts, 5 errors`
-
-	if got := extractIssueLevel(triageResult, "go-hully"); got != "ERROR" {
-		t.Errorf("expected ERROR for go-hully, got %q", got)
+	for _, iss := range issues {
+		if w, ok := want[iss.Service]; !ok || iss.Level != w {
+			t.Errorf("issue %q: Level=%q, want %q", iss.Service, iss.Level, w)
+		}
 	}
 }
 

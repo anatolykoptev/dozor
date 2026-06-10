@@ -26,7 +26,7 @@ const topDirsN = 5
 // remediateMetrics holds Prometheus counters for disk auto-remediation.
 // Registered once at package init via promauto.
 var remediateMetrics = struct {
-	attemptsTotal  *prometheus.CounterVec
+	attemptsTotal   *prometheus.CounterVec
 	freedBytesTotal *prometheus.CounterVec
 	cooldownSkipped *prometheus.CounterVec
 }{
@@ -111,16 +111,20 @@ func handleDiskIssueWithCooldown(
 	ctx context.Context,
 	rem diskRemediator,
 	issue engine.TriageIssue,
-	level string,
+	level engine.AlertLevel,
 	cd *remediateCooldown,
 	now time.Time,
 ) (notifyMsg string, handled bool) {
-	if cd.shouldSkip(issue.Service, level, now) {
+	// token is the uppercase machine form ("CRITICAL", "WARNING", ...) used as
+	// the cooldown map key and metric label — kept stable across the level-typing
+	// change so existing dashboards keyed on this label value do not break.
+	token := level.MachineToken()
+	if cd.shouldSkip(issue.Service, token, now) {
 		slog.InfoContext(ctx, "auto-remediate cooldown active, skipping",
 			slog.String("service", issue.Service),
-			slog.String("level", level),
+			slog.String("level", token),
 		)
-		remediateMetrics.cooldownSkipped.WithLabelValues(issue.Service, level).Inc()
+		remediateMetrics.cooldownSkipped.WithLabelValues(issue.Service, token).Inc()
 		return "", true // counted as handled — no need to escalate to LLM
 	}
 
@@ -129,7 +133,7 @@ func handleDiskIssueWithCooldown(
 
 	// Mark cooldown regardless of how much was freed — the point is to stop
 	// re-running cleanup on the same empty caches every 5-min tick.
-	cd.markRun(issue.Service, level, now)
+	cd.markRun(issue.Service, token, now)
 
 	if res == nil {
 		remediateMetrics.attemptsTotal.WithLabelValues("disk", "nil").Inc()
