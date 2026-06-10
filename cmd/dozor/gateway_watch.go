@@ -102,11 +102,17 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 
 func (w *watchDeps) tick(ctx context.Context) {
 	w.tickNum++
-	slog.Info("gateway watch: running triage", slog.Bool("dev_mode", w.eng.IsDevMode()))
+	slog.Debug("gateway watch: running triage", slog.Bool("dev_mode", w.eng.IsDevMode()))
 
 	result := w.collectReport(ctx)
 	if w.isHealthy(result) {
-		slog.Info("gateway watch: all healthy")
+		// Healthy ticks are Debug; only the degraded→healthy transition is
+		// operator-relevant (lastHash != "" means the previous tick had issues).
+		if w.lastHash != "" {
+			slog.Info("gateway watch: recovered")
+		} else {
+			slog.Debug("gateway watch: all healthy")
+		}
 		w.lastHash = ""
 		return
 	}

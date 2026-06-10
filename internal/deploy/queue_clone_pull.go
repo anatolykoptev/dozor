@@ -100,6 +100,24 @@ func defaultGitShortSHARunner(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// classifyPorcelain splits `git status --porcelain` output into tracked
+// modifications vs untracked files. Only tracked changes block the pull —
+// untracked files (agent-written plans/reports in the deploy clone) were
+// causing ~18 false dirty-skip WARNs/day while the clone silently went stale.
+func classifyPorcelain(out string) (tracked, untracked int) {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "??") {
+			untracked++
+		} else {
+			tracked++
+		}
+	}
+	return tracked, untracked
+}
+
 // pullDeployClone auto-pulls the deploy clone at clonePath to origin/<branch>
 // before a compose build. It is a best-effort operation: failures are logged
 // and counted but never abort the build.
@@ -135,14 +153,25 @@ func pullDeployClone(ctx context.Context, repo, clonePath, branch string) pullOu
 		DeployClonePullTotal.WithLabelValues(repo, string(pullError)).Inc()
 		return pullError
 	}
-	if len(strings.TrimSpace(string(statusOut))) > 0 {
+	tracked, untracked := classifyPorcelain(string(statusOut))
+	if tracked > 0 {
 		slog.Warn("deploy: clone pull skipped — working tree is dirty; compose config may be stale",
 			"repo", repo,
 			"clone", clonePath,
+			"dirty_tracked", tracked,
+			"untracked", untracked,
 			"status", truncate(string(statusOut), maxOutputLen),
 		)
 		DeployClonePullTotal.WithLabelValues(repo, string(pullDirtySkipped)).Inc()
 		return pullDirtySkipped
+	}
+	if untracked > 0 {
+		// Untracked files (agent-written plans/reports) cannot be overwritten
+		// by a ff-only pull of tracked content — proceed. A rare name
+		// collision with an incoming tracked file fails the pull below and
+		// is logged as pullDiverged; the build still proceeds.
+		slog.Debug("deploy: clone pull proceeding — untracked files present",
+			"repo", repo, "untracked", untracked)
 	}
 
 	// 2. Fetch latest refs.

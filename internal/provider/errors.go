@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"strconv"
 
 	kitllm "github.com/anatolykoptev/go-kit/llm"
 )
@@ -55,4 +56,27 @@ func isNetworkErr(err error) bool {
 		return true
 	}
 	return false
+}
+
+// ErrorClass maps err to a coarse label for structured logs and metrics:
+// "auth", "rate_limit", "http_<code>", "network", "unavailable", "other".
+// One field answers "why did the LLM call fail" without parsing error text.
+func ErrorClass(err error) string {
+	var ae *kitllm.APIError
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrUnavailable):
+		return "unavailable"
+	case IsAuth(err):
+		return "auth"
+	case IsRateLimit(err):
+		return "rate_limit"
+	case errors.As(err, &ae):
+		return "http_" + strconv.Itoa(ae.StatusCode)
+	case isNetworkErr(err):
+		return "network"
+	default:
+		return "other"
+	}
 }
