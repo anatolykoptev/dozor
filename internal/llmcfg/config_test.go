@@ -3,6 +3,7 @@ package llmcfg
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -186,5 +187,31 @@ func TestResolve_NoYAML(t *testing.T) {
 	_, err := Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve with empty yamlPath should not error: %v", err)
+	}
+}
+
+// TestResolve_CheckModelsDefaultsToChain: with DOZOR_LLM_CHECK_MODELS unset,
+// the canary list mirrors the production fallback chain (drift-proof default);
+// an explicit value still overrides.
+func TestResolve_CheckModelsDefaultsToChain(t *testing.T) {
+	t.Setenv("DOZOR_LLM_CHECK_MODELS", "")
+	t.Setenv("DOZOR_LLM_MODEL_FALLBACK", "m1,m2,m3")
+	t.Setenv("LLM_MODEL_FALLBACK", "ignored")
+
+	cfg, err := Resolve("")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := strings.Join(cfg.CheckModels, ","); got != "m1,m2,m3" {
+		t.Errorf("CheckModels = %q, want chain mirror m1,m2,m3", got)
+	}
+
+	t.Setenv("DOZOR_LLM_CHECK_MODELS", "explicit-model")
+	cfg, err = Resolve("")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := strings.Join(cfg.CheckModels, ","); got != "explicit-model" {
+		t.Errorf("explicit DOZOR_LLM_CHECK_MODELS must override chain, got %q", got)
 	}
 }
