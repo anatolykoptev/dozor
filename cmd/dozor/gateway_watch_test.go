@@ -193,6 +193,7 @@ func TestReportSeverity_Ranking(t *testing.T) {
 	}{
 		{"[CRITICAL] a — x\n[ERROR] b — y", "critical"},
 		{"[ERROR] b — y\n[WARNING] c — z", "degraded"},
+		{"[WARNING_HIGH] disk — usage 91%\n[WARNING] c — z", "warning_high"},
 		{"[WARNING] c — z", "warning"},
 	}
 	for _, tc := range cases {

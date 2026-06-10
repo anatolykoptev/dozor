@@ -16,7 +16,17 @@ import (
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	kitenv "github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go-kit/toolutil"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+// watchReportTotal counts mechanical watch reports sent to the operator,
+// by severity. The LLM route this replaced failed silently (6/6 HTTP 413
+// visible only in logs) — this counter makes the alert path assertable.
+var watchReportTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "dozor_watch_report_total",
+	Help: "Mechanical watch reports sent to the operator, by severity.",
+}, []string{"severity"})
 
 const (
 	// kbQueryMaxLen is the maximum length of KB search query built from issues.
@@ -102,7 +112,7 @@ func (w *watchDeps) tick(ctx context.Context) {
 
 	now := time.Now()
 	if w.notifyCooldown.shouldSuppress(hash, now) {
-		slog.InfoContext(ctx, "watch: notify cooldown active, suppressing LLM call",
+		slog.InfoContext(ctx, "watch: notify cooldown active, suppressing watch report",
 			"hash", hash, "cooldown", w.notifyCooldown.duration)
 		return
 	}
@@ -178,9 +188,12 @@ func (w *watchDeps) mechanicalReport(_ context.Context, result, hash string) {
 		)
 	}
 
+	severity := reportSeverity(result)
 	report := buildMechanicalReport(result, issues)
+	watchReportTotal.WithLabelValues(severity).Inc()
 	slog.Info("gateway watch: mechanical report sent",
 		slog.String("hash", hash),
+		slog.String("severity", severity),
 		slog.Int("issues", len(issues)))
 	if w.notify != nil {
 		w.notify(report)
@@ -220,6 +233,8 @@ func reportSeverity(result string) string {
 		return "critical"
 	case strings.Contains(result, "[ERROR]"):
 		return "degraded"
+	case strings.Contains(result, "[WARNING_HIGH]"):
+		return "warning_high"
 	default:
 		return "warning"
 	}
