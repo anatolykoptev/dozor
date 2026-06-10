@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"html"
 	"log/slog"
 	"sort"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/anatolykoptev/dozor/internal/bus"
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
+	kitenv "github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go-kit/toolutil"
 )
 
@@ -21,6 +23,9 @@ const (
 	kbQueryMaxLen = 500
 	// kbTopKResults is the number of KB results to fetch during watch triage.
 	kbTopKResults = 3
+	// mechReportMaxIssues caps the number of issue lines in a mechanical
+	// report so a mass outage stays within one Telegram message.
+	mechReportMaxIssues = 12
 )
 
 // watchDeps groups dependencies for the gateway watch loop.
@@ -32,8 +37,10 @@ type watchDeps struct {
 	notify         func(string)
 	lastHash       string
 	notifyCooldown *notifyCooldown
-	// routeFn is called to dispatch a triage result to the LLM agent.
-	// Defaults to w.defaultRouteToAgent; overridable in tests.
+	// routeFn is called to dispatch a triage result that auto-remediation
+	// did not fully handle. Defaults to w.mechanicalReport (deterministic
+	// Telegram report, no LLM); DOZOR_WATCH_LLM=true restores the legacy
+	// LLM agent route. Overridable in tests.
 	routeFn func(ctx context.Context, result, hash string)
 }
 
@@ -52,7 +59,11 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 		notify:         notify,
 		notifyCooldown: newNotifyCooldownFromEnv(),
 	}
-	w.routeFn = w.defaultRouteToAgent
+	w.routeFn = w.mechanicalReport
+	if kitenv.Bool("DOZOR_WATCH_LLM", false) {
+		slog.Info("gateway watch: LLM route enabled (DOZOR_WATCH_LLM)")
+		w.routeFn = w.defaultRouteToAgent
+	}
 	w.tick(ctx)
 
 	ticker := time.NewTicker(interval)
@@ -150,6 +161,68 @@ func (w *watchDeps) defaultRouteToAgent(ctx context.Context, result, hash string
 		Text:      prompt + result,
 		Timestamp: time.Now(),
 	})
+}
+
+// mechanicalReport formats unhandled triage issues into a deterministic
+// Telegram HTML report and delivers it via notify — no LLM in the path.
+// Default watch route: the LLM step added no signal over the structured
+// triage data and its ~24K-token prompt (system prompt + KB context +
+// full report) overflowed provider TPM budgets on every incident
+// (groq 12K TPM → HTTP 413, 6/6 failures over 48 h).
+func (w *watchDeps) mechanicalReport(_ context.Context, result, hash string) {
+	issues := engine.ExtractIssues(result)
+	for _, issue := range issues {
+		slog.Warn("gateway watch: issue detected",
+			slog.String("service", issue.Service),
+			slog.String("description", issue.Description),
+		)
+	}
+
+	report := buildMechanicalReport(result, issues)
+	slog.Info("gateway watch: mechanical report sent",
+		slog.String("hash", hash),
+		slog.Int("issues", len(issues)))
+	if w.notify != nil {
+		w.notify(report)
+	}
+}
+
+// buildMechanicalReport renders the Telegram HTML body for unhandled issues.
+// Mirrors the shape the LLM route was prompted to produce (Status / Issues /
+// Action) so operator-facing alerts look the same either way.
+func buildMechanicalReport(result string, issues []engine.TriageIssue) string {
+	var b strings.Builder
+	b.WriteString("<b>Status:</b> ")
+	b.WriteString(reportSeverity(result))
+	fmt.Fprintf(&b, "\n<b>Issues (%d):</b>\n", len(issues))
+
+	shown := issues
+	if len(shown) > mechReportMaxIssues {
+		shown = shown[:mechReportMaxIssues]
+	}
+	for _, issue := range shown {
+		fmt.Fprintf(&b, "• <code>%s</code> — %s\n",
+			html.EscapeString(issue.Service), html.EscapeString(issue.Description))
+	}
+	if hidden := len(issues) - len(shown); hidden > 0 {
+		fmt.Fprintf(&b, "… and %d more\n", hidden)
+	}
+
+	b.WriteString("<b>Action:</b> auto-remediation did not cover these — manual check needed")
+	return b.String()
+}
+
+// reportSeverity maps the highest triage level marker in the report to an
+// operator-facing status word.
+func reportSeverity(result string) string {
+	switch {
+	case strings.Contains(result, "[CRITICAL]"):
+		return "critical"
+	case strings.Contains(result, "[ERROR]"):
+		return "degraded"
+	default:
+		return "warning"
+	}
 }
 
 // hashResult creates a stable hash from issue service names only,

@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anatolykoptev/dozor/internal/engine"
 )
 
 // TestHashResult_OrderIndependent verifies that hashResult produces the same
@@ -125,5 +128,94 @@ func TestTick_MarkSentOnlyAfterSuccessfulRoute(t *testing.T) {
 	// --- Verify different hash is not suppressed ---
 	if nc.shouldSuppress("other", later) {
 		t.Error("different hash should not be suppressed")
+	}
+}
+
+// TestBuildMechanicalReport_FormatAndEscaping verifies the deterministic
+// report carries Status/Issues/Action sections, escapes HTML in issue text,
+// and ranks severity from the triage level markers.
+func TestBuildMechanicalReport_FormatAndEscaping(t *testing.T) {
+	t.Parallel()
+
+	result := "[CRITICAL] oxpulse-chat — exited <code 1> & restarting\n[WARNING] redis — 3 restarts"
+	issues := engine.ExtractIssues(result)
+	if len(issues) != 2 {
+		t.Fatalf("fixture: want 2 issues, got %d", len(issues))
+	}
+
+	got := buildMechanicalReport(result, issues)
+
+	for _, want := range []string{
+		"<b>Status:</b> critical",
+		"<b>Issues (2):</b>",
+		"<code>oxpulse-chat</code>",
+		"exited &lt;code 1&gt; &amp; restarting",
+		"<b>Action:</b>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report missing %q\nfull report:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "<code 1>") {
+		t.Error("raw HTML from issue description leaked unescaped into the report")
+	}
+}
+
+// TestBuildMechanicalReport_CapsIssueLines verifies a mass outage is
+// truncated to mechReportMaxIssues lines with an "and N more" marker.
+func TestBuildMechanicalReport_CapsIssueLines(t *testing.T) {
+	t.Parallel()
+
+	var lines []string
+	for i := 0; i < mechReportMaxIssues+5; i++ {
+		lines = append(lines, fmt.Sprintf("[ERROR] svc-%02d — down", i))
+	}
+	result := strings.Join(lines, "\n")
+	issues := engine.ExtractIssues(result)
+
+	got := buildMechanicalReport(result, issues)
+
+	if want := fmt.Sprintf("… and %d more", 5); !strings.Contains(got, want) {
+		t.Errorf("report missing truncation marker %q\nfull report:\n%s", want, got)
+	}
+	if strings.Count(got, "• ") != mechReportMaxIssues {
+		t.Errorf("want %d issue bullets, got %d", mechReportMaxIssues, strings.Count(got, "• "))
+	}
+}
+
+// TestReportSeverity_Ranking verifies CRITICAL > ERROR > WARNING mapping.
+func TestReportSeverity_Ranking(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		result string
+		want   string
+	}{
+		{"[CRITICAL] a — x\n[ERROR] b — y", "critical"},
+		{"[ERROR] b — y\n[WARNING] c — z", "degraded"},
+		{"[WARNING] c — z", "warning"},
+	}
+	for _, tc := range cases {
+		if got := reportSeverity(tc.result); got != tc.want {
+			t.Errorf("reportSeverity(%q) = %q, want %q", tc.result, got, tc.want)
+		}
+	}
+}
+
+// TestMechanicalReport_NotifiesWithoutLLM verifies the mechanical route
+// delivers via notify and never touches the message bus / LLM agent.
+func TestMechanicalReport_NotifiesWithoutLLM(t *testing.T) {
+	t.Parallel()
+
+	var sent []string
+	w := &watchDeps{notify: func(text string) { sent = append(sent, text) }}
+
+	w.mechanicalReport(context.Background(), "[ERROR] postgres — connection refused", "h1")
+
+	if len(sent) != 1 {
+		t.Fatalf("want exactly 1 notify call, got %d", len(sent))
+	}
+	if !strings.Contains(sent[0], "<code>postgres</code>") {
+		t.Errorf("notification missing issue line: %s", sent[0])
 	}
 }
