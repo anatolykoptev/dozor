@@ -88,6 +88,12 @@ func (c *Config) loadFromEnv() {
 	}
 	if v := os.Getenv("DOZOR_LLM_CHECK_MODELS"); v != "" {
 		c.CheckModels = splitCSV(v)
+	} else if v := chainFromEnv(); v != "" {
+		// The canary probes the proxy AS production consumes it — through the
+		// model-fallback chain (see engine.checkProxyChain). Default the check
+		// list to that chain so the two cannot drift apart; an explicit
+		// DOZOR_LLM_CHECK_MODELS still overrides.
+		c.CheckModels = splitCSV(v)
 	}
 
 	// DOZOR_GEMINI_API_KEYS CSV takes priority over GEMINI_API_KEY single-key.
@@ -97,6 +103,16 @@ func (c *Config) loadFromEnv() {
 		// Backwards-compat: GEMINI_API_KEY (used by quotas) populates first entry.
 		c.GeminiKeys = []string{v}
 	}
+}
+
+// chainFromEnv returns the production model-fallback chain CSV, preferring the
+// dozor-specific var over the fleet-wide one (same precedence as the agent's
+// provider in internal/provider/openai.go).
+func chainFromEnv() string {
+	if v := os.Getenv("DOZOR_LLM_MODEL_FALLBACK"); v != "" {
+		return v
+	}
+	return os.Getenv("LLM_MODEL_FALLBACK")
 }
 
 // cliProxyConfig is a partial representation of CLIProxyAPI config.yaml.
