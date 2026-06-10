@@ -243,3 +243,55 @@ func TestMechanicalReport_NotifiesWithoutLLM(t *testing.T) {
 		t.Errorf("notification missing report id in header: %s", sent[0])
 	}
 }
+
+// TestShouldRunLLMCheck_Gate verifies the canary fires on the first tick
+// and then every Nth tick; every<=1 disables the gate entirely.
+func TestShouldRunLLMCheck_Gate(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		tick, every int
+		want        bool
+	}{
+		{1, 6, true},  // boot tick always checks
+		{2, 6, false},
+		{6, 6, false},
+		{7, 6, true}, // next gated run
+		{13, 6, true},
+		{1, 1, true}, // gate disabled
+		{5, 1, true},
+		{3, 0, true}, // defensive: nonsense config falls open
+	} {
+		if got := shouldRunLLMCheck(tc.tick, tc.every); got != tc.want {
+			t.Errorf("shouldRunLLMCheck(%d, %d) = %v, want %v", tc.tick, tc.every, got, tc.want)
+		}
+	}
+}
+
+// TestLLMKeyAlerts_ReplaysCacheBetweenGatedRuns verifies gated-off ticks
+// reuse the cached canary result instead of re-querying (no health flapping).
+func TestLLMKeyAlerts_ReplaysCacheBetweenGatedRuns(t *testing.T) {
+	t.Parallel()
+
+	// HasLLMKeys true via a configured check model, but empty LLMCheckURL —
+	// CheckLLMKeys then has no proxy endpoint and no Gemini keys to probe,
+	// so the gated run completes without network and yields "".
+	w := &watchDeps{
+		cfg:           engine.Config{LLMCheckModels: []string{"m"}},
+		llmCheckEvery: 6,
+	}
+
+	w.tickNum = 2 // gated off
+	w.cachedLLMAlerts = "\n\nLLM Health Issues:\n- [ERROR] proxy: stale"
+	if got := w.llmKeyAlerts(context.Background()); !strings.Contains(got, "proxy: stale") {
+		t.Errorf("gated-off tick must replay cached alerts, got %q", got)
+	}
+
+	w.tickNum = 7 // gated run refreshes the cache
+	if got := w.llmKeyAlerts(context.Background()); got != "" {
+		t.Errorf("gated run with no failing checks must clear alerts, got %q", got)
+	}
+	if w.cachedLLMAlerts != "" {
+		t.Errorf("cache must be refreshed on gated run, got %q", w.cachedLLMAlerts)
+	}
+}
