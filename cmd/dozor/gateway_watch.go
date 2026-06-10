@@ -189,7 +189,7 @@ func (w *watchDeps) mechanicalReport(_ context.Context, result, hash string) {
 	}
 
 	severity := reportSeverity(result)
-	report := buildMechanicalReport(result, issues)
+	report := buildMechanicalReport(result, issues, hash, time.Now())
 	watchReportTotal.WithLabelValues(severity).Inc()
 	slog.Info("gateway watch: mechanical report sent",
 		slog.String("hash", hash),
@@ -203,8 +203,16 @@ func (w *watchDeps) mechanicalReport(_ context.Context, result, hash string) {
 // buildMechanicalReport renders the Telegram HTML body for unhandled issues.
 // Mirrors the shape the LLM route was prompted to produce (Status / Issues /
 // Action) so operator-facing alerts look the same either way.
-func buildMechanicalReport(result string, issues []engine.TriageIssue) string {
+// The header carries the send time and the dedup hash as <code>#id</code> —
+// the same id slog writes with "mechanical report sent", so a report seen in
+// Telegram can be located in journald (and vice versa) by one grep.
+func buildMechanicalReport(result string, issues []engine.TriageIssue, hash string, ts time.Time) string {
 	var b strings.Builder
+	b.WriteString("<b>Dozor Watch</b>")
+	if hash != "" {
+		fmt.Fprintf(&b, " <code>#%s</code>", hash)
+	}
+	fmt.Fprintf(&b, " — %s\n", ts.Format("2006-01-02 15:04:05 MST"))
 	b.WriteString("<b>Status:</b> ")
 	b.WriteString(reportSeverity(result))
 	fmt.Fprintf(&b, "\n<b>Issues (%d):</b>\n", len(issues))

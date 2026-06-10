@@ -143,9 +143,11 @@ func TestBuildMechanicalReport_FormatAndEscaping(t *testing.T) {
 		t.Fatalf("fixture: want 2 issues, got %d", len(issues))
 	}
 
-	got := buildMechanicalReport(result, issues)
+	ts := time.Date(2026, 6, 10, 12, 43, 5, 0, time.UTC)
+	got := buildMechanicalReport(result, issues, "a1b2c3d4", ts)
 
 	for _, want := range []string{
+		"<b>Dozor Watch</b> <code>#a1b2c3d4</code> — 2026-06-10 12:43:05 UTC",
 		"<b>Status:</b> critical",
 		"<b>Issues (2):</b>",
 		"<code>oxpulse-chat</code>",
@@ -173,13 +175,31 @@ func TestBuildMechanicalReport_CapsIssueLines(t *testing.T) {
 	result := strings.Join(lines, "\n")
 	issues := engine.ExtractIssues(result)
 
-	got := buildMechanicalReport(result, issues)
+	got := buildMechanicalReport(result, issues, "ffff0000", time.Now())
 
 	if want := fmt.Sprintf("… and %d more", 5); !strings.Contains(got, want) {
 		t.Errorf("report missing truncation marker %q\nfull report:\n%s", want, got)
 	}
 	if strings.Count(got, "• ") != mechReportMaxIssues {
 		t.Errorf("want %d issue bullets, got %d", mechReportMaxIssues, strings.Count(got, "• "))
+	}
+}
+
+// TestBuildMechanicalReport_NoHashOmitsID verifies the header degrades
+// gracefully when no dedup hash is available: time stays, "#id" is omitted.
+func TestBuildMechanicalReport_NoHashOmitsID(t *testing.T) {
+	t.Parallel()
+
+	result := "[ERROR] postgres — connection refused"
+	issues := engine.ExtractIssues(result)
+
+	got := buildMechanicalReport(result, issues, "", time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC))
+
+	if strings.Contains(got, "#") {
+		t.Errorf("empty hash must omit the #id marker, got:\n%s", got)
+	}
+	if !strings.Contains(got, "<b>Dozor Watch</b> — 2026-06-10") {
+		t.Errorf("header must keep the timestamp without an id, got:\n%s", got)
 	}
 }
 
@@ -218,5 +238,8 @@ func TestMechanicalReport_NotifiesWithoutLLM(t *testing.T) {
 	}
 	if !strings.Contains(sent[0], "<code>postgres</code>") {
 		t.Errorf("notification missing issue line: %s", sent[0])
+	}
+	if !strings.Contains(sent[0], "<code>#h1</code>") {
+		t.Errorf("notification missing report id in header: %s", sent[0])
 	}
 }
