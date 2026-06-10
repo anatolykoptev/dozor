@@ -38,8 +38,7 @@ func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, cfg engine.C
 	var unhandled []engine.TriageIssue
 
 	for _, issue := range issues {
-		level := extractIssueLevel(triageResult, issue.Service)
-		r, s, d, u := routeIssue(ctx, eng, cfg, issue, level)
+		r, s, d, u := routeIssue(ctx, eng, cfg, issue)
 		restarted = append(restarted, r...)
 		suppressed = append(suppressed, s...)
 		remediatedDisks = append(remediatedDisks, d...)
@@ -71,11 +70,13 @@ func tryAutoRemediate(ctx context.Context, eng *engine.ServerAgent, cfg engine.C
 }
 
 // routeIssue dispatches a single triage issue to the appropriate handler.
+// The issue's level is read from issue.Level (parsed by ExtractIssues) — there
+// is no longer a re-scan of the report text to recover it.
 // Returns (restarted, suppressed, diskMsgs, unhandled) slices for the caller to accumulate.
-func routeIssue(ctx context.Context, eng *engine.ServerAgent, cfg engine.Config, issue engine.TriageIssue, level string) (restarted, suppressed, diskMsgs []string, unhandled []engine.TriageIssue) {
+func routeIssue(ctx context.Context, eng *engine.ServerAgent, cfg engine.Config, issue engine.TriageIssue) (restarted, suppressed, diskMsgs []string, unhandled []engine.TriageIssue) {
 	switch {
 	case issue.Service == "disk":
-		msg, handled := handleDiskIssue(ctx, eng, issue, level)
+		msg, handled := handleDiskIssue(ctx, eng, issue)
 		if msg != "" {
 			diskMsgs = append(diskMsgs, msg)
 		}
@@ -83,7 +84,7 @@ func routeIssue(ctx context.Context, eng *engine.ServerAgent, cfg engine.Config,
 			unhandled = append(unhandled, issue)
 		}
 
-	case level == "CRITICAL":
+	case issue.Level == engine.AlertCritical:
 		result := eng.RestartService(ctx, issue.Service)
 		if result.Success {
 			restarted = append(restarted, issue.Service)
@@ -130,13 +131,13 @@ type diskRemediator interface {
 // handled but produce no notification.
 // The package-level diskCooldown prevents re-running cleanup on the same (service, level)
 // within the cooldown window (default 30m, tunable via DOZOR_REMEDIATE_COOLDOWN).
-func handleDiskIssue(ctx context.Context, eng *engine.ServerAgent, issue engine.TriageIssue, level string) (notifyMsg string, handled bool) {
-	return handleDiskIssueWithCooldown(ctx, eng, issue, level, diskCooldown, time.Now())
+func handleDiskIssue(ctx context.Context, eng *engine.ServerAgent, issue engine.TriageIssue) (notifyMsg string, handled bool) {
+	return handleDiskIssueWithCooldown(ctx, eng, issue, issue.Level, diskCooldown, time.Now())
 }
 
 // handleDiskIssueWith is the testable core without cooldown, kept for backward compat
 // with existing tests that test the raw remediation logic independently.
-func handleDiskIssueWith(ctx context.Context, rem diskRemediator, issue engine.TriageIssue, level string) (notifyMsg string, handled bool) {
+func handleDiskIssueWith(ctx context.Context, rem diskRemediator, issue engine.TriageIssue, level engine.AlertLevel) (notifyMsg string, handled bool) {
 	alertLevel := mapTriageLevelToAlertLevel(level)
 	res := rem.AutoRemediateDisk(ctx, alertLevel)
 	if res == nil {
@@ -191,21 +192,6 @@ func verifyRestarts(ctx context.Context, eng *engine.ServerAgent, restarted []st
 	return verified, failed
 }
 
-// extractIssueLevel finds the alert level prefix for a service in the triage result text.
-// Matches exactly "[LEVEL] service — ..." to avoid prefix collisions (e.g. go-hully vs go-hully-worker).
-func extractIssueLevel(triageResult, service string) string {
-	for _, line := range strings.Split(triageResult, "\n") {
-		line = strings.TrimSpace(line)
-		for _, level := range []string{"CRITICAL", "ERROR", "WARNING_HIGH", "WARNING"} {
-			prefix := "[" + level + "] " + service + " "
-			if strings.HasPrefix(line, prefix) {
-				return level
-			}
-		}
-	}
-	return ""
-}
-
 // buildAutoRemediateMessage formats a Telegram notification for auto-remediation results.
 func buildAutoRemediateMessage(restarted, suppressed, disks []string) string {
 	var b strings.Builder
@@ -234,17 +220,19 @@ func buildAutoRemediateMessage(restarted, suppressed, disks []string) string {
 	return b.String()
 }
 
-// mapTriageLevelToAlertLevel converts a triage level string ("WARNING", "CRITICAL", "ERROR")
-// to the engine.AlertLevel type used by AutoRemediateDisk.
-// The "ERROR" arm is future-proofing: GenerateDiskAlerts currently only emits AlertCritical/AlertWarning,
-// but if AlertError disk lines are added the conservative path is to treat them as critical.
-func mapTriageLevelToAlertLevel(triageLevel string) engine.AlertLevel {
-	switch triageLevel {
-	case "WARNING":
+// mapTriageLevelToAlertLevel maps a parsed issue level to the engine.AlertLevel
+// AutoRemediateDisk acts on. It is the disk-remediation domain's own ranking:
+// AlertError is coerced to AlertCritical (conservative — GenerateDiskAlerts only
+// emits AlertCritical/AlertWarningHigh/AlertWarning today, but an AlertError disk
+// line, if ever added, must trigger the most aggressive cleanup). Anything else
+// (e.g. AlertInfo) falls through to AlertInfo = no remediation.
+func mapTriageLevelToAlertLevel(level engine.AlertLevel) engine.AlertLevel {
+	switch level {
+	case engine.AlertWarning:
 		return engine.AlertWarning
-	case "WARNING_HIGH":
+	case engine.AlertWarningHigh:
 		return engine.AlertWarningHigh
-	case "CRITICAL", "ERROR":
+	case engine.AlertCritical, engine.AlertError:
 		return engine.AlertCritical
 	default:
 		return engine.AlertInfo

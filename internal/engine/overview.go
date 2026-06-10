@@ -352,18 +352,22 @@ func (a *ServerAgent) appendDiskPressure(ctx context.Context, b *strings.Builder
 		fmt.Fprintf(b, "\nDisk: %s %.0f%% (%.0fG free) — %s\n", dp.Filesystem, dp.UsedPct, dp.AvailGB, status)
 		// Machine-readable line — parsed by ExtractIssues into TriageIssue{Service:"disk"}.
 		// Without this line the disk auto-remediate branch in tryAutoRemediate is dead code.
-		// Separator MUST come from TriageMachineSep — see triage.go.
-		// Three levels map to three remediation strategies in AutoRemediateDisk:
+		// Emitted via FormatIssueLine (the single canonical emitter) so the shape
+		// cannot drift from what ExtractIssues parses. Three levels map to three
+		// remediation strategies in AutoRemediateDisk:
 		//   [WARNING]      80-84%  — light cleanup (apt/sccache/npm/docker dangling)
 		//   [WARNING_HIGH] 85-94%  — + lang caches + docker builder prune
 		//   [CRITICAL]     95%+    — + full docker system prune
+		var level AlertLevel
 		switch {
 		case dp.UsedPct >= diskCriticalPct:
-			fmt.Fprintf(b, "[CRITICAL] disk%s%s at %.0f%% (%.1fGB free)\n", TriageMachineSep, dp.Filesystem, dp.UsedPct, dp.AvailGB)
+			level = AlertCritical
 		case dp.UsedPct >= diskWarnHighPct:
-			fmt.Fprintf(b, "[WARNING_HIGH] disk%s%s at %.0f%% (%.1fGB free)\n", TriageMachineSep, dp.Filesystem, dp.UsedPct, dp.AvailGB)
+			level = AlertWarningHigh
 		case dp.UsedPct >= diskWarnPct:
-			fmt.Fprintf(b, "[WARNING] disk%s%s at %.0f%% (%.1fGB free)\n", TriageMachineSep, dp.Filesystem, dp.UsedPct, dp.AvailGB)
+			level = AlertWarning
 		}
+		desc := fmt.Sprintf("%s at %.0f%% (%.1fGB free)", dp.Filesystem, dp.UsedPct, dp.AvailGB)
+		b.WriteString(FormatIssueLine(level, "disk", desc))
 	}
 }

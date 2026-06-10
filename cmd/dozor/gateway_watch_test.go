@@ -145,7 +145,7 @@ func TestBuildMechanicalReport_FormatAndEscaping(t *testing.T) {
 	}
 
 	ts := time.Date(2026, 6, 10, 12, 43, 5, 0, time.UTC)
-	got := buildMechanicalReport(result, issues, "a1b2c3d4", ts)
+	got := buildMechanicalReport(issues, "a1b2c3d4", ts)
 
 	for _, want := range []string{
 		"<b>Dozor Watch</b> <code>#a1b2c3d4</code> — 2026-06-10 12:43:05 UTC",
@@ -176,7 +176,7 @@ func TestBuildMechanicalReport_CapsIssueLines(t *testing.T) {
 	result := strings.Join(lines, "\n")
 	issues := engine.ExtractIssues(result)
 
-	got := buildMechanicalReport(result, issues, "ffff0000", time.Now())
+	got := buildMechanicalReport(issues, "ffff0000", time.Now())
 
 	if want := fmt.Sprintf("… and %d more", 5); !strings.Contains(got, want) {
 		t.Errorf("report missing truncation marker %q\nfull report:\n%s", want, got)
@@ -194,7 +194,7 @@ func TestBuildMechanicalReport_NoHashOmitsID(t *testing.T) {
 	result := "[ERROR] postgres — connection refused"
 	issues := engine.ExtractIssues(result)
 
-	got := buildMechanicalReport(result, issues, "", time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC))
+	got := buildMechanicalReport(issues, "", time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC))
 
 	if strings.Contains(got, "#") {
 		t.Errorf("empty hash must omit the #id marker, got:\n%s", got)
@@ -218,7 +218,8 @@ func TestReportSeverity_Ranking(t *testing.T) {
 		{"[WARNING] c — z", "warning"},
 	}
 	for _, tc := range cases {
-		if got := reportSeverity(tc.result); got != tc.want {
+		issues := engine.ExtractIssues(tc.result)
+		if got := reportSeverity(issues); got != tc.want {
 			t.Errorf("reportSeverity(%q) = %q, want %q", tc.result, got, tc.want)
 		}
 	}
@@ -294,31 +295,6 @@ func TestLLMKeyAlerts_ReplaysCacheBetweenGatedRuns(t *testing.T) {
 	}
 	if w.cachedLLMAlerts != "" {
 		t.Errorf("cache must be refreshed on gated run, got %q", w.cachedLLMAlerts)
-	}
-}
-
-// TestBuildMechanicalReport_ExtraAlertFallback verifies a pure-extra-alert
-// failure (LLM canary / remote check — formats ExtractIssues cannot parse)
-// still renders named issue lines instead of an empty "Issues (0):" body.
-func TestBuildMechanicalReport_ExtraAlertFallback(t *testing.T) {
-	t.Parallel()
-
-	result := "Health: degraded\n\nLLM Health Issues:\n- [ERROR] llm proxy gemini-3.1-flash-lite-preview: 429 quota exceeded"
-	issues := engine.ExtractIssues(result)
-	if len(issues) != 0 {
-		t.Fatalf("fixture must be invisible to ExtractIssues, got %d issues", len(issues))
-	}
-
-	got := buildMechanicalReport(result, issues, "cafe0001", time.Now())
-
-	if strings.Contains(got, "<b>Issues (0):</b>") {
-		t.Errorf("pure-extra-alert failure must not render an empty issue list:\n%s", got)
-	}
-	if !strings.Contains(got, "[ERROR] llm proxy gemini-3.1-flash-lite-preview: 429 quota exceeded") {
-		t.Errorf("report missing raw alert line:\n%s", got)
-	}
-	if !strings.Contains(got, "<b>Status:</b> degraded") {
-		t.Errorf("severity must rank from the raw [ERROR] marker:\n%s", got)
 	}
 }
 

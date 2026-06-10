@@ -55,8 +55,8 @@ func TestHandleDiskIssue_NotifiesOnErrors(t *testing.T) {
 		},
 	}
 
-	issue := engine.TriageIssue{Service: "disk", Description: "disk at 91%"}
-	msg, handled := handleDiskIssueWith(context.Background(), stub, issue, "CRITICAL")
+	issue := engine.TriageIssue{Service: "disk", Level: engine.AlertCritical, Description: "disk at 91%"}
+	msg, handled := handleDiskIssueWith(context.Background(), stub, issue, engine.AlertCritical)
 
 	if !handled {
 		t.Error("handleDiskIssue: handled=false even though cleanup returned errors — issue lands in unhandled[], notify never fires")

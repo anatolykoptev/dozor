@@ -275,7 +275,8 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 // TriageIssue represents a searchable issue summary extracted from a triage report.
 type TriageIssue struct {
 	Service     string
-	Description string // e.g. "redis: 3 restarts, connection refused"
+	Level       AlertLevel // parsed from the [LEVEL] marker of the canonical line
+	Description string     // e.g. "redis: 3 restarts, connection refused"
 }
 
 // TriageMachineSep separates `service` from `description` in a triage line.
@@ -284,12 +285,67 @@ type TriageIssue struct {
 // this constant; replacing the em-dash with ASCII `-` silently breaks ExtractIssues.
 const TriageMachineSep = " — "
 
+// issueLevelPrefixes maps each canonical machine-line prefix to the AlertLevel
+// it encodes. It is the single source of truth shared by FormatIssueLine (the
+// only writer) and ExtractIssues (the only reader). Order matters only for the
+// human-readable list — lookup is exact-prefix, so there is no [WARNING] vs
+// [WARNING_HIGH] ambiguity (the trailing space disambiguates).
+var issueLevelPrefixes = map[string]AlertLevel{
+	"[CRITICAL] ":     AlertCritical,
+	"[ERROR] ":        AlertError,
+	"[WARNING_HIGH] ": AlertWarningHigh,
+	"[WARNING] ":      AlertWarning,
+}
+
+// FormatIssueLine renders the single canonical machine alert line that
+// ExtractIssues parses: `[LEVEL] service — description\n`. This is the ONLY
+// place the line shape is written; every producer (disk pressure, systemd
+// checks, LLM and remote alerts) routes through it so a new producer cannot
+// drift into a format ExtractIssues silently ignores. An AlertInfo level (no
+// machine token) yields an empty string — info entries are not issues.
+func FormatIssueLine(level AlertLevel, service, description string) string {
+	token := level.MachineToken()
+	if token == "" {
+		return ""
+	}
+	return fmt.Sprintf("[%s] %s%s%s\n", token, service, TriageMachineSep, description)
+}
+
+// AlertIssueLine renders an Alert as a canonical issue line for the mechanical
+// watch report, giving each alert a STABLE per-entity service name so the dedup
+// hash (which keys on service) distinguishes distinct failures. LLM alerts all
+// carry the generic Service="llm"; their model/key identity lives in the Title,
+// so the report service is "llm:<title>". Remote alerts already carry a distinct
+// Service (URL or unit name); they are namespaced "remote:<service>" to avoid
+// colliding with a local container of the same name.
+func AlertIssueLine(a Alert) string {
+	service := alertReportService(a)
+	desc := a.Title
+	if a.Description != "" {
+		desc += ": " + a.Description
+	}
+	return FormatIssueLine(a.Level, service, desc)
+}
+
+// alertReportService derives the stable per-entity service name used for an
+// Alert inside the watch report. See AlertIssueLine for the rationale.
+func alertReportService(a Alert) string {
+	switch a.Service {
+	case "llm":
+		// Title is unique per probed model/key within a check cycle.
+		return "llm:" + a.Title
+	default:
+		return "remote:" + a.Service
+	}
+}
+
 // ExtractIssues parses a triage report string into searchable issue summaries.
+// It is the sole reader of the canonical line shape written by FormatIssueLine.
 func ExtractIssues(report string) []TriageIssue {
 	var issues []TriageIssue
 	for _, line := range strings.Split(report, "\n") {
 		line = strings.TrimSpace(line)
-		for _, prefix := range []string{"[CRITICAL] ", "[ERROR] ", "[WARNING_HIGH] ", "[WARNING] "} {
+		for prefix, level := range issueLevelPrefixes {
 			if !strings.HasPrefix(line, prefix) {
 				continue
 			}
@@ -298,10 +354,13 @@ func ExtractIssues(report string) []TriageIssue {
 			if len(parts) != 2 {
 				continue
 			}
+			service := strings.TrimSpace(parts[0])
 			issues = append(issues, TriageIssue{
-				Service:     strings.TrimSpace(parts[0]),
-				Description: strings.TrimSpace(parts[0]) + ": " + strings.TrimSpace(parts[1]),
+				Service:     service,
+				Level:       level,
+				Description: service + ": " + strings.TrimSpace(parts[1]),
 			})
+			break
 		}
 	}
 	return issues

@@ -10,7 +10,7 @@ import (
 func TestMapTriageLevelToAlertLevel_Warning(t *testing.T) {
 	t.Parallel()
 
-	level := mapTriageLevelToAlertLevel("WARNING")
+	level := mapTriageLevelToAlertLevel(engine.AlertWarning)
 	if level != engine.AlertWarning {
 		t.Errorf("expected AlertWarning, got %s", level)
 	}
@@ -19,7 +19,7 @@ func TestMapTriageLevelToAlertLevel_Warning(t *testing.T) {
 func TestMapTriageLevelToAlertLevel_Critical(t *testing.T) {
 	t.Parallel()
 
-	level := mapTriageLevelToAlertLevel("CRITICAL")
+	level := mapTriageLevelToAlertLevel(engine.AlertCritical)
 	if level != engine.AlertCritical {
 		t.Errorf("expected AlertCritical, got %s", level)
 	}
@@ -28,7 +28,7 @@ func TestMapTriageLevelToAlertLevel_Critical(t *testing.T) {
 func TestMapTriageLevelToAlertLevel_Error(t *testing.T) {
 	t.Parallel()
 
-	level := mapTriageLevelToAlertLevel("ERROR")
+	level := mapTriageLevelToAlertLevel(engine.AlertError)
 	if level != engine.AlertCritical {
 		t.Errorf("ERROR should map to AlertCritical, got %s", level)
 	}
@@ -37,7 +37,7 @@ func TestMapTriageLevelToAlertLevel_Error(t *testing.T) {
 func TestMapTriageLevelToAlertLevel_WarningHigh(t *testing.T) {
 	t.Parallel()
 
-	level := mapTriageLevelToAlertLevel("WARNING_HIGH")
+	level := mapTriageLevelToAlertLevel(engine.AlertWarningHigh)
 	if level != engine.AlertWarningHigh {
 		t.Errorf("expected AlertWarningHigh, got %s", level)
 	}
@@ -46,9 +46,10 @@ func TestMapTriageLevelToAlertLevel_WarningHigh(t *testing.T) {
 func TestMapTriageLevelToAlertLevel_Unknown(t *testing.T) {
 	t.Parallel()
 
-	level := mapTriageLevelToAlertLevel("BOGUS")
+	// AlertInfo is the only level with no remediation mapping — it falls through.
+	level := mapTriageLevelToAlertLevel(engine.AlertInfo)
 	if level != engine.AlertInfo {
-		t.Errorf("unknown level should map to AlertInfo, got %s", level)
+		t.Errorf("unmapped level should map to AlertInfo, got %s", level)
 	}
 }
 
