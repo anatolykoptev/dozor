@@ -106,14 +106,7 @@ func (w *watchDeps) tick(ctx context.Context) {
 
 	result := w.collectReport(ctx)
 	if w.isHealthy(result) {
-		// Healthy ticks are Debug; only the degraded→healthy transition is
-		// operator-relevant (lastHash != "" means the previous tick had issues).
-		if w.lastHash != "" {
-			slog.Info("gateway watch: recovered")
-		} else {
-			slog.Debug("gateway watch: all healthy")
-		}
-		w.lastHash = ""
+		w.noteHealthy()
 		return
 	}
 
@@ -136,6 +129,18 @@ func (w *watchDeps) tick(ctx context.Context) {
 	}
 	w.routeFn(ctx, result, hash)
 	w.notifyCooldown.markSent(hash, now) // mark AFTER successful route
+}
+
+// noteHealthy records a healthy tick. Healthy ticks are Debug noise; only
+// the degraded→healthy transition is operator-relevant (lastHash != ""
+// means the previous tick had issues).
+func (w *watchDeps) noteHealthy() {
+	if w.lastHash != "" {
+		slog.Info("gateway watch: recovered")
+	} else {
+		slog.Debug("gateway watch: all healthy")
+	}
+	w.lastHash = ""
 }
 
 // collectReport runs triage, systemd checks, and extra alerts into a single report.
