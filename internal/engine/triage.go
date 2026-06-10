@@ -313,9 +313,10 @@ func FormatIssueLine(level AlertLevel, service, description string) string {
 
 // AlertIssueLine renders an Alert as a canonical issue line for the mechanical
 // watch report, giving each alert a STABLE per-entity service name so the dedup
-// hash (which keys on service) distinguishes distinct failures. LLM alerts all
-// carry the generic Service="llm"; their model/key identity lives in the Title,
-// so the report service is "llm:<title>". Remote alerts already carry a distinct
+// hash (which keys on service) distinguishes distinct failures. LLM alerts carry
+// Service="llm:<model|key>" set at construction (llm_check.go) — stable per
+// probed entity, independent of the error kind, so the SAME entity failing with
+// different HTTP codes dedups as one issue. Remote alerts carry a distinct
 // Service (URL or unit name); they are namespaced "remote:<service>" to avoid
 // colliding with a local container of the same name.
 func AlertIssueLine(a Alert) string {
@@ -340,9 +341,14 @@ const (
 // alertReportService derives the stable per-entity service name used for an
 // Alert inside the watch report. See AlertIssueLine for the rationale.
 func alertReportService(a Alert) string {
-	switch a.Service {
-	case "llm":
-		// Title is unique per probed model/key within a check cycle.
+	switch {
+	case strings.HasPrefix(a.Service, llmServicePrefix):
+		// Already namespaced at construction (llm_check.go) — stable per
+		// probed model/key, independent of the error kind.
+		return a.Service
+	case a.Service == "llm":
+		// Legacy producer without a per-entity name; Title is the best
+		// stable-ish identity available.
 		return llmServicePrefix + a.Title
 	default:
 		return remoteServicePrefix + a.Service

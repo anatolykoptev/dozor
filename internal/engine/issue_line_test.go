@@ -205,3 +205,52 @@ func TestFormatLLMAlerts_CanonicalLines(t *testing.T) {
 		t.Errorf("two distinct LLM alerts collapsed to one service: %q", issues[0].Service)
 	}
 }
+
+// TestAlertIssueLine_NoDuplication locks the fix for the operator-visible
+// triple duplication: a proxy-model alert must render the model ONCE (in the
+// service), not in the title and description again.
+// Bug shape (2026-06-10 report #4bf4388c15fc7fad):
+//   llm:LLM proxy gemini…: upstream error (HTTP 502) — llm:LLM proxy gemini…:
+//   upstream error (HTTP 502): LLM proxy gemini…: upstream error (HTTP 502): {body}
+func TestAlertIssueLine_NoDuplication(t *testing.T) {
+	t.Parallel()
+
+	a := Alert{
+		Level:       AlertWarning,
+		Service:     llmServicePrefix + "gemini-3.1-flash-lite-preview",
+		Title:       "upstream error (HTTP 502)",
+		Description: `{"error":{"message":"unknown provider"}}`,
+	}
+	got := AlertIssueLine(a)
+
+	want := "[WARNING] llm:gemini-3.1-flash-lite-preview — upstream error (HTTP 502): " +
+		`{"error":{"message":"unknown provider"}}` + "\n"
+	if got != want {
+		t.Errorf("AlertIssueLine =\n%q\nwant\n%q", got, want)
+	}
+	if n := strings.Count(got, "gemini-3.1-flash-lite-preview"); n != 1 {
+		t.Errorf("model name must appear exactly once, got %d times:\n%s", n, got)
+	}
+	if n := strings.Count(got, "upstream error"); n != 1 {
+		t.Errorf("error kind must appear exactly once, got %d times:\n%s", n, got)
+	}
+}
+
+// TestAlertIssueLine_StableServiceAcrossErrorKinds: the SAME entity failing
+// with different HTTP codes must keep the same service name (dedup identity).
+func TestAlertIssueLine_StableServiceAcrossErrorKinds(t *testing.T) {
+	t.Parallel()
+
+	a502 := Alert{Level: AlertWarning, Service: llmServicePrefix + "m1", Title: "upstream error (HTTP 502)"}
+	a429 := Alert{Level: AlertWarning, Service: llmServicePrefix + "m1", Title: "rate limited (HTTP 429)"}
+
+	i502 := ExtractIssues(AlertIssueLine(a502))
+	i429 := ExtractIssues(AlertIssueLine(a429))
+	if len(i502) != 1 || len(i429) != 1 {
+		t.Fatalf("each line must parse to exactly one issue: %d, %d", len(i502), len(i429))
+	}
+	if i502[0].Service != i429[0].Service {
+		t.Errorf("same entity must keep one dedup identity across error kinds: %q vs %q",
+			i502[0].Service, i429[0].Service)
+	}
+}

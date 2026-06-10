@@ -106,8 +106,8 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 	if err != nil {
 		return &Alert{
 			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("Gemini key %s: request error", masked),
+			Service:         llmServicePrefix + "gemini-key-" + masked,
+			Title:           "request error",
 			Description:     err.Error(),
 			SuggestedAction: "Check key format",
 			Timestamp:       time.Now(),
@@ -118,8 +118,8 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 	if err != nil {
 		return &Alert{
 			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("Gemini key %s: unreachable", masked),
+			Service:         llmServicePrefix + "gemini-key-" + masked,
+			Title:           "unreachable",
 			Description:     err.Error(),
 			SuggestedAction: "Check network connectivity to Google API",
 			Timestamp:       time.Now(),
@@ -139,8 +139,8 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 	case http.StatusTooManyRequests:
 		return &Alert{
 			Level:           AlertWarning,
-			Service:         "llm",
-			Title:           fmt.Sprintf("Gemini key %s: quota exceeded", masked),
+			Service:         llmServicePrefix + "gemini-key-" + masked,
+			Title:           "quota exceeded",
 			Description:     buildGoogleAPIDesc(body, resp.StatusCode),
 			SuggestedAction: "Wait for quota reset or rotate key",
 			Timestamp:       time.Now(),
@@ -150,8 +150,8 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 		desc := buildGoogleAPIDesc(body, resp.StatusCode)
 		return &Alert{
 			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("Gemini key %s: invalid (HTTP %d)", masked, resp.StatusCode),
+			Service:         llmServicePrefix + "gemini-key-" + masked,
+			Title:           fmt.Sprintf("invalid key (HTTP %d)", resp.StatusCode),
 			Description:     desc,
 			SuggestedAction: "Rotate or remove this API key",
 			Timestamp:       time.Now(),
@@ -169,7 +169,7 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 		}
 		return &Alert{
 			Level:           AlertWarning,
-			Service:         "llm",
+			Service:         llmServicePrefix + "gemini-key-" + masked,
 			Title:           fmt.Sprintf("Google API upstream %s (HTTP %d)", titleTag, resp.StatusCode),
 			Description:     desc,
 			SuggestedAction: "Transient outage — retry; if persistent >1h check Google status page",
@@ -180,8 +180,8 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 		desc := buildGoogleAPIDesc(body, resp.StatusCode)
 		return &Alert{
 			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("Gemini key %s: unexpected HTTP %d", masked, resp.StatusCode),
+			Service:         llmServicePrefix + "gemini-key-" + masked,
+			Title:           fmt.Sprintf("unexpected HTTP %d", resp.StatusCode),
 			Description:     desc,
 			SuggestedAction: "Investigate; status code is unusual for this endpoint",
 			Timestamp:       time.Now(),
@@ -225,8 +225,8 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 		if provider.IsAuth(err) {
 			return &Alert{
 				Level:           AlertError,
-				Service:         "llm",
-				Title:           fmt.Sprintf("LLM proxy %s: auth failure (HTTP %d)", model, ae.StatusCode),
+				Service:         llmServicePrefix + model,
+				Title:           fmt.Sprintf("auth failure (HTTP %d)", ae.StatusCode),
 				Description:     ae.Body,
 				SuggestedAction: "Check DOZOR_LLM_CHECK_API_KEY / DOZOR_LLM_API_KEY credentials",
 				Timestamp:       time.Now(),
@@ -235,8 +235,8 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 		if provider.IsRateLimit(err) {
 			return &Alert{
 				Level:           AlertWarning,
-				Service:         "llm",
-				Title:           fmt.Sprintf("LLM proxy %s: rate limited (HTTP %d)", model, ae.StatusCode),
+				Service:         llmServicePrefix + model,
+				Title:           fmt.Sprintf("rate limited (HTTP %d)", ae.StatusCode),
 				Description:     ae.Body,
 				SuggestedAction: "Wait for quota reset or reduce probe frequency",
 				Timestamp:       time.Now(),
@@ -245,8 +245,8 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 		if provider.IsServerError(err) {
 			return &Alert{
 				Level:           AlertWarning,
-				Service:         "llm",
-				Title:           fmt.Sprintf("LLM proxy %s: upstream error (HTTP %d)", model, ae.StatusCode),
+				Service:         llmServicePrefix + model,
+				Title:           fmt.Sprintf("upstream error (HTTP %d)", ae.StatusCode),
 				Description:     ae.Body,
 				SuggestedAction: "Transient outage — retry; if persistent check CLIProxyAPI logs",
 				Timestamp:       time.Now(),
@@ -255,8 +255,8 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 		// Other API error (e.g. 400 bad request, 404 model not found).
 		return &Alert{
 			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("LLM proxy %s: error (HTTP %d)", model, ae.StatusCode),
+			Service:         llmServicePrefix + model,
+			Title:           fmt.Sprintf("error (HTTP %d)", ae.StatusCode),
 			Description:     ae.Body,
 			SuggestedAction: "Check model availability and proxy configuration",
 			Timestamp:       time.Now(),
@@ -266,8 +266,8 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 	// Non-API error: network/transport failure.
 	return &Alert{
 		Level:           AlertError,
-		Service:         "llm",
-		Title:           fmt.Sprintf("LLM proxy %s: unreachable", model),
+		Service:         llmServicePrefix + model,
+		Title:           "unreachable",
 		Description:     err.Error(),
 		SuggestedAction: "Check CLIProxyAPI is running and DOZOR_LLM_CHECK_URL is correct",
 		Timestamp:       time.Now(),
