@@ -278,7 +278,7 @@ func formatDiskRemediation(issue engine.TriageIssue, res *engine.DiskRemediateRe
 			parts = append(parts, fmt.Sprintf("%s=%s", tgt.Name, tgt.Freed))
 		}
 	}
-	line := issue.Description
+	line := issue.Service + ": " + issue.Description
 	if len(parts) > 0 {
 		line += ": " + strings.Join(parts, ", ")
 	}

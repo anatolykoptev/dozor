@@ -41,12 +41,15 @@ func CheckLLMKeys(ctx context.Context, cfg Config) []Alert {
 		}
 	}
 
-	// B) Proxy channel tests (1 token each via CLIProxyAPI, kitllm.Client.Chat).
-	if cfg.LLMCheckURL != "" && cfg.LLMCheckAPIKey != "" {
-		for _, model := range cfg.LLMCheckModels {
-			if a := checkProxyModel(ctx, cfg.LLMCheckURL, cfg.LLMCheckAPIKey, model); a != nil {
-				alerts = append(alerts, *a)
-			}
+	// B) Proxy chain test (1 token per probed model via CLIProxyAPI).
+	// DOZOR_LLM_CHECK_MODELS mirrors the production fallback chain: go-kit llm
+	// clients (WithModelFallback) survive any single model failing — 413/429/5xx
+	// advance the chain. The canary probes the SAME way: models in order, first
+	// success = healthy. Only a fully dead chain — the condition production
+	// actually feels — raises an alert.
+	if cfg.LLMCheckURL != "" && cfg.LLMCheckAPIKey != "" && len(cfg.LLMCheckModels) > 0 {
+		if a := checkProxyChain(ctx, cfg.LLMCheckURL, cfg.LLMCheckAPIKey, cfg.LLMCheckModels); a != nil {
+			alerts = append(alerts, *a)
 		}
 	}
 
@@ -201,6 +204,36 @@ func buildGoogleAPIDesc(body []byte, statusCode int) string {
 		return apiStatus
 	}
 	return fmt.Sprintf("HTTP %d", statusCode)
+}
+
+// checkProxyChain probes the check models as a fallback chain. The first
+// healthy model proves the production path is alive (degraded-but-alive is
+// logged, not alerted). A fully dead chain returns ONE aggregate alert with a
+// STABLE service id ("llm:check-chain") so repeated outages dedup correctly.
+func checkProxyChain(ctx context.Context, baseURL, apiKey string, models []string) *Alert {
+	var failures []string
+	for i, model := range models {
+		a := checkProxyModel(ctx, baseURL, apiKey, model)
+		if a == nil {
+			if i > 0 {
+				slog.Info("llm check: chain degraded but alive",
+					slog.String("healthy_model", model),
+					slog.Int("dead_ahead", i),
+					slog.String("failures", strings.Join(failures, "; ")))
+			}
+			return nil
+		}
+		failures = append(failures,
+			strings.TrimPrefix(a.Service, llmServicePrefix)+": "+a.Title)
+	}
+	return &Alert{
+		Level:           AlertError,
+		Service:         llmServicePrefix + "check-chain",
+		Title:           fmt.Sprintf("all %d check models failed", len(models)),
+		Description:     strings.Join(failures, "; "),
+		SuggestedAction: "Production fallback chain is exhausted — check CLIProxyAPI and provider quotas",
+		Timestamp:       time.Now(),
+	}
 }
 
 // checkProxyModel tests a single model through the LLM proxy using kitllm.Client.Chat.
