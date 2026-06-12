@@ -2023,3 +2023,58 @@ func TestParseIntValue(t *testing.T) {
 		})
 	}
 }
+
+// TestParseLokiLogLine_LogfmtLevelKey verifies that logfmt lines from slog services
+// (go-code, etc.) are classified by their explicit level= key, NOT by substring
+// match on field values like error=false or error=true.
+func TestParseLokiLogLine_LogfmtLevelKey(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		wantLevel string
+	}{
+		{
+			name:      "logfmt_INFO_with_error=false",
+			raw:       `time=2026-06-12T19:54:53.768Z level=INFO msg=tool_result tool=code_search duration=63ms error=false`,
+			wantLevel: "info",
+		},
+		{
+			name:      "logfmt_INFO_with_error=true",
+			raw:       `time=2026-06-12T19:53:17.241Z level=INFO msg=tool_result tool=code_search duration=45ms error=true`,
+			wantLevel: "info",
+		},
+		{
+			name:      "logfmt_WARN",
+			raw:       `time=2026-06-12T19:54:46.953Z level=WARN msg="go/packages load failed" err="exit status 1"`,
+			wantLevel: "warn",
+		},
+		{
+			name:      "no_level_key_with_error_word_falls_back_to_substring",
+			raw:       `something went terribly wrong: error in processing`,
+			wantLevel: "error",
+		},
+		{
+			name:      "logfmt_DEBUG_no_false_positive",
+			raw:       `time=2026-06-12T20:00:00Z level=DEBUG msg=heartbeat error=false`,
+			wantLevel: "debug",
+		},
+		{
+			name:      "logfmt_ERROR_explicit",
+			raw:       `time=2026-06-12T20:01:00Z level=ERROR msg="connection refused" target=redis`,
+			wantLevel: "error",
+		},
+		{
+			name:      "logfmt_WARNING_alias",
+			raw:       `time=2026-06-12T20:02:00Z level=WARNING msg="slow query" duration=5s`,
+			wantLevel: "warning",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotLevel, _ := parseLokiLogLine(tc.raw)
+			if gotLevel != tc.wantLevel {
+				t.Errorf("parseLokiLogLine(%q): level = %q, want %q", tc.raw, gotLevel, tc.wantLevel)
+			}
+		})
+	}
+}

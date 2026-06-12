@@ -22,6 +22,13 @@ import (
 //go:embed metrics_registry.yaml
 var embeddedRegistryYAML []byte
 
+// logfmtLevelRe matches `level=<value>` in logfmt lines (e.g. Go slog output).
+// The key must be preceded by a word boundary (start of line, space, or tab) so
+// that an occurrence of "level=" embedded inside a quoted msg value does not
+// produce a false match. Only the first match is used (FindStringSubmatch),
+// which corresponds to the structured key emitted before any free-text fields.
+var logfmtLevelRe = regexp.MustCompile(`(?i)(?:^|[\s\t])level=(\S+)`)
+
 // MetricsInput is the input schema for the `metrics` MCP tool.
 type MetricsInput struct {
 	Service       string `json:"service"`
@@ -1222,7 +1229,16 @@ func parseLokiLogLine(raw string) (level, msg string) {
 		}
 		return lvl, m
 	}
-	// plain text: try to extract level keyword
+	// logfmt / plain text path.
+	// First: look for an explicit level= key (e.g. slog logfmt output).
+	// Match `level=<value>` where the key is at a word boundary so that
+	// a quoted msg value containing "level=" is not accidentally matched
+	// (we match only the FIRST occurrence, which is the structured key).
+	// Case-insensitive on the value side.
+	if m := logfmtLevelRe.FindStringSubmatch(raw); m != nil {
+		return strings.ToLower(m[1]), raw
+	}
+	// Fallback: substring heuristic for unstructured lines with no level= key.
 	lower := strings.ToLower(raw)
 	for _, candidate := range []string{"error", "warn", "warning", "info", "debug", "panic", "fatal"} {
 		if strings.Contains(lower, candidate) {
