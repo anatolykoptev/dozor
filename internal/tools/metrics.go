@@ -49,6 +49,48 @@ type MetricsOutput struct {
 	Logs       []LogLine      `json:"logs,omitempty"`
 	Traces     []TraceSummary `json:"traces,omitempty"` // only when include_traces=true
 	Warnings   []string       `json:"warnings,omitempty"`
+	// Failures is populated only when category="failures".
+	Failures *FailuresSweep `json:"failures,omitempty"`
+}
+
+// FailuresSweep is the cross-source failure digest returned when
+// category="failures". It is compact by design — pre-aggregated server-side
+// so the result stays well under the tool-result token cap (~2 KB typical).
+type FailuresSweep struct {
+	Range          string              `json:"range"`
+	FailCounters   []FailCounter       `json:"fail_counters"`    // counters with increase > 0, sorted desc
+	GaugesDown     []GaugeDown         `json:"gauges_down"`      // *_healthy gauges currently == 0
+	FiringAlerts   []FiringAlert       `json:"firing_alerts"`    // alertmanager active alerts
+	ErrorLogCounts []ContainerLogCount `json:"error_log_counts"` // containers with error/panic/fatal logs
+	Verdict        string              `json:"verdict"`          // one-line health summary
+	// Truncated lists sections that were capped with "+N more omitted".
+	Truncated []string `json:"truncated,omitempty"`
+}
+
+// FailCounter holds one failure counter with its increase over the range.
+type FailCounter struct {
+	Name   string            `json:"name"`
+	Labels map[string]string `json:"labels,omitempty"`
+	Delta  int64             `json:"delta"` // rounded integer increase over range
+}
+
+// GaugeDown holds a healthy gauge that is currently == 0.
+type GaugeDown struct {
+	Name   string            `json:"name"`
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+// FiringAlert holds one active alert from Alertmanager.
+type FiringAlert struct {
+	AlertName string `json:"alertname"`
+	Severity  string `json:"severity,omitempty"`
+	StartsAt  string `json:"starts_at"`
+}
+
+// ContainerLogCount holds the error-log count for one container over the range.
+type ContainerLogCount struct {
+	Container string `json:"container"`
+	Count     int64  `json:"count"`
 }
 
 // TraceSummary holds a single Jaeger trace summary.
@@ -83,10 +125,12 @@ type metricsRegistry struct {
 }
 
 type serviceEntry struct {
-	PromJob       string              `yaml:"prom_job"`
-	Container     string              `yaml:"container"`
-	JaegerService string              `yaml:"jaeger_service"` // optional — defaults to service key
-	Categories    map[string][]string `yaml:"categories"`
+	PromJob         string              `yaml:"prom_job"`
+	Container       string              `yaml:"container"`
+	JaegerService   string              `yaml:"jaeger_service"` // optional — defaults to service key
+	Categories      map[string][]string `yaml:"categories"`
+	FailureCounters []string            `yaml:"failure_counters"` // PromQL expressions queried for increase() in failures sweep
+	HealthyGauges   []string            `yaml:"healthy_gauges"`   // gauge name patterns checked for == 0 in failures sweep
 }
 
 // loadMetricsRegistry loads the registry from a file path (if non-empty and
@@ -130,11 +174,16 @@ Categories per service — oxpulse-chat: calls, turn, sdk, build, sfu;
 go-code: tools, embed, index, postgres; memdb: storage, api, embed;
 dozor: deploy, queue, alerts, gateway, quotas; go-search: api, cache, llm.
 
+Special category "failures": cross-source failure digest — failure counter deltas,
+downed health gauges, firing Alertmanager alerts, and per-container error-log counts.
+Returns a compact pre-aggregated result (~2 KB) instead of raw metric dumps.
+
 Examples:
   {"service":"oxpulse-chat","category":"turn"}
   {"service":"dozor","category":"deploy","range":"5m"}
   {"service":"go-code","include_logs":true}
-  {"service":"memdb","filter":"^memdb_storage_","format":"full"}`,
+  {"service":"memdb","filter":"^memdb_storage_","format":"full"}
+  {"service":"oxpulse-chat","category":"failures","range":"24h"}`,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input MetricsInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		if strings.TrimSpace(input.Service) == "" {
@@ -259,6 +308,11 @@ func handleMetrics(ctx context.Context, input MetricsInput) (*MetricsOutput, err
 		}
 	}
 
+	// Special category "failures" — cross-source digest, skips metric discovery.
+	if input.Category == categoryFailures {
+		return dispatchFailuresSweep(ctx, out, promURL, lokiURL, input.Range, input.Service, svcEntry, inRegistry)
+	}
+
 	// 1. Discover all metric names via /api/v1/label/__name__/values
 	allNames, err := fetchMetricNames(ctx, promURL, jobFilter)
 	if err != nil {
@@ -316,6 +370,455 @@ func handleMetrics(ctx context.Context, input MetricsInput) (*MetricsOutput, err
 	}
 
 	return out, nil
+}
+
+// Failures sweep constants.
+const (
+	categoryFailures     = "failures"
+	defaultFailuresRange = "24h"
+	// sweepTopN caps each failures section to avoid token overflow.
+	sweepTopN = 15
+	// alertStateActive is the Alertmanager state value for a firing alert.
+	alertStateActive = "active"
+	// alertStateFiring is an alternative state value used by some AM versions.
+	alertStateFiring = "firing"
+)
+
+// alertmanagerAlert is one item from GET /api/v2/alerts.
+type alertmanagerAlert struct {
+	Labels   map[string]string `json:"labels"`
+	StartsAt string            `json:"startsAt"`
+	EndsAt   string            `json:"endsAt"`
+	Status   struct {
+		State string `json:"state"`
+	} `json:"status"`
+}
+
+// dispatchFailuresSweep is the thin bridge called from handleMetrics when
+// category="failures". It wires the already-resolved output skeleton with the
+// sweep result so handleMetrics stays below its complexity budget.
+func dispatchFailuresSweep(
+	ctx context.Context,
+	out *MetricsOutput,
+	promURL, lokiURL, rangeInput, service string,
+	svcEntry serviceEntry,
+	inRegistry bool,
+) (*MetricsOutput, error) {
+	rangeStr := rangeInput
+	if rangeStr == "" {
+		rangeStr = defaultFailuresRange
+	}
+	sweep, sweepWarnings, err := handleFailuresSweep(ctx, promURL, lokiURL, rangeStr, service, svcEntry, inRegistry)
+	if err != nil {
+		return nil, err
+	}
+	out.Categories = []string{categoryFailures}
+	out.Failures = sweep
+	out.Warnings = append(out.Warnings, sweepWarnings...)
+	return out, nil
+}
+
+// handleFailuresSweep builds the compact failure digest.
+// It is the implementation of category="failures". All sections degrade
+// gracefully — failures in one section are added to warnings, not returned
+// as errors.
+func handleFailuresSweep(
+	ctx context.Context,
+	promURL, lokiURL, rangeStr, service string,
+	svcEntry serviceEntry,
+	inRegistry bool,
+) (*FailuresSweep, []string, error) {
+	alertURL := os.Getenv("DOZOR_ALERTMANAGER_URL")
+	if alertURL == "" {
+		alertURL = "http://127.0.0.1:9093"
+	}
+
+	sweep := &FailuresSweep{Range: rangeStr}
+	var warnings []string
+
+	// Section 1: failure counter deltas.
+	counters, cWarn := sweepFailureCounters(ctx, promURL, rangeStr, svcEntry, inRegistry)
+	warnings = append(warnings, cWarn...)
+	if len(counters) > sweepTopN {
+		sweep.Truncated = append(sweep.Truncated,
+			fmt.Sprintf("fail_counters: showing top %d of %d (+%d omitted)", sweepTopN, len(counters), len(counters)-sweepTopN))
+		counters = counters[:sweepTopN]
+	}
+	sweep.FailCounters = counters
+
+	// Section 2: healthy gauges == 0.
+	down, dWarn := sweepHealthyGauges(ctx, promURL, svcEntry, inRegistry)
+	warnings = append(warnings, dWarn...)
+	if len(down) > sweepTopN {
+		sweep.Truncated = append(sweep.Truncated,
+			fmt.Sprintf("gauges_down: showing top %d of %d (+%d omitted)", sweepTopN, len(down), len(down)-sweepTopN))
+		down = down[:sweepTopN]
+	}
+	sweep.GaugesDown = down
+
+	// Section 3: firing alerts.
+	alerts, aWarn := fetchFiringAlerts(ctx, alertURL)
+	if aWarn != "" {
+		warnings = append(warnings, aWarn)
+	}
+	if len(alerts) > sweepTopN {
+		sweep.Truncated = append(sweep.Truncated,
+			fmt.Sprintf("firing_alerts: showing top %d of %d (+%d omitted)", sweepTopN, len(alerts), len(alerts)-sweepTopN))
+		alerts = alerts[:sweepTopN]
+	}
+	sweep.FiringAlerts = alerts
+
+	// Section 4: per-container error-log counts.
+	container := service
+	if inRegistry && svcEntry.Container != "" {
+		container = svcEntry.Container
+	}
+	logCounts, lWarn := sweepErrorLogCounts(ctx, lokiURL, container, rangeStr)
+	if lWarn != "" {
+		warnings = append(warnings, lWarn)
+	}
+	if len(logCounts) > sweepTopN {
+		sweep.Truncated = append(sweep.Truncated,
+			fmt.Sprintf("error_log_counts: showing top %d of %d (+%d omitted)", sweepTopN, len(logCounts), len(logCounts)-sweepTopN))
+		logCounts = logCounts[:sweepTopN]
+	}
+	sweep.ErrorLogCounts = logCounts
+
+	// Verdict line.
+	sweep.Verdict = buildSweepVerdict(sweep)
+	return sweep, warnings, nil
+}
+
+// sweepFailureCounters queries increase(<counter>[<range>]) for each failure
+// counter in the registry, keeps results > 0, and returns sorted desc by delta.
+func sweepFailureCounters(ctx context.Context, promURL, rangeStr string, svcEntry serviceEntry, inRegistry bool) ([]FailCounter, []string) {
+	var counters []FailCounter
+	var warnings []string
+
+	counterExprs := svcEntry.FailureCounters
+	if !inRegistry || len(counterExprs) == 0 {
+		return counters, warnings
+	}
+
+	for _, expr := range counterExprs {
+		query := buildIncreaseQuery(expr, rangeStr)
+		reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second) //nolint:mnd // 5s query timeout matches rest of file
+		rawURL := fmt.Sprintf("%s/api/v1/query?query=%s", promURL, url.QueryEscape(query))
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			cancel()
+			warnings = append(warnings, fmt.Sprintf("build query for %q: %v", expr, err))
+			continue
+		}
+		resp, err := http.DefaultClient.Do(req)
+		cancel()
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("query %q failed: %v", expr, err))
+			continue
+		}
+		parsed, parseErr := parsePromQueryResponse(resp)
+		resp.Body.Close()
+		if parseErr != nil {
+			warnings = append(warnings, fmt.Sprintf("parse response for %q: %v", expr, parseErr))
+			continue
+		}
+		for _, s := range parsed {
+			delta, ok := parseIntValue(s.Value)
+			if !ok || delta <= 0 {
+				continue
+			}
+			name := s.Name
+			if name == "" {
+				name = expr
+			}
+			counters = append(counters, FailCounter{Name: name, Labels: s.Labels, Delta: delta})
+		}
+	}
+
+	// Sort descending by delta.
+	sortFailCounters(counters)
+	return counters, warnings
+}
+
+// sweepHealthyGauges queries each healthy_gauges pattern for == 0 results.
+func sweepHealthyGauges(ctx context.Context, promURL string, svcEntry serviceEntry, inRegistry bool) ([]GaugeDown, []string) {
+	var down []GaugeDown
+	var warnings []string
+
+	patterns := svcEntry.HealthyGauges
+	if !inRegistry || len(patterns) == 0 {
+		return down, warnings
+	}
+
+	for _, pattern := range patterns {
+		query := pattern + " == 0"
+		reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second) //nolint:mnd // 5s query timeout matches rest of file
+		rawURL := fmt.Sprintf("%s/api/v1/query?query=%s", promURL, url.QueryEscape(query))
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			cancel()
+			warnings = append(warnings, fmt.Sprintf("build gauge query for %q: %v", pattern, err))
+			continue
+		}
+		resp, err := http.DefaultClient.Do(req)
+		cancel()
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("gauge query %q failed: %v", pattern, err))
+			continue
+		}
+		parsed, parseErr := parsePromQueryResponse(resp)
+		resp.Body.Close()
+		if parseErr != nil {
+			warnings = append(warnings, fmt.Sprintf("parse gauge response for %q: %v", pattern, parseErr))
+			continue
+		}
+		for _, s := range parsed {
+			name := s.Name
+			if name == "" {
+				name = pattern
+			}
+			down = append(down, GaugeDown{Name: name, Labels: s.Labels})
+		}
+	}
+	return down, warnings
+}
+
+// fetchFiringAlerts queries Alertmanager GET /api/v2/alerts?active=true.
+// Returns a warning string on failure instead of an error (graceful degradation).
+func fetchFiringAlerts(ctx context.Context, alertURL string) ([]FiringAlert, string) {
+	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second) //nolint:mnd // 5s query timeout matches rest of file
+	defer cancel()
+
+	rawURL := alertURL + "/api/v2/alerts?active=true"
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Sprintf("alertmanager request build failed: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Sprintf("alertmanager unreachable at %s: %v", alertURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256)) //nolint:mnd // 256B error-body cap matches rest of file
+		return nil, fmt.Sprintf("alertmanager returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var items []alertmanagerAlert
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return nil, fmt.Sprintf("parse alertmanager response: %v", err)
+	}
+
+	alerts := make([]FiringAlert, 0, len(items))
+	for _, item := range items {
+		// Only include truly firing alerts (state=active or firing).
+		if item.Status.State != "" && item.Status.State != alertStateActive && item.Status.State != alertStateFiring {
+			continue
+		}
+		alerts = append(alerts, FiringAlert{
+			AlertName: item.Labels["alertname"],
+			Severity:  item.Labels["severity"],
+			StartsAt:  item.StartsAt,
+		})
+	}
+	return alerts, ""
+}
+
+// sweepErrorLogCounts runs a Loki count_over_time query to get per-container
+// error-log counts. The container label uses the service's configured container
+// name as a prefix regex so sidecars are included.
+// Returns a warning string on failure (graceful degradation).
+func sweepErrorLogCounts(ctx context.Context, lokiURL, container, rangeStr string) ([]ContainerLogCount, string) {
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	now := time.Now()
+
+	// Validate the range is parseable (rangeToStart is the canonical validator).
+	if _, parseErr := rangeToStart(now, rangeStr); parseErr != nil {
+		return nil, fmt.Sprintf("parse range %q: %v", rangeStr, parseErr)
+	}
+
+	// Use count_over_time with the range baked into the LogQL expression so we
+	// get an instant query at now — no start/end params needed.
+	logQL := fmt.Sprintf(
+		`sum by (container) (count_over_time({container=~"%s.*"} |~ "(?i)(error|panic|fatal)" [%s]))`,
+		escapeLogQLStringLiteral(container),
+		rangeStr,
+	)
+	rawURL := fmt.Sprintf("%s/loki/api/v1/query?query=%s&time=%d",
+		lokiURL,
+		url.QueryEscape(logQL),
+		now.UnixNano(),
+	)
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Sprintf("loki count request build failed: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Sprintf("loki unreachable at %s: %v", lokiURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256)) //nolint:mnd // 256B error-body cap matches rest of file
+		return nil, fmt.Sprintf("loki returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	counts, err := parseLokiCountResponse(resp.Body)
+	if err != nil {
+		return nil, fmt.Sprintf("parse loki count response: %v", err)
+	}
+
+	// Sort descending by count.
+	sortLogCounts(counts)
+	return counts, ""
+}
+
+// parseLokiCountResponse decodes a Loki /loki/api/v1/query vector response
+// (from a count_over_time/sum query) into ContainerLogCount entries.
+func parseLokiCountResponse(r io.Reader) ([]ContainerLogCount, error) {
+	var result struct {
+		Status string `json:"status"`
+		Data   struct {
+			ResultType string `json:"resultType"`
+			Result     []struct {
+				Metric map[string]string `json:"metric"`
+				Value  []interface{}     `json:"value"` // [unix_ts, "count_string"]
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(r).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	counts := make([]ContainerLogCount, 0, len(result.Data.Result))
+	for _, r := range result.Data.Result {
+		containerName := r.Metric["container"]
+		if containerName == "" {
+			containerName = "unknown"
+		}
+		var countVal int64
+		if len(r.Value) == 2 { //nolint:mnd // Prometheus/Loki vector pair is always [timestamp, value]
+			switch v := r.Value[1].(type) {
+			case string:
+				if n, err := parseInt64FromString(v); err == nil {
+					countVal = n
+				}
+			case float64:
+				countVal = int64(v)
+			}
+		}
+		if countVal > 0 {
+			counts = append(counts, ContainerLogCount{Container: containerName, Count: countVal})
+		}
+	}
+	return counts, nil
+}
+
+// buildSweepVerdict returns a single-line summary of the failure sweep.
+func buildSweepVerdict(s *FailuresSweep) string {
+	failClasses := 0
+	for _, fc := range s.FailCounters {
+		if fc.Delta > 0 {
+			failClasses++
+		}
+	}
+	gaugesDown := len(s.GaugesDown)
+	alertsFiring := len(s.FiringAlerts)
+	containersWithErrors := len(s.ErrorLogCounts)
+
+	if failClasses == 0 && gaugesDown == 0 && alertsFiring == 0 && containersWithErrors == 0 {
+		return "HEALTHY: no failures, all gauges up, no alerts, no error logs"
+	}
+	return fmt.Sprintf("DEGRADED: %d fail-counter class(es) with traffic, %d gauge(s) down, %d alert(s) firing, %d container(s) with errors",
+		failClasses, gaugesDown, alertsFiring, containersWithErrors)
+}
+
+// buildIncreaseQuery wraps a counter expression in increase(...[range]).
+// If expr already contains a selector (has `{`), it is used as-is inside increase.
+// If expr is a plain metric name, a bare increase(name[range]) is built.
+func buildIncreaseQuery(expr, rangeStr string) string {
+	return fmt.Sprintf("sum by (le,result,kind,error,status,platform,region) (increase(%s[%s]))", expr, rangeStr)
+}
+
+// parseIntValue parses a Prometheus string value to int64, rounding floats.
+// Returns ok=false for empty, NaN, +Inf, -Inf, or non-numeric strings.
+func parseIntValue(s string) (int64, bool) {
+	if s == "" || s == "NaN" || s == "+Inf" || s == "-Inf" {
+		return 0, false
+	}
+	v, err := parseInt64FromString(s)
+	return v, err == nil
+}
+
+// parseInt64FromString converts a decimal or float string to int64 by rounding.
+// Prometheus returns counter values as float64 strings (e.g. "42.7");
+// we parse as float first to avoid fmt.Sscanf "%d" stopping at the decimal point.
+func parseInt64FromString(s string) (int64, error) {
+	var f float64
+	if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
+		return 0, err
+	}
+	return int64(f + 0.5), nil //nolint:mnd // round-half-up: +0.5 before truncation
+}
+
+// rangeToStart converts a Prometheus-style range string (e.g. "24h", "7d") to
+// a time.Time by subtracting from now. Falls back to 24h on parse error.
+func rangeToStart(now time.Time, rangeStr string) (time.Time, error) {
+	// Try standard Go duration first ("1h", "30m").
+	if d, err := time.ParseDuration(rangeStr); err == nil {
+		return now.Add(-d), nil
+	}
+	// Try Prometheus extensions: d (days), w (weeks), y (years).
+	if len(rangeStr) >= 2 {
+		unit := rangeStr[len(rangeStr)-1]
+		digits := rangeStr[:len(rangeStr)-1]
+		var n int64
+		if _, err := fmt.Sscanf(digits, "%d", &n); err == nil {
+			switch unit {
+			case 'd':
+				return now.Add(-time.Duration(n) * 24 * time.Hour), nil //nolint:mnd // 24 hours in a day
+			case 'w':
+				return now.Add(-time.Duration(n) * 7 * 24 * time.Hour), nil //nolint:mnd // 7 days × 24h
+			case 'y':
+				return now.Add(-time.Duration(n) * 365 * 24 * time.Hour), nil //nolint:mnd // 365 days × 24h
+			}
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported range %q", rangeStr)
+}
+
+// sortFailCounters sorts failure counters descending by Delta (insertion sort
+// for small slices — these are capped at sweepTopN before truncation).
+func sortFailCounters(counters []FailCounter) {
+	n := len(counters)
+	for i := 1; i < n; i++ {
+		key := counters[i]
+		j := i - 1
+		for j >= 0 && counters[j].Delta < key.Delta {
+			counters[j+1] = counters[j]
+			j--
+		}
+		counters[j+1] = key
+	}
+}
+
+// sortLogCounts sorts container log counts descending by Count.
+func sortLogCounts(counts []ContainerLogCount) {
+	n := len(counts)
+	for i := 1; i < n; i++ {
+		key := counts[i]
+		j := i - 1
+		for j >= 0 && counts[j].Count < key.Count {
+			counts[j+1] = counts[j]
+			j--
+		}
+		counts[j+1] = key
+	}
 }
 
 // fetchMetricNames queries /api/v1/label/__name__/values with a job filter.

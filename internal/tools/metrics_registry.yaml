@@ -1,6 +1,14 @@
 # Service → Prometheus job + category presets.
 # Categories are regex lists matched against metric __name__.
 # `prom_url` defaults to env DOZOR_PROMETHEUS_URL or http://127.0.0.1:9090.
+#
+# failure_counters: PromQL expressions evaluated with increase()[range] for the
+#   "failures" digest.  Use plain counter names (wrapping in increase() is done
+#   automatically) or full PromQL selectors like
+#   analytics_events_total{result!="ok"}.
+#
+# healthy_gauges: metric name patterns queried as `<name> == 0`.  Used to find
+#   downed health gauges.  Plain names only (no label selectors).
 
 services:
   oxpulse-chat:
@@ -13,6 +21,17 @@ services:
       sdk:    ["^sdk_.*"]
       build:  ["^oxpulse_chat_build_.*"]
       sfu:    ["^sfu_.*", "^ice_.*"]
+    failure_counters:
+      - "client_ice_failed_total"
+      - "client_cold_hangup_total"
+      - "call_ice_to_connected_failures_total"
+      - "ws_idle_timeout_total"
+      - "signaling_join_rejected_total"
+      - "analytics_events_total{result!=\"ok\"}"
+      - "http_requests_total{status=~\"5..\"}"
+    healthy_gauges:
+      - "turn_server_transport_healthy"
+      - "partner_node_healthy"
 
   go-code:
     prom_job: go-code
@@ -23,6 +42,12 @@ services:
       embed:    ["^embed_.*", "^semantic_fallback_.*"]
       index:    ["^gocode_index_.*", "^gocode_repo_.*"]
       postgres: ["^gocode_pg_.*", "^gocode_age_.*"]
+    failure_counters:
+      - "http_requests_total{status=~\"5..\"}"
+      - "gocode_pg_query_errors_total"
+      - "gocode_index_errors_total"
+    healthy_gauges:
+      - "gocode_pg_healthy"
 
   memdb:
     prom_job: memdb
@@ -32,6 +57,11 @@ services:
       storage: ["^memdb_storage_.*", "^memdb_atomic_.*"]
       api:     ["^memdb_api_.*", "^memdb_http_.*"]
       embed:   ["^memdb_embed_.*", "^memdb_ner_.*"]
+    failure_counters:
+      - "http_requests_total{status=~\"5..\"}"
+      - "memdb_storage_write_errors_total"
+      - "memdb_embed_errors_total"
+    healthy_gauges: []
 
   dozor:
     prom_job: dozor
@@ -43,6 +73,11 @@ services:
       alerts: ["^dozor_alert_.*", "^dozor_remediate_.*"]
       gateway: ["^dozor_gateway_.*", "^dozor_webhook_.*"]
       quotas: ["^dozor_quota_.*"]
+    failure_counters:
+      - "dozor_build_failures_total"
+      - "dozor_deploy_failures_total"
+      - "dozor_gateway_errors_total"
+    healthy_gauges: []
 
   go-search:
     prom_job: go-search
@@ -52,3 +87,8 @@ services:
       api:   ["^go_search_api_.*"]
       cache: ["^go_search_cache_.*"]
       llm:   ["^go_search_llm_.*", "^llm_proxy_.*"]
+    failure_counters:
+      - "http_requests_total{status=~\"5..\"}"
+      - "go_search_llm_errors_total"
+      - "llm_proxy_errors_total"
+    healthy_gauges: []
