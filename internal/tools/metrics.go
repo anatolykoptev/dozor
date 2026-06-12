@@ -125,12 +125,12 @@ type metricsRegistry struct {
 }
 
 type serviceEntry struct {
-	PromJob          string              `yaml:"prom_job"`
-	Container        string              `yaml:"container"`
-	JaegerService    string              `yaml:"jaeger_service"`    // optional — defaults to service key
-	Categories       map[string][]string `yaml:"categories"`
-	FailureCounters  []string            `yaml:"failure_counters"`  // PromQL expressions queried for increase() in failures sweep
-	HealthyGauges    []string            `yaml:"healthy_gauges"`    // gauge name patterns checked for == 0 in failures sweep
+	PromJob         string              `yaml:"prom_job"`
+	Container       string              `yaml:"container"`
+	JaegerService   string              `yaml:"jaeger_service"` // optional — defaults to service key
+	Categories      map[string][]string `yaml:"categories"`
+	FailureCounters []string            `yaml:"failure_counters"` // PromQL expressions queried for increase() in failures sweep
+	HealthyGauges   []string            `yaml:"healthy_gauges"`   // gauge name patterns checked for == 0 in failures sweep
 }
 
 // loadMetricsRegistry loads the registry from a file path (if non-empty and
@@ -386,10 +386,10 @@ const (
 
 // alertmanagerAlert is one item from GET /api/v2/alerts.
 type alertmanagerAlert struct {
-	Labels      map[string]string `json:"labels"`
-	StartsAt    string            `json:"startsAt"`
-	EndsAt      string            `json:"endsAt"`
-	Status      struct {
+	Labels   map[string]string `json:"labels"`
+	StartsAt string            `json:"startsAt"`
+	EndsAt   string            `json:"endsAt"`
+	Status   struct {
 		State string `json:"state"`
 	} `json:"status"`
 }
