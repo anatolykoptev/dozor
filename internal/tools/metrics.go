@@ -504,7 +504,7 @@ func escapeLogQLStringLiteral(s string) string {
 // from client-reported payload fields (e.g. error_class:"AbortError" in an
 // INFO-level telemetry event). WARN lines are intentionally excluded.
 //
-// A separate raw-regex query (lokiQueryPanicSignatures) is issued in parallel
+// A separate raw-regex query (lokiQueryPanicSignatures) is issued sequentially
 // to catch Go runtime panics, which emit multi-line text with no JSON level.
 const lokiQueryDefault = `| json | level=~"(?i)(error|fatal|panic|critical)"`
 
@@ -538,12 +538,13 @@ func fetchLokiLogs(ctx context.Context, lokiURL, container, logQuery string) ([]
 		return lines, warn
 	}
 
-	// Default path: structured level filter + narrow panic signatures OR.
-	structuredQL := fmt.Sprintf(`{container=~"%s.*"} %s`, escapeLogQLStringLiteral(container), lokiQueryDefault)
-	panicQL := fmt.Sprintf(`{container=~"%s.*"} %s`, escapeLogQLStringLiteral(container), lokiQueryPanicSignatures)
+	// Default path: structured level filter (exact container match) + narrow panic
+	// signatures. Two queries issued sequentially; results merged and deduplicated.
+	structuredQL := fmt.Sprintf(`{container="%s"} %s`, container, lokiQueryDefault)
+	panicQL := fmt.Sprintf(`{container=~"%s.*"} %s`, regexp.QuoteMeta(container), lokiQueryPanicSignatures)
 
 	structuredLines, structuredWarn := fetchLokiQuery(ctx, lokiURL, structuredQL, "structured-level", start, now)
-	panicLines, _ := fetchLokiQuery(ctx, lokiURL, panicQL, "panic-signatures", start, now)
+	panicLines, panicWarn := fetchLokiQuery(ctx, lokiURL, panicQL, "panic-signatures", start, now)
 
 	// Merge and deduplicate by timestamp+snippet.
 	merged := mergeLogLines(structuredLines, panicLines)
@@ -555,8 +556,19 @@ func fetchLokiLogs(ctx context.Context, lokiURL, container, logQuery string) ([]
 	}
 
 	if len(merged) == 0 {
-		// Returned zero across both queries.
-		return merged, fmt.Sprintf("loki: 0 error-tier log lines in window 30m (structured+panic queries both matched 0)")
+		// Prefer a real error message over the generic clean-bill advisory.
+		// structuredWarn may hold a fetch error or the "unstructured" advisory;
+		// panicWarn may hold a separate fetch error — surface both if set.
+		if structuredWarn != "" {
+			if panicWarn != "" {
+				return merged, structuredWarn + "; panic-query: " + panicWarn
+			}
+			return merged, structuredWarn
+		}
+		if panicWarn != "" {
+			return merged, panicWarn
+		}
+		return merged, "loki: 0 error-tier log lines in window 30m (structured+panic queries both matched 0)"
 	}
 	return merged, structuredWarn
 }

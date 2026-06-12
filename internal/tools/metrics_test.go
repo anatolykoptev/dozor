@@ -1423,14 +1423,14 @@ func TestFetchLokiLogs_GoPanicSignaturesCaught(t *testing.T) {
 	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query().Get("query")
 
-		if strings.Contains(q, "| json |") {
-			// Structured query: no JSON-level error lines (all lines are panics).
-			fmt.Fprint(w, `{"status":"success","data":{"resultType":"streams","result":[]}}`)
-		} else {
+		if strings.Contains(q, "panic:") {
 			// Panic-signatures query: return a raw panic line.
 			// lokiResponse encodes as JSON-in-string; use a raw Loki response instead.
 			resp := `{"status":"success","data":{"resultType":"streams","result":[{"stream":{"container":"oxpulse-chat"},"values":[["2024-01-01T00:00:01Z","goroutine 42 [running]:\nruntime/debug.Stack()"]]}]}}`
 			fmt.Fprint(w, resp)
+		} else {
+			// Structured query: no JSON-level error lines (all lines are panics).
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"streams","result":[]}}`)
 		}
 	}))
 	defer lokiSrv.Close()
