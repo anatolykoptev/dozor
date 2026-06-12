@@ -1007,13 +1007,29 @@ func escapeLogQLStringLiteral(s string) string {
 	return s
 }
 
-// fetchLokiLogs queries Loki for recent WARN/ERROR lines for a container.
-// If logQuery is non-empty it replaces the default regex filter.
+// lokiQueryDefault is the structured LogQL query used when no log_query
+// override is provided. It uses JSON label parsing so that only lines whose
+// parsed "level" field is error-tier are counted, avoiding false positives
+// from client-reported payload fields (e.g. error_class:"AbortError" in an
+// INFO-level telemetry event). WARN lines are intentionally excluded.
+//
+// A separate raw-regex query (lokiQueryPanicSignatures) is issued sequentially
+// to catch Go runtime panics, which emit multi-line text with no JSON level.
+const lokiQueryDefault = `| json | level=~"(?i)(error|fatal|panic|critical)"`
+
+// lokiQueryPanicSignatures matches unambiguous Go runtime crash signatures
+// that appear as raw text without a structured level field. These are
+// deliberately narrow to avoid matching client-payload words.
+const lokiQueryPanicSignatures = `|~ "(?i)(panic:|fatal error:|goroutine [0-9]+ \\[running\\]:)"`
+
+// fetchLokiLogs queries Loki for recent error-tier log lines for a container.
+// If logQuery is non-empty it replaces the default filter (raw regex, caller
+// is responsible for specificity). When using the default filter, two queries
+// are issued: one structured (JSON level=error/fatal/panic/critical) and one
+// narrow raw-regex for Go runtime crash signatures; results are merged and
+// deduplicated by timestamp+content.
 // On failure, it returns a warning string instead of an error (graceful degradation).
 func fetchLokiLogs(ctx context.Context, lokiURL, container, logQuery, rangeStr string) ([]LogLine, string) {
-	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
 	now := time.Now()
 	// Window honours the caller's `range` (same field the metrics path uses);
 	// default 3h, not 30m. The hardcoded 30m silently returned 0 lines for any
@@ -1030,23 +1046,73 @@ func fetchLokiLogs(ctx context.Context, lokiURL, container, logQuery, rangeStr s
 	}
 	start := now.Add(-lookback)
 
-	regex := logQuery
-	if regex == "" {
-		regex = "(?i)(error|warn|panic|turn_server_down|fail)"
+	if logQuery != "" {
+		// Caller-supplied override: single raw-regex query (original behaviour).
+		logQL := fmt.Sprintf(`{container="%s"} |~ "%s"`, container, escapeLogQLStringLiteral(logQuery))
+		lines, warn := fetchLokiQuery(ctx, lokiURL, logQL, logQuery, start, now)
+		if warn != "" {
+			return lines, warn
+		}
+		if len(lines) == 0 {
+			// Distinguish "query ran but matched nothing" from a silent failure.
+			return lines, fmt.Sprintf("loki: 0 matching log lines for query=%s in window 30m", logQuery)
+		}
+		return lines, warn
 	}
-	logQL := fmt.Sprintf(`{container="%s"} |~ "%s"`, container, escapeLogQLStringLiteral(regex))
-	// limit 200 (was 25): a busy room spams signal_relay candidate frames that
-	// would otherwise crowd out the join/leave/ice lifecycle lines under a low cap.
-	rawURL := fmt.Sprintf("%s/loki/api/v1/query_range?query=%s&start=%d&end=%d&limit=200&direction=backward",
+
+	// Default path: structured level filter (exact container match) + narrow panic
+	// signatures. Two queries issued sequentially; results merged and deduplicated.
+	structuredQL := fmt.Sprintf(`{container="%s"} %s`, container, lokiQueryDefault)
+	panicQL := fmt.Sprintf(`{container=~"%s.*"} %s`, regexp.QuoteMeta(container), lokiQueryPanicSignatures)
+
+	structuredLines, structuredWarn := fetchLokiQuery(ctx, lokiURL, structuredQL, "structured-level", start, now)
+	panicLines, panicWarn := fetchLokiQuery(ctx, lokiURL, panicQL, "panic-signatures", start, now)
+
+	// Merge and deduplicate by timestamp+snippet.
+	merged := mergeLogLines(structuredLines, panicLines)
+
+	// If structured query returned zero lines, add an advisory so callers can
+	// distinguish "no errors" from "logs are unstructured and level-filter missed them".
+	if len(structuredLines) == 0 && structuredWarn == "" {
+		structuredWarn = "loki: structured level-filter returned 0 lines; logs may be unstructured — use log_query override for raw regex"
+	}
+
+	if len(merged) == 0 {
+		// Prefer a real error message over the generic clean-bill advisory.
+		// structuredWarn may hold a fetch error or the "unstructured" advisory;
+		// panicWarn may hold a separate fetch error — surface both if set.
+		if structuredWarn != "" {
+			if panicWarn != "" {
+				return merged, structuredWarn + "; panic-query: " + panicWarn
+			}
+			return merged, structuredWarn
+		}
+		if panicWarn != "" {
+			return merged, panicWarn
+		}
+		return merged, "loki: 0 error-tier log lines in window 30m (structured+panic queries both matched 0)"
+	}
+	return merged, structuredWarn
+}
+
+// fetchLokiQuery issues a single Loki query_range request and returns parsed
+// log lines. On Loki-level error it returns a warning string (graceful
+// degradation). An empty result set returns (nil, "") — the caller decides
+// whether to emit an advisory.
+func fetchLokiQuery(ctx context.Context, lokiURL, logQL, queryDesc string, start, end time.Time) ([]LogLine, string) {
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	rawURL := fmt.Sprintf("%s/loki/api/v1/query_range?query=%s&start=%d&end=%d&limit=25&direction=backward",
 		lokiURL,
 		url.QueryEscape(logQL),
 		start.UnixNano(),
-		now.UnixNano(),
+		end.UnixNano(),
 	)
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, fmt.Sprintf("loki request build failed: %v", err)
+		return nil, fmt.Sprintf("loki request build failed (%s): %v", queryDesc, err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1061,16 +1127,31 @@ func fetchLokiLogs(ctx context.Context, lokiURL, container, logQuery, rangeStr s
 
 	lines, parseErr := parseLokiResponse(resp.Body)
 	if parseErr != nil {
-		return nil, fmt.Sprintf("parse loki response: %v", parseErr)
-	}
-	if len(lines) == 0 {
-		// Distinguish "query ran but matched nothing" from "query didn't run at
-		// all". Without this signal, callers cannot tell whether the result is
-		// an empty match or a silent failure (empirical repro: operator-grade
-		// log_query returning 100% metrics + 0 logs + 0 warnings).
-		return lines, fmt.Sprintf("loki: 0 matching log lines for query=%s in window %s", regex, lookback)
+		return nil, fmt.Sprintf("parse loki response (%s): %v", queryDesc, parseErr)
 	}
 	return lines, ""
+}
+
+// mergeLogLines combines two LogLine slices, deduplicating entries that share
+// the same Timestamp and Snippet. Order is preserved (a first, then b extras).
+func mergeLogLines(a, b []LogLine) []LogLine {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	result := make([]LogLine, 0, len(a)+len(b))
+	for _, l := range a {
+		key := l.Timestamp + "\x00" + l.Snippet
+		if _, dup := seen[key]; !dup {
+			seen[key] = struct{}{}
+			result = append(result, l)
+		}
+	}
+	for _, l := range b {
+		key := l.Timestamp + "\x00" + l.Snippet
+		if _, dup := seen[key]; !dup {
+			seen[key] = struct{}{}
+			result = append(result, l)
+		}
+	}
+	return result
 }
 
 // parseLokiResponse decodes a Loki query_range response and extracts log lines.

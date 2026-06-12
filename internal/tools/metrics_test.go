@@ -1315,6 +1315,219 @@ func TestHandleMetrics_NoMatchWarningIncludesFilterInput(t *testing.T) {
 	}
 }
 
+// ---- structured-level filter tests (fix: false-positive error log counts) ----
+
+// TestFetchLokiLogs_StructuredLevelFilter verifies that when no log_query
+// override is given, the default Loki query uses JSON label parsing
+// ("| json | level=~...") instead of a raw substring match, so that
+// INFO-level lines whose JSON payload contains "error_class" are NOT counted
+// as errors.
+//
+// Falsification: if the fix is reverted and the query goes back to
+// "|~ error|warn|panic", the structured-query path never fires and the
+// capturedStructuredQuery assertion fails — test goes RED.
+func TestFetchLokiLogs_StructuredLevelFilter(t *testing.T) {
+	// Track which Loki queries arrive so we can assert the query shape.
+	capturedQueries := make([]string, 0)
+
+	// lokiResponseRaw builds a raw Loki response where the server has already
+	// applied label filtering -- only the lines that pass the structured filter
+	// are returned. We simulate this by returning only the ERROR-level line.
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+		capturedQueries = append(capturedQueries, q)
+
+		if strings.Contains(q, "| json |") {
+			// Structured query: server returns only the ERROR-level line.
+			// INFO line with error_class in payload is NOT returned (server filtered it).
+			lines := []struct {
+				TS    string
+				Level string
+				Msg   string
+			}{
+				{"2024-01-01T00:00:01Z", "error", "real server error occurred"},
+			}
+			fmt.Fprint(w, lokiResponse(lines))
+		} else {
+			// Panic-signatures query (or any other): return empty.
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"streams","result":[]}}`)
+		}
+	}))
+	defer lokiSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:     "oxpulse-chat",
+		IncludeLogs: true,
+		// No LogQuery override -- exercises the default structured path.
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 1. The outgoing Loki query must use JSON label parsing, NOT a raw substring.
+	foundStructured := false
+	for _, q := range capturedQueries {
+		if strings.Contains(q, "| json |") && strings.Contains(q, "level") {
+			foundStructured = true
+		}
+	}
+	if !foundStructured {
+		t.Errorf("expected a structured LogQL query with '| json | level=~'; captured queries: %v", capturedQueries)
+	}
+
+	// 2. The default query must NOT use a bare substring match on "error".
+	for _, q := range capturedQueries {
+		if strings.Contains(q, `|~ "(?i)(error|warn`) {
+			t.Errorf("default query must not use bare substring error|warn match; got: %q", q)
+		}
+	}
+
+	// 3. WARN is excluded: the level filter must not include "warn".
+	for _, q := range capturedQueries {
+		if strings.Contains(q, "| json |") {
+			if strings.Contains(strings.ToLower(q), "warn") {
+				t.Errorf("structured query must exclude WARN; got: %q", q)
+			}
+		}
+	}
+
+	// 4. Exactly 1 log line is returned (the ERROR one) -- the INFO line with
+	//    error_class in the payload was filtered server-side by the structured query.
+	if len(out.Logs) != 1 {
+		t.Errorf("expected 1 error-tier log line, got %d: %v", len(out.Logs), out.Logs)
+	}
+	if len(out.Logs) == 1 && out.Logs[0].Level != "error" {
+		t.Errorf("returned log line level: want 'error', got %q", out.Logs[0].Level)
+	}
+}
+
+// TestFetchLokiLogs_GoPanicSignaturesCaught verifies that Go runtime panic
+// signatures (which emit raw text with no JSON level field) are caught by
+// the narrow panic-signatures raw-regex query issued alongside the structured
+// level query.
+//
+// Falsification: if the panic sub-query is removed, the mock panic-signatures
+// server path never fires and the panic line never appears in out.Logs.
+func TestFetchLokiLogs_GoPanicSignaturesCaught(t *testing.T) {
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+
+		if strings.Contains(q, "panic:") {
+			// Panic-signatures query: return a raw panic line.
+			// lokiResponse encodes as JSON-in-string; use a raw Loki response instead.
+			resp := `{"status":"success","data":{"resultType":"streams","result":[{"stream":{"container":"oxpulse-chat"},"values":[["2024-01-01T00:00:01Z","goroutine 42 [running]:\nruntime/debug.Stack()"]]}]}}`
+			fmt.Fprint(w, resp)
+		} else {
+			// Structured query: no JSON-level error lines (all lines are panics).
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"streams","result":[]}}`)
+		}
+	}))
+	defer lokiSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:     "oxpulse-chat",
+		IncludeLogs: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The panic line must appear in the merged output.
+	if len(out.Logs) == 0 {
+		t.Error("expected at least one log line from panic-signatures query, got none")
+	}
+
+	// The panic query must NOT contain "| json |" (it's a raw-regex query).
+	// Checked indirectly: the panic log line arrived because a non-structured
+	// query was issued. At least one log entry should contain the goroutine text.
+	found := false
+	for _, l := range out.Logs {
+		if strings.Contains(l.Snippet, "goroutine") || strings.Contains(l.Snippet, "running") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("panic goroutine signature not found in logs: %v", out.Logs)
+	}
+}
+
+// TestFetchLokiLogs_LogQueryOverride_RawRegex verifies that a caller-supplied
+// log_query still works as a raw regex (single query, backward-compat path)
+// and is NOT modified to use the structured level filter.
+func TestFetchLokiLogs_LogQueryOverride_RawRegex(t *testing.T) {
+	capturedQueries := make([]string, 0)
+
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQueries = append(capturedQueries, r.URL.Query().Get("query"))
+		lines := []struct {
+			TS    string
+			Level string
+			Msg   string
+		}{
+			{"2024-01-01T00:00:01Z", "error", "custom match"},
+		}
+		fmt.Fprint(w, lokiResponse(lines))
+	}))
+	defer lokiSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/label/__name__/values") {
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+		} else {
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+		}
+	}))
+	defer promSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+
+	_, err := handleMetrics(t.Context(), MetricsInput{
+		Service:     "oxpulse-chat",
+		IncludeLogs: true,
+		LogQuery:    "my_custom_pattern",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only 1 query must have been issued (single raw-regex, no second query).
+	if len(capturedQueries) != 1 {
+		t.Errorf("log_query override must issue exactly 1 Loki request, got %d: %v", len(capturedQueries), capturedQueries)
+	}
+	// Must use |~ raw regex, NOT | json |.
+	if !strings.Contains(capturedQueries[0], "my_custom_pattern") {
+		t.Errorf("expected custom pattern in query, got: %q", capturedQueries[0])
+	}
+	if strings.Contains(capturedQueries[0], "| json |") {
+		t.Errorf("log_query override must not use structured JSON filter, got: %q", capturedQueries[0])
+	}
+}
+
 // ---- failures sweep tests (category="failures") ----------------------------
 
 // promIncreaseResponse builds a Prometheus instant-query response for a
@@ -1600,7 +1813,7 @@ func TestFailuresSweep_TopNTruncation(t *testing.T) {
 }
 
 // TestFailuresSweep_AlertmanagerDown_DegradesGracefully verifies that an
-// unreachable Alertmanager does not fail the whole request — metrics and
+// unreachable Alertmanager does not fail the whole request -- metrics and
 // log counts still return, and a warning is added.
 func TestFailuresSweep_AlertmanagerDown_DegradesGracefully(t *testing.T) {
 	amSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1756,7 +1969,7 @@ func TestFailuresSweep_NonRegistryService_ReturnsEmptySections(t *testing.T) {
 	if out.Failures == nil {
 		t.Fatal("out.Failures must not be nil for unknown service")
 	}
-	// No counter or gauge data for unknown service — but no error either.
+	// No counter or gauge data for unknown service -- but no error either.
 	if len(out.Failures.FailCounters) != 0 {
 		t.Errorf("unknown service: want 0 fail counters, got %d", len(out.Failures.FailCounters))
 	}
@@ -1770,7 +1983,7 @@ func TestParseIntValue(t *testing.T) {
 		ok    bool
 	}{
 		{"42", 42, true},
-		{"42.7", 43, true},  // round-half-up
+		{"42.7", 43, true}, // round-half-up
 		{"0", 0, true},
 		{"", 0, false},
 		{"NaN", 0, false},
