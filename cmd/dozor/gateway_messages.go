@@ -150,7 +150,11 @@ func processAgentMessage(ctx context.Context, deps messageLoopDeps, msg bus.Mess
 
 	response, err := deps.stack.loop.Process(ctx, msg.ChatID, enrichedText)
 	if err != nil {
-		slog.Error("agent processing failed", slog.Any("error", err))
+		slog.Error("agent processing failed",
+			slog.Any("error", err),
+			slog.String("msg_id", msg.ID),
+			slog.String("channel", msg.Channel),
+			slog.String("sender", msg.SenderID))
 		if strings.Contains(err.Error(), "max tool iterations reached") {
 			response = "⚠️ Max iterations reached. Escalating to Claude Code for deep analysis..."
 			go autoEscalateToClaudeCode(ctx, deps.stack, msg.Text, deps.notifyFn)

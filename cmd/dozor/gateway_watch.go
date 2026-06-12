@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"html"
 	"log/slog"
 	"sort"
 	"strings"
@@ -13,14 +14,31 @@ import (
 	"github.com/anatolykoptev/dozor/internal/bus"
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
+	kitenv "github.com/anatolykoptev/go-kit/env"
 	"github.com/anatolykoptev/go-kit/toolutil"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+// watchReportTotal counts mechanical watch reports sent to the operator,
+// by severity. The LLM route this replaced failed silently (6/6 HTTP 413
+// visible only in logs) — this counter makes the alert path assertable.
+var watchReportTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "dozor_watch_report_total",
+	Help: "Mechanical watch reports sent to the operator, by severity.",
+}, []string{"severity"})
 
 const (
 	// kbQueryMaxLen is the maximum length of KB search query built from issues.
 	kbQueryMaxLen = 500
 	// kbTopKResults is the number of KB results to fetch during watch triage.
 	kbTopKResults = 3
+	// mechReportMaxIssues caps the number of issue lines in a mechanical
+	// report so a mass outage stays within one Telegram message.
+	mechReportMaxIssues = 12
+	// llmCheckEveryDefault gates the LLM key canary to every Nth watch
+	// tick: 6 ticks at the 5-min interval = one canary per 30 min.
+	llmCheckEveryDefault = 6
 )
 
 // watchDeps groups dependencies for the gateway watch loop.
@@ -32,8 +50,17 @@ type watchDeps struct {
 	notify         func(string)
 	lastHash       string
 	notifyCooldown *notifyCooldown
-	// routeFn is called to dispatch a triage result to the LLM agent.
-	// Defaults to w.defaultRouteToAgent; overridable in tests.
+	// tickNum counts watch ticks (1-based); llmCheckEvery gates the LLM
+	// key canary to every Nth tick (DOZOR_LLM_CHECK_EVERY, default 6 —
+	// 30 min at the 5-min watch interval). cachedLLMAlerts replays the
+	// last canary result on gated-off ticks.
+	tickNum         int
+	llmCheckEvery   int
+	cachedLLMAlerts string
+	// routeFn is called to dispatch a triage result that auto-remediation
+	// did not fully handle. Defaults to w.mechanicalReport (deterministic
+	// Telegram report, no LLM); DOZOR_WATCH_LLM=true restores the legacy
+	// LLM agent route. Overridable in tests.
 	routeFn func(ctx context.Context, result, hash string)
 }
 
@@ -51,8 +78,13 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 		kbSearcher:     kbSearcher,
 		notify:         notify,
 		notifyCooldown: newNotifyCooldownFromEnv(),
+		llmCheckEvery:  kitenv.Int("DOZOR_LLM_CHECK_EVERY", llmCheckEveryDefault),
 	}
-	w.routeFn = w.defaultRouteToAgent
+	w.routeFn = w.mechanicalReport
+	if kitenv.Bool("DOZOR_WATCH_LLM", false) {
+		slog.Info("gateway watch: LLM route enabled (DOZOR_WATCH_LLM)")
+		w.routeFn = w.defaultRouteToAgent
+	}
 	w.tick(ctx)
 
 	ticker := time.NewTicker(interval)
@@ -69,12 +101,12 @@ func runGatewayWatch(ctx context.Context, eng *engine.ServerAgent, msgBus *bus.B
 }
 
 func (w *watchDeps) tick(ctx context.Context) {
-	slog.Info("gateway watch: running triage", slog.Bool("dev_mode", w.eng.IsDevMode()))
+	w.tickNum++
+	slog.Debug("gateway watch: running triage", slog.Bool("dev_mode", w.eng.IsDevMode()))
 
 	result := w.collectReport(ctx)
 	if w.isHealthy(result) {
-		slog.Info("gateway watch: all healthy")
-		w.lastHash = ""
+		w.noteHealthy()
 		return
 	}
 
@@ -91,12 +123,24 @@ func (w *watchDeps) tick(ctx context.Context) {
 
 	now := time.Now()
 	if w.notifyCooldown.shouldSuppress(hash, now) {
-		slog.InfoContext(ctx, "watch: notify cooldown active, suppressing LLM call",
+		slog.InfoContext(ctx, "watch: notify cooldown active, suppressing watch report",
 			"hash", hash, "cooldown", w.notifyCooldown.duration)
 		return
 	}
 	w.routeFn(ctx, result, hash)
 	w.notifyCooldown.markSent(hash, now) // mark AFTER successful route
+}
+
+// noteHealthy records a healthy tick. Healthy ticks are Debug noise; only
+// the degraded→healthy transition is operator-relevant (lastHash != ""
+// means the previous tick had issues).
+func (w *watchDeps) noteHealthy() {
+	if w.lastHash != "" {
+		slog.Info("gateway watch: recovered")
+	} else {
+		slog.Debug("gateway watch: all healthy")
+	}
+	w.lastHash = ""
 }
 
 // collectReport runs triage, systemd checks, and extra alerts into a single report.
@@ -108,6 +152,7 @@ func (w *watchDeps) collectReport(ctx context.Context) string {
 	}
 
 	result += collectExtraAlerts(ctx, w.cfg)
+	result += w.llmKeyAlerts(ctx)
 	return result
 }
 
@@ -152,6 +197,108 @@ func (w *watchDeps) defaultRouteToAgent(ctx context.Context, result, hash string
 	})
 }
 
+// mechanicalReport formats unhandled triage issues into a deterministic
+// Telegram HTML report and delivers it via notify — no LLM in the path.
+// Default watch route: the LLM step added no signal over the structured
+// triage data and its ~24K-token prompt (system prompt + KB context +
+// full report) overflowed provider TPM budgets on every incident
+// (groq 12K TPM → HTTP 413, 6/6 failures over 48 h).
+func (w *watchDeps) mechanicalReport(_ context.Context, result, hash string) {
+	issues := engine.ExtractIssues(result)
+	for _, issue := range issues {
+		slog.Warn("gateway watch: issue detected",
+			slog.String("service", issue.Service),
+			slog.String("description", issue.Description),
+		)
+	}
+
+	severity := reportSeverity(issues)
+	report := buildMechanicalReport(issues, hash, time.Now())
+	watchReportTotal.WithLabelValues(severity).Inc()
+	slog.Info("gateway watch: mechanical report sent",
+		slog.String("hash", hash),
+		slog.String("severity", severity),
+		slog.Int("issues", len(issues)))
+	if w.notify != nil {
+		w.notify(report)
+	}
+}
+
+// buildMechanicalReport renders the Telegram HTML body for unhandled issues.
+// Mirrors the shape the LLM route was prompted to produce (Status / Issues /
+// Action) so operator-facing alerts look the same either way.
+// The header carries the send time and the dedup hash as <code>#id</code> —
+// the same id slog writes with "mechanical report sent", so a report seen in
+// Telegram can be located in journald (and vice versa) by one grep.
+func buildMechanicalReport(issues []engine.TriageIssue, hash string, ts time.Time) string {
+	var b strings.Builder
+	b.WriteString("<b>Dozor Watch</b>")
+	if hash != "" {
+		fmt.Fprintf(&b, " <code>#%s</code>", hash)
+	}
+	fmt.Fprintf(&b, " — %s\n", ts.Format("2006-01-02 15:04:05 MST"))
+	b.WriteString("<b>Status:</b> ")
+	b.WriteString(reportSeverity(issues))
+
+	lines := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		lines = append(lines, fmt.Sprintf("<code>%s</code> — %s",
+			html.EscapeString(issue.Service), html.EscapeString(issue.Description)))
+	}
+
+	fmt.Fprintf(&b, "\n<b>Issues (%d):</b>\n", len(lines))
+	shown := lines
+	if len(shown) > mechReportMaxIssues {
+		shown = shown[:mechReportMaxIssues]
+	}
+	for _, line := range shown {
+		fmt.Fprintf(&b, "• %s\n", line)
+	}
+	if hidden := len(lines) - len(shown); hidden > 0 {
+		fmt.Fprintf(&b, "… and %d more\n", hidden)
+	}
+
+	b.WriteString("<b>Action:</b> auto-remediation did not cover these — manual check needed")
+	return b.String()
+}
+
+// reportSeverity maps the highest issue level to an operator-facing status
+// word. It ranks over the parsed []TriageIssue (one ranking table) instead of
+// string-scanning the report, so LLM and remote alerts — now first-class issues
+// in the same canonical format — rank uniformly alongside docker triage lines.
+func reportSeverity(issues []engine.TriageIssue) string {
+	rank := func(l engine.AlertLevel) int {
+		switch l {
+		case engine.AlertCritical:
+			return 4
+		case engine.AlertError:
+			return 3
+		case engine.AlertWarningHigh:
+			return 2
+		case engine.AlertWarning:
+			return 1
+		default:
+			return 0
+		}
+	}
+	var top engine.AlertLevel = engine.AlertWarning
+	for _, iss := range issues {
+		if rank(iss.Level) > rank(top) {
+			top = iss.Level
+		}
+	}
+	switch top {
+	case engine.AlertCritical:
+		return "critical"
+	case engine.AlertError:
+		return "degraded"
+	case engine.AlertWarningHigh:
+		return "warning_high"
+	default:
+		return "warning"
+	}
+}
+
 // hashResult creates a stable hash from issue service names only,
 // ignoring timestamps, error counts and log snippets that change every tick.
 // This prevents repeated alerts for the same set of problematic services.
@@ -169,31 +316,61 @@ func hashResult(result string) string {
 	return hex.EncodeToString(h[:8])
 }
 
-// collectExtraAlerts gathers alerts from remote server and LLM health checks.
+// collectExtraAlerts gathers alerts from the remote server check and renders
+// them as canonical issue lines (engine.AlertIssueLine) so they are first-class
+// to ExtractIssues — visible to dedup, severity ranking, and remediation
+// routing. The rich emoji-formatted engine.FormatRemoteAlerts is a separate,
+// operator-facing Telegram notification (remoteCheckTick); it is intentionally
+// NOT reused here, where the machine format is required.
 func collectExtraAlerts(ctx context.Context, cfg engine.Config) string {
-	var extra string
-
-	if cfg.HasRemote() {
-		remoteCtx, cancel := context.WithTimeout(ctx, remoteCheckTimeoutSec*time.Second)
-		remoteStatus := engine.CheckRemoteServer(remoteCtx, cfg)
-		cancel()
-		if remoteStatus != nil && len(remoteStatus.Alerts) > 0 {
-			if text := engine.FormatRemoteAlerts(remoteStatus); text != "" {
-				extra += "\n\n" + text
-			}
-		}
+	if !cfg.HasRemote() {
+		return ""
 	}
 
-	if cfg.HasLLMKeys() {
-		llmAlerts := engine.CheckLLMKeys(ctx, cfg)
-		if len(llmAlerts) > 0 {
-			if text := engine.FormatLLMAlerts(llmAlerts); text != "" {
-				extra += "\n\n" + text
-			}
-		}
+	remoteCtx, cancel := context.WithTimeout(ctx, remoteCheckTimeoutSec*time.Second)
+	remoteStatus := engine.CheckRemoteServer(remoteCtx, cfg)
+	cancel()
+	if remoteStatus == nil || len(remoteStatus.Alerts) == 0 {
+		return ""
 	}
 
-	return extra
+	var b strings.Builder
+	for _, a := range remoteStatus.Alerts {
+		b.WriteString(engine.AlertIssueLine(a))
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "\n\n" + b.String()
+}
+
+// llmKeyAlerts runs the LLM key/proxy canary, gated to every llmCheckEvery-th
+// tick. Ungated it fired every 5-min tick (288 requests/day against the
+// check-model's free-tier quota) for a signal that does not need 5-min
+// freshness. Between gated runs the last result is replayed so the overall
+// report (and its health/dedup state) does not flap with the gate.
+func (w *watchDeps) llmKeyAlerts(ctx context.Context) string {
+	if !w.cfg.HasLLMKeys() {
+		return ""
+	}
+	if !shouldRunLLMCheck(w.tickNum, w.llmCheckEvery) {
+		return w.cachedLLMAlerts
+	}
+
+	var text string
+	if llmAlerts := engine.CheckLLMKeys(ctx, w.cfg); len(llmAlerts) > 0 {
+		if t := engine.FormatLLMAlerts(llmAlerts); t != "" {
+			text = "\n\n" + t
+		}
+	}
+	w.cachedLLMAlerts = text
+	return text
+}
+
+// shouldRunLLMCheck reports whether the LLM canary runs on this tick.
+// Ticks are 1-based; the check always runs on the first tick after boot.
+func shouldRunLLMCheck(tickNum, every int) bool {
+	return every <= 1 || (tickNum-1)%every == 0
 }
 
 // buildWatchPrompt returns the system prompt prefix for a watch triage message.
@@ -244,7 +421,9 @@ func enrichWithKB(ctx context.Context, kbSearcher *mcpclient.KBSearcher, result 
 func buildKBQuery(issues []engine.TriageIssue) string {
 	parts := make([]string, 0, len(issues))
 	for _, issue := range issues {
-		parts = append(parts, issue.Description)
+		// Self-contained line for the KB similarity query — Description no
+		// longer embeds the service (see ExtractIssues).
+		parts = append(parts, issue.Service+": "+issue.Description)
 	}
 	query := strings.Join(parts, "; ")
 	if len(query) > kbQueryMaxLen {
@@ -279,7 +458,7 @@ func checkSystemdServices(ctx context.Context, eng *engine.ServerAgent) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Systemd services DOWN (%d):\n", len(down))
 	for _, name := range down {
-		fmt.Fprintf(&b, "[CRITICAL] %s — not active\n", name)
+		b.WriteString(engine.FormatIssueLine(engine.AlertCritical, name, "not active"))
 	}
 	return b.String()
 }

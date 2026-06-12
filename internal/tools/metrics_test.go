@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -1330,7 +1331,7 @@ func TestFetchLokiLogs_StructuredLevelFilter(t *testing.T) {
 	capturedQueries := make([]string, 0)
 
 	// lokiResponseRaw builds a raw Loki response where the server has already
-	// applied label filtering — only the lines that pass the structured filter
+	// applied label filtering -- only the lines that pass the structured filter
 	// are returned. We simulate this by returning only the ERROR-level line.
 	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query().Get("query")
@@ -1369,7 +1370,7 @@ func TestFetchLokiLogs_StructuredLevelFilter(t *testing.T) {
 	out, err := handleMetrics(t.Context(), MetricsInput{
 		Service:     "oxpulse-chat",
 		IncludeLogs: true,
-		// No LogQuery override — exercises the default structured path.
+		// No LogQuery override -- exercises the default structured path.
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1402,7 +1403,7 @@ func TestFetchLokiLogs_StructuredLevelFilter(t *testing.T) {
 		}
 	}
 
-	// 4. Exactly 1 log line is returned (the ERROR one) — the INFO line with
+	// 4. Exactly 1 log line is returned (the ERROR one) -- the INFO line with
 	//    error_class in the payload was filtered server-side by the structured query.
 	if len(out.Logs) != 1 {
 		t.Errorf("expected 1 error-tier log line, got %d: %v", len(out.Logs), out.Logs)
@@ -1524,5 +1525,481 @@ func TestFetchLokiLogs_LogQueryOverride_RawRegex(t *testing.T) {
 	}
 	if strings.Contains(capturedQueries[0], "| json |") {
 		t.Errorf("log_query override must not use structured JSON filter, got: %q", capturedQueries[0])
+	}
+}
+
+// ---- failures sweep tests (category="failures") ----------------------------
+
+// promIncreaseResponse builds a Prometheus instant-query response for a
+// counter that increase() returns (no __name__ label, as Prometheus omits it
+// for aggregated expressions).
+func promIncreaseResponse(value string) string {
+	return fmt.Sprintf(`{"status":"success","data":{"resultType":"vector","result":[{"metric":{"result":"fail"},"value":[1700000000,%q]}]}}`, value)
+}
+
+// alertmanagerResponse returns a minimal Alertmanager /api/v2/alerts JSON payload.
+func alertmanagerResponse(alerts []struct {
+	Name     string
+	Severity string
+	StartsAt string
+}) string {
+	items := make([]string, len(alerts))
+	for i, a := range alerts {
+		items[i] = fmt.Sprintf(`{"labels":{"alertname":%q,"severity":%q},"startsAt":%q,"endsAt":"0001-01-01T00:00:00Z","status":{"state":"active"}}`,
+			a.Name, a.Severity, a.StartsAt)
+	}
+	return "[" + strings.Join(items, ",") + "]"
+}
+
+// lokiCountResponse builds a Loki instant vector response for a count_over_time sum query.
+func lokiCountResponse(containers map[string]int64) string {
+	results := make([]string, 0, len(containers))
+	for c, count := range containers {
+		results = append(results, fmt.Sprintf(`{"metric":{"container":%q},"value":[1700000000,"%d"]}`, c, count))
+	}
+	return fmt.Sprintf(`{"status":"success","data":{"resultType":"vector","result":[%s]}}`, strings.Join(results, ","))
+}
+
+// TestFailuresSweep_AllSections_Happy verifies that category="failures" with a
+// fully-wired service returns all 4 sections populated and a DEGRADED verdict.
+// RED test: revert the failures dispatch in handleMetrics and this will fail
+// because out.Failures will be nil.
+func TestFailuresSweep_AllSections_Happy(t *testing.T) {
+	// Prom mock: label endpoint (unused for failures path), counter queries,
+	// and gauge queries.
+	capturedPromQueries := make([]string, 0)
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/api/v1/label/__name__/values"):
+			// Should NOT be called in the failures path (no metric discovery).
+			fmt.Fprint(w, promLabelsResponse([]string{}))
+		case strings.Contains(r.URL.Path, "/api/v1/query"):
+			q, _ := url.QueryUnescape(r.URL.Query().Get("query"))
+			capturedPromQueries = append(capturedPromQueries, q)
+
+			// Return non-zero increase for failure counters.
+			// Return 0 (== condition match) for healthy gauge queries.
+			if strings.Contains(q, "== 0") {
+				// Gauge == 0 query: return one result (gauge is down).
+				fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"turn_server_transport_healthy","region":"us"},"value":[1700000000,"0"]}]}}`)
+				return
+			}
+			// Counter increase queries: return 42 increase.
+			fmt.Fprint(w, promIncreaseResponse("42"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer promSrv.Close()
+
+	// Alertmanager mock.
+	amSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/api/v2/alerts") {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, alertmanagerResponse([]struct {
+			Name     string
+			Severity string
+			StartsAt string
+		}{
+			{"HighErrorRate", "critical", "2026-06-12T10:00:00Z"},
+		}))
+	}))
+	defer amSrv.Close()
+
+	// Loki mock: return count data.
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, lokiCountResponse(map[string]int64{
+			"oxpulse-chat": 37,
+		}))
+	}))
+	defer lokiSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+	t.Setenv("DOZOR_ALERTMANAGER_URL", amSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:  "oxpulse-chat",
+		Category: "failures",
+		Range:    "24h",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Must return the Failures field, not raw Metrics.
+	if out.Failures == nil {
+		t.Fatal("category=failures: out.Failures must not be nil")
+	}
+	sweep := out.Failures
+
+	// Section 1: fail counters present with delta > 0.
+	if len(sweep.FailCounters) == 0 {
+		t.Error("expected fail_counters to be populated")
+	}
+	for _, fc := range sweep.FailCounters {
+		if fc.Delta <= 0 {
+			t.Errorf("all fail counters should have delta > 0, got %d for %q", fc.Delta, fc.Name)
+		}
+	}
+
+	// Section 2: gauges down.
+	if len(sweep.GaugesDown) == 0 {
+		t.Error("expected gauges_down to be populated (turn_server_transport_healthy == 0)")
+	}
+
+	// Section 3: firing alerts.
+	if len(sweep.FiringAlerts) == 0 {
+		t.Error("expected firing_alerts to be populated")
+	}
+	if sweep.FiringAlerts[0].AlertName != "HighErrorRate" {
+		t.Errorf("alertname: want HighErrorRate, got %q", sweep.FiringAlerts[0].AlertName)
+	}
+
+	// Section 4: error log counts.
+	if len(sweep.ErrorLogCounts) == 0 {
+		t.Error("expected error_log_counts to be populated")
+	}
+
+	// Verdict must be DEGRADED.
+	if !strings.HasPrefix(sweep.Verdict, "DEGRADED") {
+		t.Errorf("verdict: want DEGRADED prefix, got %q", sweep.Verdict)
+	}
+
+	// Range must be echoed.
+	if sweep.Range != "24h" {
+		t.Errorf("range: want 24h, got %q", sweep.Range)
+	}
+
+	// The failures path must NOT have called the label-discovery endpoint.
+	for _, q := range capturedPromQueries {
+		if strings.Contains(q, "__name__") {
+			t.Error("failures path must not call label-discovery endpoint")
+		}
+	}
+
+	// out.Metrics must be empty (failures path skips metric discovery).
+	if len(out.Metrics) != 0 {
+		t.Errorf("failures path: out.Metrics should be empty, got %d", len(out.Metrics))
+	}
+}
+
+// TestFailuresSweep_HealthyVerdict verifies the HEALTHY verdict when all
+// sections are empty (no failures, no downed gauges, no alerts, no error logs).
+// RED test: modify buildSweepVerdict to always return DEGRADED and this will fail.
+func TestFailuresSweep_HealthyVerdict(t *testing.T) {
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/query") {
+			// All counters return 0 increase; no gauges down.
+			fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+			return
+		}
+		fmt.Fprint(w, `{"status":"success","data":[]}`)
+	}))
+	defer promSrv.Close()
+
+	amSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "[]") // no alerts
+	}))
+	defer amSrv.Close()
+
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// count_over_time returns empty (no error logs).
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	defer lokiSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+	t.Setenv("DOZOR_ALERTMANAGER_URL", amSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:  "oxpulse-chat",
+		Category: "failures",
+		Range:    "1h",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Failures == nil {
+		t.Fatal("out.Failures must not be nil")
+	}
+	sweep := out.Failures
+	if len(sweep.FailCounters) != 0 {
+		t.Errorf("want 0 fail counters, got %d", len(sweep.FailCounters))
+	}
+	if len(sweep.GaugesDown) != 0 {
+		t.Errorf("want 0 gauges down, got %d", len(sweep.GaugesDown))
+	}
+	if len(sweep.FiringAlerts) != 0 {
+		t.Errorf("want 0 alerts, got %d", len(sweep.FiringAlerts))
+	}
+	if len(sweep.ErrorLogCounts) != 0 {
+		t.Errorf("want 0 error log containers, got %d", len(sweep.ErrorLogCounts))
+	}
+	if !strings.HasPrefix(sweep.Verdict, "HEALTHY") {
+		t.Errorf("verdict: want HEALTHY prefix, got %q", sweep.Verdict)
+	}
+}
+
+// TestFailuresSweep_TopNTruncation verifies that sections exceeding sweepTopN
+// are truncated and a "+N omitted" note appears in Truncated.
+// RED test: remove the truncation logic and the Truncated field will be empty.
+func TestFailuresSweep_TopNTruncation(t *testing.T) {
+	// Return sweepTopN+5 items from the alertmanager to trigger truncation.
+	const extraAlerts = 5
+	totalAlerts := sweepTopN + extraAlerts
+
+	amSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		alerts := make([]struct {
+			Name     string
+			Severity string
+			StartsAt string
+		}, totalAlerts)
+		for i := range alerts {
+			alerts[i] = struct {
+				Name     string
+				Severity string
+				StartsAt string
+			}{fmt.Sprintf("Alert%02d", i), "warning", "2026-06-12T10:00:00Z"}
+		}
+		fmt.Fprint(w, alertmanagerResponse(alerts))
+	}))
+	defer amSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	defer promSrv.Close()
+
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	defer lokiSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+	t.Setenv("DOZOR_ALERTMANAGER_URL", amSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:  "oxpulse-chat",
+		Category: "failures",
+		Range:    "24h",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Failures == nil {
+		t.Fatal("out.Failures must not be nil")
+	}
+	sweep := out.Failures
+
+	// Alerts must be capped at sweepTopN.
+	if len(sweep.FiringAlerts) != sweepTopN {
+		t.Errorf("firing_alerts: want %d (capped), got %d", sweepTopN, len(sweep.FiringAlerts))
+	}
+	// Truncated must mention the omitted count.
+	foundTrunc := false
+	for _, note := range sweep.Truncated {
+		if strings.Contains(note, "firing_alerts") && strings.Contains(note, fmt.Sprintf("+%d omitted", extraAlerts)) {
+			foundTrunc = true
+		}
+	}
+	if !foundTrunc {
+		t.Errorf("Truncated must mention firing_alerts +%d omitted; got: %v", extraAlerts, sweep.Truncated)
+	}
+}
+
+// TestFailuresSweep_AlertmanagerDown_DegradesGracefully verifies that an
+// unreachable Alertmanager does not fail the whole request -- metrics and
+// log counts still return, and a warning is added.
+func TestFailuresSweep_AlertmanagerDown_DegradesGracefully(t *testing.T) {
+	amSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "alertmanager down", http.StatusServiceUnavailable)
+	}))
+	defer amSrv.Close()
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	defer promSrv.Close()
+
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	defer lokiSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+	t.Setenv("DOZOR_ALERTMANAGER_URL", amSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:  "oxpulse-chat",
+		Category: "failures",
+		Range:    "1h",
+	})
+	if err != nil {
+		t.Fatalf("expected graceful degradation, got error: %v", err)
+	}
+	if out.Failures == nil {
+		t.Fatal("out.Failures must not be nil even when alertmanager is down")
+	}
+	// Must emit a warning mentioning alertmanager.
+	foundWarn := false
+	for _, w := range out.Warnings {
+		if strings.Contains(strings.ToLower(w), "alertmanager") {
+			foundWarn = true
+		}
+	}
+	if !foundWarn {
+		t.Errorf("expected alertmanager warning, got: %v", out.Warnings)
+	}
+}
+
+// TestFailuresSweep_CountersSortedDesc verifies that fail_counters are returned
+// sorted descending by delta so the highest-volume failure class appears first.
+// RED test: remove sortFailCounters call and order will be non-deterministic.
+func TestFailuresSweep_CountersSortedDesc(t *testing.T) {
+	// Serve different delta values for different counter expressions.
+	// oxpulse-chat has 7 failure_counters; we'll return different values
+	// based on query content.
+	counterValues := map[string]string{
+		"client_ice_failed_total":              "100",
+		"client_cold_hangup_total":             "50",
+		"call_ice_to_connected_failures_total": "200",
+		"ws_idle_timeout_total":                "10",
+		"signaling_join_rejected_total":        "75",
+		"analytics_events_total":               "30",
+		"http_requests_total":                  "5",
+	}
+
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/query") {
+			q, _ := url.QueryUnescape(r.URL.Query().Get("query"))
+			if strings.Contains(q, "== 0") {
+				fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+				return
+			}
+			for name, val := range counterValues {
+				if strings.Contains(q, name) {
+					fmt.Fprint(w, promIncreaseResponse(val))
+					return
+				}
+			}
+		}
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	defer promSrv.Close()
+
+	amSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "[]")
+	}))
+	defer amSrv.Close()
+
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	defer lokiSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+	t.Setenv("DOZOR_ALERTMANAGER_URL", amSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:  "oxpulse-chat",
+		Category: "failures",
+		Range:    "24h",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Failures == nil {
+		t.Fatal("out.Failures must not be nil")
+	}
+	counters := out.Failures.FailCounters
+	if len(counters) < 2 {
+		t.Fatalf("expected multiple counters, got %d", len(counters))
+	}
+	// Verify descending order.
+	isSorted := sort.SliceIsSorted(counters, func(i, j int) bool {
+		return counters[i].Delta >= counters[j].Delta
+	})
+	if !isSorted {
+		t.Errorf("fail_counters must be sorted desc by delta; got: %v", counters)
+	}
+	// Highest delta (200 for call_ice_to_connected_failures_total) must be first.
+	if counters[0].Delta != 200 {
+		t.Errorf("first counter delta: want 200, got %d (%s)", counters[0].Delta, counters[0].Name)
+	}
+}
+
+// TestFailuresSweep_NonRegistryService_ReturnsEmptySections verifies that a
+// service not in the registry returns an empty failures sweep without error.
+// The counters/gauges sections are empty because there are no registry entries.
+func TestFailuresSweep_NonRegistryService_ReturnsEmptySections(t *testing.T) {
+	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	defer promSrv.Close()
+
+	amSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "[]")
+	}))
+	defer amSrv.Close()
+
+	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	defer lokiSrv.Close()
+
+	t.Setenv("DOZOR_PROMETHEUS_URL", promSrv.URL)
+	t.Setenv("DOZOR_LOKI_URL", lokiSrv.URL)
+	t.Setenv("DOZOR_ALERTMANAGER_URL", amSrv.URL)
+
+	out, err := handleMetrics(t.Context(), MetricsInput{
+		Service:  "unknown-svc",
+		Category: "failures",
+		Range:    "24h",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Failures == nil {
+		t.Fatal("out.Failures must not be nil for unknown service")
+	}
+	// No counter or gauge data for unknown service -- but no error either.
+	if len(out.Failures.FailCounters) != 0 {
+		t.Errorf("unknown service: want 0 fail counters, got %d", len(out.Failures.FailCounters))
+	}
+}
+
+// TestParseIntValue verifies the parseIntValue helper handles the common cases.
+func TestParseIntValue(t *testing.T) {
+	cases := []struct {
+		input string
+		want  int64
+		ok    bool
+	}{
+		{"42", 42, true},
+		{"42.7", 43, true}, // round-half-up
+		{"0", 0, true},
+		{"", 0, false},
+		{"NaN", 0, false},
+		{"+Inf", 0, false},
+		{"-Inf", 0, false},
+		{"abc", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			got, ok := parseIntValue(tc.input)
+			if ok != tc.ok {
+				t.Errorf("parseIntValue(%q): ok: want %v, got %v", tc.input, tc.ok, ok)
+			}
+			if ok && got != tc.want {
+				t.Errorf("parseIntValue(%q): want %d, got %d", tc.input, tc.want, got)
+			}
+		})
 	}
 }

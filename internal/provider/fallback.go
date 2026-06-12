@@ -69,6 +69,21 @@ func (w *withFallback) MaxIterations() int {
 	return 10
 }
 
+// ModelProvider is the optional interface for providers that can name
+// their model — used to label fallback logs with primary/fallback ids.
+type ModelProvider interface {
+	Model() string
+}
+
+// modelOf returns the provider's model id, or "unknown" when the
+// provider does not implement ModelProvider.
+func modelOf(p Provider) string {
+	if mp, ok := p.(ModelProvider); ok {
+		return mp.Model()
+	}
+	return "unknown"
+}
+
 // Chat tries primary; if it is slow OR fails, races a fallback in
 // parallel using hedge.DoFallback. The first success wins.
 //
@@ -98,7 +113,10 @@ func (w *withFallback) Chat(ctx context.Context, messages []kitllm.Message, tool
 		resp, err := w.fallback.Chat(hCtx, messages, tools)
 		if err != nil && !errors.Is(err, ErrUnavailable) {
 			slog.Info("LLM fallback engaged",
-				slog.Duration("hedge.delay", hedgeDelay))
+				slog.Duration("hedge.delay", hedgeDelay),
+				slog.String("primary_model", modelOf(w.primary)),
+				slog.String("fallback_model", modelOf(w.fallback)),
+				slog.String("error_class", ErrorClass(err)))
 		}
 		return resp, err
 	}
@@ -125,7 +143,10 @@ func (w *withFallback) chatSequential(ctx context.Context, messages []kitllm.Mes
 	primaryErr := err
 
 	slog.Warn("primary LLM failed, trying fallback",
-		slog.String("error", err.Error()))
+		slog.String("error", err.Error()),
+		slog.String("error_class", ErrorClass(err)),
+		slog.String("primary_model", modelOf(w.primary)),
+		slog.String("fallback_model", modelOf(w.fallback)))
 	fbResp, fbErr := w.fallback.Chat(ctx, messages, tools)
 	if fbErr == nil {
 		return fbResp, nil

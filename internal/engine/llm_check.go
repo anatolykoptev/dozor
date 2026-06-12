@@ -41,12 +41,15 @@ func CheckLLMKeys(ctx context.Context, cfg Config) []Alert {
 		}
 	}
 
-	// B) Proxy channel tests (1 token each via CLIProxyAPI, kitllm.Client.Chat).
-	if cfg.LLMCheckURL != "" && cfg.LLMCheckAPIKey != "" {
-		for _, model := range cfg.LLMCheckModels {
-			if a := checkProxyModel(ctx, cfg.LLMCheckURL, cfg.LLMCheckAPIKey, model); a != nil {
-				alerts = append(alerts, *a)
-			}
+	// B) Proxy chain test (1 token per probed model via CLIProxyAPI).
+	// DOZOR_LLM_CHECK_MODELS mirrors the production fallback chain: go-kit llm
+	// clients (WithModelFallback) survive any single model failing — 413/429/5xx
+	// advance the chain. The canary probes the SAME way: models in order, first
+	// success = healthy. Only a fully dead chain — the condition production
+	// actually feels — raises an alert.
+	if cfg.LLMCheckURL != "" && cfg.LLMCheckAPIKey != "" && len(cfg.LLMCheckModels) > 0 {
+		if a := checkProxyChain(ctx, cfg.LLMCheckURL, cfg.LLMCheckAPIKey, cfg.LLMCheckModels); a != nil {
+			alerts = append(alerts, *a)
 		}
 	}
 
@@ -106,8 +109,8 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 	if err != nil {
 		return &Alert{
 			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("Gemini key %s: request error", masked),
+			Service:         llmServicePrefix + "gemini-key-" + masked,
+			Title:           "request error",
 			Description:     err.Error(),
 			SuggestedAction: "Check key format",
 			Timestamp:       time.Now(),
@@ -118,8 +121,8 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 	if err != nil {
 		return &Alert{
 			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("Gemini key %s: unreachable", masked),
+			Service:         llmServicePrefix + "gemini-key-" + masked,
+			Title:           "unreachable",
 			Description:     err.Error(),
 			SuggestedAction: "Check network connectivity to Google API",
 			Timestamp:       time.Now(),
@@ -139,8 +142,8 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 	case http.StatusTooManyRequests:
 		return &Alert{
 			Level:           AlertWarning,
-			Service:         "llm",
-			Title:           fmt.Sprintf("Gemini key %s: quota exceeded", masked),
+			Service:         llmServicePrefix + "gemini-key-" + masked,
+			Title:           "quota exceeded",
 			Description:     buildGoogleAPIDesc(body, resp.StatusCode),
 			SuggestedAction: "Wait for quota reset or rotate key",
 			Timestamp:       time.Now(),
@@ -150,8 +153,8 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 		desc := buildGoogleAPIDesc(body, resp.StatusCode)
 		return &Alert{
 			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("Gemini key %s: invalid (HTTP %d)", masked, resp.StatusCode),
+			Service:         llmServicePrefix + "gemini-key-" + masked,
+			Title:           fmt.Sprintf("invalid key (HTTP %d)", resp.StatusCode),
 			Description:     desc,
 			SuggestedAction: "Rotate or remove this API key",
 			Timestamp:       time.Now(),
@@ -169,7 +172,7 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 		}
 		return &Alert{
 			Level:           AlertWarning,
-			Service:         "llm",
+			Service:         llmServicePrefix + "gemini-key-" + masked,
 			Title:           fmt.Sprintf("Google API upstream %s (HTTP %d)", titleTag, resp.StatusCode),
 			Description:     desc,
 			SuggestedAction: "Transient outage — retry; if persistent >1h check Google status page",
@@ -180,8 +183,8 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 		desc := buildGoogleAPIDesc(body, resp.StatusCode)
 		return &Alert{
 			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("Gemini key %s: unexpected HTTP %d", masked, resp.StatusCode),
+			Service:         llmServicePrefix + "gemini-key-" + masked,
+			Title:           fmt.Sprintf("unexpected HTTP %d", resp.StatusCode),
 			Description:     desc,
 			SuggestedAction: "Investigate; status code is unusual for this endpoint",
 			Timestamp:       time.Now(),
@@ -201,6 +204,36 @@ func buildGoogleAPIDesc(body []byte, statusCode int) string {
 		return apiStatus
 	}
 	return fmt.Sprintf("HTTP %d", statusCode)
+}
+
+// checkProxyChain probes the check models as a fallback chain. The first
+// healthy model proves the production path is alive (degraded-but-alive is
+// logged, not alerted). A fully dead chain returns ONE aggregate alert with a
+// STABLE service id ("llm:check-chain") so repeated outages dedup correctly.
+func checkProxyChain(ctx context.Context, baseURL, apiKey string, models []string) *Alert {
+	var failures []string
+	for i, model := range models {
+		a := checkProxyModel(ctx, baseURL, apiKey, model)
+		if a == nil {
+			if i > 0 {
+				slog.Info("llm check: chain degraded but alive",
+					slog.String("healthy_model", model),
+					slog.Int("dead_ahead", i),
+					slog.String("failures", strings.Join(failures, "; ")))
+			}
+			return nil
+		}
+		failures = append(failures,
+			strings.TrimPrefix(a.Service, llmServicePrefix)+": "+a.Title)
+	}
+	return &Alert{
+		Level:           AlertError,
+		Service:         llmServicePrefix + "check-chain",
+		Title:           fmt.Sprintf("all %d check models failed", len(models)),
+		Description:     strings.Join(failures, "; "),
+		SuggestedAction: "Production fallback chain is exhausted — check CLIProxyAPI and provider quotas",
+		Timestamp:       time.Now(),
+	}
 }
 
 // checkProxyModel tests a single model through the LLM proxy using kitllm.Client.Chat.
@@ -225,8 +258,8 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 		if provider.IsAuth(err) {
 			return &Alert{
 				Level:           AlertError,
-				Service:         "llm",
-				Title:           fmt.Sprintf("LLM proxy %s: auth failure (HTTP %d)", model, ae.StatusCode),
+				Service:         llmServicePrefix + model,
+				Title:           fmt.Sprintf("auth failure (HTTP %d)", ae.StatusCode),
 				Description:     ae.Body,
 				SuggestedAction: "Check DOZOR_LLM_CHECK_API_KEY / DOZOR_LLM_API_KEY credentials",
 				Timestamp:       time.Now(),
@@ -235,8 +268,8 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 		if provider.IsRateLimit(err) {
 			return &Alert{
 				Level:           AlertWarning,
-				Service:         "llm",
-				Title:           fmt.Sprintf("LLM proxy %s: rate limited (HTTP %d)", model, ae.StatusCode),
+				Service:         llmServicePrefix + model,
+				Title:           fmt.Sprintf("rate limited (HTTP %d)", ae.StatusCode),
 				Description:     ae.Body,
 				SuggestedAction: "Wait for quota reset or reduce probe frequency",
 				Timestamp:       time.Now(),
@@ -245,8 +278,8 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 		if provider.IsServerError(err) {
 			return &Alert{
 				Level:           AlertWarning,
-				Service:         "llm",
-				Title:           fmt.Sprintf("LLM proxy %s: upstream error (HTTP %d)", model, ae.StatusCode),
+				Service:         llmServicePrefix + model,
+				Title:           fmt.Sprintf("upstream error (HTTP %d)", ae.StatusCode),
 				Description:     ae.Body,
 				SuggestedAction: "Transient outage — retry; if persistent check CLIProxyAPI logs",
 				Timestamp:       time.Now(),
@@ -255,8 +288,8 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 		// Other API error (e.g. 400 bad request, 404 model not found).
 		return &Alert{
 			Level:           AlertError,
-			Service:         "llm",
-			Title:           fmt.Sprintf("LLM proxy %s: error (HTTP %d)", model, ae.StatusCode),
+			Service:         llmServicePrefix + model,
+			Title:           fmt.Sprintf("error (HTTP %d)", ae.StatusCode),
 			Description:     ae.Body,
 			SuggestedAction: "Check model availability and proxy configuration",
 			Timestamp:       time.Now(),
@@ -266,23 +299,28 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 	// Non-API error: network/transport failure.
 	return &Alert{
 		Level:           AlertError,
-		Service:         "llm",
-		Title:           fmt.Sprintf("LLM proxy %s: unreachable", model),
+		Service:         llmServicePrefix + model,
+		Title:           "unreachable",
 		Description:     err.Error(),
 		SuggestedAction: "Check CLIProxyAPI is running and DOZOR_LLM_CHECK_URL is correct",
 		Timestamp:       time.Now(),
 	}
 }
 
-// FormatLLMAlerts formats LLM health check alerts for text display.
+// FormatLLMAlerts formats LLM health-check alerts as canonical issue lines so
+// they are first-class to ExtractIssues (and therefore to dedup, severity
+// ranking, and remediation routing) when concatenated into the watch report.
+// Each alert is rendered via AlertIssueLine, which gives it a stable per-model
+// service name. Previously this emitted "- [LEVEL] title: desc", a shape
+// ExtractIssues could not parse — the failures were invisible to the watch
+// pipeline and all collapsed to a single dedup hash.
 func FormatLLMAlerts(alerts []Alert) string {
 	if len(alerts) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("LLM Health Issues:\n")
 	for _, a := range alerts {
-		fmt.Fprintf(&b, "- [%s] %s: %s\n", a.Level, a.Title, a.Description)
+		b.WriteString(AlertIssueLine(a))
 	}
 	return b.String()
 }

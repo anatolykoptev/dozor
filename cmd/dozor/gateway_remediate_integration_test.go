@@ -39,7 +39,7 @@ func TestAutoRemediateIntegration(t *testing.T) {
 	for _, issue := range issues {
 		t.Logf("  Service=%s Level=%s Desc=%s",
 			issue.Service,
-			extractIssueLevel(result, issue.Service),
+			issue.Level,
 			issue.Description)
 	}
 
@@ -48,9 +48,14 @@ func TestAutoRemediateIntegration(t *testing.T) {
 	}
 
 	// 3. Check ox-whisper is CRITICAL
-	ox-whisperLevel := extractIssueLevel(result, "ox-whisper")
-	if ox-whisperLevel != "CRITICAL" {
-		t.Skipf("ox-whisper level is %q, expected CRITICAL — is ox-whisper stopped?", ox-whisperLevel)
+	var oxWhisperLevel engine.AlertLevel
+	for _, issue := range issues {
+		if issue.Service == "ox-whisper" {
+			oxWhisperLevel = issue.Level
+		}
+	}
+	if oxWhisperLevel != engine.AlertCritical {
+		t.Skipf("ox-whisper level is %q, expected critical — is ox-whisper stopped?", oxWhisperLevel)
 	}
 
 	// 4. Run auto-remediation with a captured notification

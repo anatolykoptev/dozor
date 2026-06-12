@@ -30,3 +30,6 @@ func (unavailable) MaxIterations() int { return 0 }
 
 // Compile-time assert that unavailable satisfies the optional interface.
 var _ MaxIterationsProvider = unavailable{}
+
+// Model satisfies ModelProvider; an inert provider has no model.
+func (unavailable) Model() string { return "none" }

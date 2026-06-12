@@ -95,14 +95,14 @@ func TestTryAutoRemediate_SkipsWhenCooldownActive(t *testing.T) {
 
 	cd := newRemediateCooldown(30 * time.Minute)
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	issue := engine.TriageIssue{Service: "disk", Description: "disk at 88%"}
+	issue := engine.TriageIssue{Service: "disk", Level: engine.AlertWarning, Description: "disk at 88%"}
 
 	// First call — cooldown not active, should run.
-	handleDiskIssueWithCooldown(context.Background(), stub, issue, "WARNING", cd, now)
+	handleDiskIssueWithCooldown(context.Background(), stub, issue, engine.AlertWarning, cd, now)
 
 	// Second call — 2 minutes later, cooldown still active.
 	later := now.Add(2 * time.Minute)
-	handleDiskIssueWithCooldown(context.Background(), stub, issue, "WARNING", cd, later)
+	handleDiskIssueWithCooldown(context.Background(), stub, issue, engine.AlertWarning, cd, later)
 
 	if callCount != 1 {
 		t.Errorf("AutoRemediateDisk called %d times, expected exactly 1 (second call should be suppressed by cooldown)", callCount)

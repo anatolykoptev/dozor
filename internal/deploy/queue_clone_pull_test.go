@@ -454,3 +454,28 @@ func mustRun(t *testing.T, dir string, name string, args ...string) {
 		t.Fatalf("command %q %v failed in %s: %v\n%s", name, args, dir, err, out)
 	}
 }
+
+// TestPullDeployClone_UntrackedOnlyProceeds — untracked files (agent-written
+// plans/reports) must NOT block the pull; only tracked modifications do.
+func TestPullDeployClone_UntrackedOnlyProceeds(t *testing.T) {
+	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
+		return []byte("?? plans/foo.md\n?? reports/bar.md\n"), nil
+	})
+	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) {
+		return "same-sha", nil // FETCH_HEAD == HEAD → up to date
+	})
+
+	outcome := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main")
+	if outcome != pullUpToDate {
+		t.Errorf("untracked-only tree must proceed to pull (up_to_date), got %q", outcome)
+	}
+}
+
+// TestClassifyPorcelain covers the tracked/untracked split.
+func TestClassifyPorcelain(t *testing.T) {
+	tracked, untracked := classifyPorcelain(" M compose.yml\n?? plans/a.md\nA  new.go\n?? x\n")
+	if tracked != 2 || untracked != 2 {
+		t.Errorf("classifyPorcelain = (%d, %d), want (2, 2)", tracked, untracked)
+	}
+}

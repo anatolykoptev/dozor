@@ -275,7 +275,8 @@ func (a *ServerAgent) Triage(ctx context.Context, services []string) string {
 // TriageIssue represents a searchable issue summary extracted from a triage report.
 type TriageIssue struct {
 	Service     string
-	Description string // e.g. "redis: 3 restarts, connection refused"
+	Level       AlertLevel // parsed from the [LEVEL] marker of the canonical line
+	Description string     // e.g. "redis: 3 restarts, connection refused"
 }
 
 // TriageMachineSep separates `service` from `description` in a triage line.
@@ -284,12 +285,96 @@ type TriageIssue struct {
 // this constant; replacing the em-dash with ASCII `-` silently breaks ExtractIssues.
 const TriageMachineSep = " — "
 
+// issueLevelPrefixes maps each canonical machine-line prefix to the AlertLevel
+// it encodes. It is the single source of truth shared by FormatIssueLine (the
+// only writer) and ExtractIssues (the only reader). Order matters only for the
+// human-readable list — lookup is exact-prefix, so there is no [WARNING] vs
+// [WARNING_HIGH] ambiguity (the trailing space disambiguates).
+var issueLevelPrefixes = map[string]AlertLevel{
+	"[CRITICAL] ":     AlertCritical,
+	"[ERROR] ":        AlertError,
+	"[WARNING_HIGH] ": AlertWarningHigh,
+	"[WARNING] ":      AlertWarning,
+}
+
+// FormatIssueLine renders the single canonical machine alert line that
+// ExtractIssues parses: `[LEVEL] service — description\n`. This is the ONLY
+// place the line shape is written; every producer (disk pressure, systemd
+// checks, LLM and remote alerts) routes through it so a new producer cannot
+// drift into a format ExtractIssues silently ignores. An AlertInfo level (no
+// machine token) yields an empty string — info entries are not issues.
+func FormatIssueLine(level AlertLevel, service, description string) string {
+	token := level.MachineToken()
+	if token == "" {
+		return ""
+	}
+	return fmt.Sprintf("[%s] %s%s%s\n", token, service, TriageMachineSep, description)
+}
+
+// AlertIssueLine renders an Alert as a canonical issue line for the mechanical
+// watch report, giving each alert a STABLE per-entity service name so the dedup
+// hash (which keys on service) distinguishes distinct failures. LLM alerts carry
+// Service="llm:<model|key>" set at construction (llm_check.go) — stable per
+// probed entity, independent of the error kind, so the SAME entity failing with
+// different HTTP codes dedups as one issue. Remote alerts carry a distinct
+// Service (URL or unit name); they are namespaced "remote:<service>" to avoid
+// colliding with a local container of the same name.
+func AlertIssueLine(a Alert) string {
+	service := alertReportService(a)
+	desc := a.Title
+	if a.Description != "" {
+		desc += ": " + a.Description
+	}
+	return FormatIssueLine(a.Level, service, desc)
+}
+
+// Namespace prefixes for service names that denote a non-local entity — an LLM
+// model/key probe or a remote host/unit. These are written by alertReportService
+// and are the ONLY namespaces an issue service name can carry. They mark the
+// service as NOT remediable by the local auto-remediation path (which can only
+// act on local docker/systemd entities): see IsNamespacedService.
+const (
+	llmServicePrefix    = "llm:"
+	remoteServicePrefix = "remote:"
+)
+
+// alertReportService derives the stable per-entity service name used for an
+// Alert inside the watch report. See AlertIssueLine for the rationale.
+func alertReportService(a Alert) string {
+	switch {
+	case strings.HasPrefix(a.Service, llmServicePrefix):
+		// Already namespaced at construction (llm_check.go) — stable per
+		// probed model/key, independent of the error kind.
+		return a.Service
+	case a.Service == "llm":
+		// Legacy producer without a per-entity name; Title is the best
+		// stable-ish identity available.
+		return llmServicePrefix + a.Title
+	default:
+		return remoteServicePrefix + a.Service
+	}
+}
+
+// IsNamespacedService reports whether a triage issue's service name carries a
+// namespace prefix written by alertReportService (an LLM probe or a remote
+// host/unit). Such services are NOT remediable: local auto-remediation can only
+// restart local docker/systemd entities, never a remote URL or an LLM key. A
+// namespaced issue — at ANY level, including critical — must be report-only.
+// This is the explicit, named inverse of "is this a local docker/systemd
+// service the restart arm may act on", co-located with the prefix constants so
+// a new namespace cannot drift out of sync with the remediation guard.
+func IsNamespacedService(service string) bool {
+	return strings.HasPrefix(service, llmServicePrefix) ||
+		strings.HasPrefix(service, remoteServicePrefix)
+}
+
 // ExtractIssues parses a triage report string into searchable issue summaries.
+// It is the sole reader of the canonical line shape written by FormatIssueLine.
 func ExtractIssues(report string) []TriageIssue {
 	var issues []TriageIssue
 	for _, line := range strings.Split(report, "\n") {
 		line = strings.TrimSpace(line)
-		for _, prefix := range []string{"[CRITICAL] ", "[ERROR] ", "[WARNING_HIGH] ", "[WARNING] "} {
+		for prefix, level := range issueLevelPrefixes {
 			if !strings.HasPrefix(line, prefix) {
 				continue
 			}
@@ -298,10 +383,18 @@ func ExtractIssues(report string) []TriageIssue {
 			if len(parts) != 2 {
 				continue
 			}
+			service := strings.TrimSpace(parts[0])
+			// Description deliberately does NOT embed the service: renderers
+			// print "service — description" and a baked-in prefix made every
+			// operator-facing line repeat the service twice (report
+			// #2f4393aa36df311d). Consumers that need a self-contained line
+			// concatenate Service themselves (KB query, issue summaries).
 			issues = append(issues, TriageIssue{
-				Service:     strings.TrimSpace(parts[0]),
-				Description: strings.TrimSpace(parts[0]) + ": " + strings.TrimSpace(parts[1]),
+				Service:     service,
+				Level:       level,
+				Description: strings.TrimSpace(parts[1]),
 			})
+			break
 		}
 	}
 	return issues

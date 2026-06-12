@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anatolykoptev/dozor/internal/engine"
 )
 
 // TestHashResult_OrderIndependent verifies that hashResult produces the same
@@ -125,5 +129,196 @@ func TestTick_MarkSentOnlyAfterSuccessfulRoute(t *testing.T) {
 	// --- Verify different hash is not suppressed ---
 	if nc.shouldSuppress("other", later) {
 		t.Error("different hash should not be suppressed")
+	}
+}
+
+// TestBuildMechanicalReport_FormatAndEscaping verifies the deterministic
+// report carries Status/Issues/Action sections, escapes HTML in issue text,
+// and ranks severity from the triage level markers.
+func TestBuildMechanicalReport_FormatAndEscaping(t *testing.T) {
+	t.Parallel()
+
+	result := "[CRITICAL] oxpulse-chat — exited <code 1> & restarting\n[WARNING] redis — 3 restarts"
+	issues := engine.ExtractIssues(result)
+	if len(issues) != 2 {
+		t.Fatalf("fixture: want 2 issues, got %d", len(issues))
+	}
+
+	ts := time.Date(2026, 6, 10, 12, 43, 5, 0, time.UTC)
+	got := buildMechanicalReport(issues, "a1b2c3d4", ts)
+
+	for _, want := range []string{
+		"<b>Dozor Watch</b> <code>#a1b2c3d4</code> — 2026-06-10 12:43:05 UTC",
+		"<b>Status:</b> critical",
+		"<b>Issues (2):</b>",
+		"<code>oxpulse-chat</code>",
+		"exited &lt;code 1&gt; &amp; restarting",
+		"<b>Action:</b>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report missing %q\nfull report:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "<code 1>") {
+		t.Error("raw HTML from issue description leaked unescaped into the report")
+	}
+}
+
+// TestBuildMechanicalReport_CapsIssueLines verifies a mass outage is
+// truncated to mechReportMaxIssues lines with an "and N more" marker.
+func TestBuildMechanicalReport_CapsIssueLines(t *testing.T) {
+	t.Parallel()
+
+	var lines []string
+	for i := 0; i < mechReportMaxIssues+5; i++ {
+		lines = append(lines, fmt.Sprintf("[ERROR] svc-%02d — down", i))
+	}
+	result := strings.Join(lines, "\n")
+	issues := engine.ExtractIssues(result)
+
+	got := buildMechanicalReport(issues, "ffff0000", time.Now())
+
+	if want := fmt.Sprintf("… and %d more", 5); !strings.Contains(got, want) {
+		t.Errorf("report missing truncation marker %q\nfull report:\n%s", want, got)
+	}
+	if strings.Count(got, "• ") != mechReportMaxIssues {
+		t.Errorf("want %d issue bullets, got %d", mechReportMaxIssues, strings.Count(got, "• "))
+	}
+}
+
+// TestBuildMechanicalReport_NoHashOmitsID verifies the header degrades
+// gracefully when no dedup hash is available: time stays, "#id" is omitted.
+func TestBuildMechanicalReport_NoHashOmitsID(t *testing.T) {
+	t.Parallel()
+
+	result := "[ERROR] postgres — connection refused"
+	issues := engine.ExtractIssues(result)
+
+	got := buildMechanicalReport(issues, "", time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC))
+
+	if strings.Contains(got, "#") {
+		t.Errorf("empty hash must omit the #id marker, got:\n%s", got)
+	}
+	if !strings.Contains(got, "<b>Dozor Watch</b> — 2026-06-10") {
+		t.Errorf("header must keep the timestamp without an id, got:\n%s", got)
+	}
+}
+
+// TestReportSeverity_Ranking verifies CRITICAL > ERROR > WARNING mapping.
+func TestReportSeverity_Ranking(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		result string
+		want   string
+	}{
+		{"[CRITICAL] a — x\n[ERROR] b — y", "critical"},
+		{"[ERROR] b — y\n[WARNING] c — z", "degraded"},
+		{"[WARNING_HIGH] disk — usage 91%\n[WARNING] c — z", "warning_high"},
+		{"[WARNING] c — z", "warning"},
+	}
+	for _, tc := range cases {
+		issues := engine.ExtractIssues(tc.result)
+		if got := reportSeverity(issues); got != tc.want {
+			t.Errorf("reportSeverity(%q) = %q, want %q", tc.result, got, tc.want)
+		}
+	}
+}
+
+// TestMechanicalReport_NotifiesWithoutLLM verifies the mechanical route
+// delivers via notify and never touches the message bus / LLM agent.
+func TestMechanicalReport_NotifiesWithoutLLM(t *testing.T) {
+	t.Parallel()
+
+	var sent []string
+	w := &watchDeps{notify: func(text string) { sent = append(sent, text) }}
+
+	w.mechanicalReport(context.Background(), "[ERROR] postgres — connection refused", "h1")
+
+	if len(sent) != 1 {
+		t.Fatalf("want exactly 1 notify call, got %d", len(sent))
+	}
+	if !strings.Contains(sent[0], "<code>postgres</code>") {
+		t.Errorf("notification missing issue line: %s", sent[0])
+	}
+	if !strings.Contains(sent[0], "<code>#h1</code>") {
+		t.Errorf("notification missing report id in header: %s", sent[0])
+	}
+}
+
+// TestShouldRunLLMCheck_Gate verifies the canary fires on the first tick
+// and then every Nth tick; every<=1 disables the gate entirely.
+func TestShouldRunLLMCheck_Gate(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		tick, every int
+		want        bool
+	}{
+		{1, 6, true}, // boot tick always checks
+		{2, 6, false},
+		{6, 6, false},
+		{7, 6, true}, // next gated run
+		{13, 6, true},
+		{1, 1, true}, // gate disabled
+		{5, 1, true},
+		{3, 0, true}, // defensive: nonsense config falls open
+	} {
+		if got := shouldRunLLMCheck(tc.tick, tc.every); got != tc.want {
+			t.Errorf("shouldRunLLMCheck(%d, %d) = %v, want %v", tc.tick, tc.every, got, tc.want)
+		}
+	}
+}
+
+// TestLLMKeyAlerts_ReplaysCacheBetweenGatedRuns verifies gated-off ticks
+// reuse the cached canary result instead of re-querying (no health flapping).
+func TestLLMKeyAlerts_ReplaysCacheBetweenGatedRuns(t *testing.T) {
+	t.Parallel()
+
+	// HasLLMKeys true via a configured check model, but empty LLMCheckURL —
+	// CheckLLMKeys then has no proxy endpoint and no Gemini keys to probe,
+	// so the gated run completes without network and yields "".
+	w := &watchDeps{
+		cfg:           engine.Config{LLMCheckModels: []string{"m"}},
+		llmCheckEvery: 6,
+	}
+
+	w.tickNum = 2 // gated off
+	w.cachedLLMAlerts = "\n\nLLM Health Issues:\n- [ERROR] proxy: stale"
+	if got := w.llmKeyAlerts(context.Background()); !strings.Contains(got, "proxy: stale") {
+		t.Errorf("gated-off tick must replay cached alerts, got %q", got)
+	}
+
+	w.tickNum = 7 // gated run refreshes the cache
+	if got := w.llmKeyAlerts(context.Background()); got != "" {
+		t.Errorf("gated run with no failing checks must clear alerts, got %q", got)
+	}
+	if w.cachedLLMAlerts != "" {
+		t.Errorf("cache must be refreshed on gated run, got %q", w.cachedLLMAlerts)
+	}
+}
+
+// TestNoteHealthy_RecoveredTransition verifies the degraded→healthy
+// transition logs Info "recovered" exactly once and resets lastHash;
+// steady healthy ticks stay at Debug (dropped by the prod LevelInfo handler).
+func TestNoteHealthy_RecoveredTransition(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(prev)
+
+	w := &watchDeps{lastHash: "deadbeef"} // previous tick was unhealthy
+	w.noteHealthy()
+	if !strings.Contains(buf.String(), "gateway watch: recovered") {
+		t.Errorf("transition must log Info recovered, got: %s", buf.String())
+	}
+	if w.lastHash != "" {
+		t.Errorf("lastHash must reset on healthy, got %q", w.lastHash)
+	}
+
+	buf.Reset()
+	w.noteHealthy() // steady healthy — Debug only, invisible at LevelInfo
+	if buf.String() != "" {
+		t.Errorf("steady healthy tick must not log at Info, got: %s", buf.String())
 	}
 }
