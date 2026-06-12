@@ -1608,8 +1608,11 @@ func TestFailuresSweep_AllSections_Happy(t *testing.T) {
 	}))
 	defer amSrv.Close()
 
-	// Loki mock: return count data.
+	// Loki mock: capture the count query, return count data.
+	capturedLokiQueries := make([]string, 0)
 	lokiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q, _ := url.QueryUnescape(r.URL.Query().Get("query"))
+		capturedLokiQueries = append(capturedLokiQueries, q)
 		fmt.Fprint(w, lokiCountResponse(map[string]int64{
 			"oxpulse-chat": 37,
 		}))
@@ -1661,6 +1664,23 @@ func TestFailuresSweep_AllSections_Happy(t *testing.T) {
 	// Section 4: error log counts.
 	if len(sweep.ErrorLogCounts) == 0 {
 		t.Error("expected error_log_counts to be populated")
+	}
+
+	// The error-log COUNT query must filter by structured level, not a raw
+	// "error" substring — else INFO telemetry carrying "error_class" in its JSON
+	// payload is counted as a server error (the 564-false-positive bug PR #99
+	// fixed in fetchLokiLogs but missed in this sweepErrorLogCounts path).
+	foundLevelCount := false
+	for _, q := range capturedLokiQueries {
+		if strings.Contains(q, "count_over_time") && strings.Contains(q, "| json | level=~") {
+			foundLevelCount = true
+		}
+		if strings.Contains(q, `|~ "(?i)(error|panic|fatal)"`) {
+			t.Errorf("error-log count query still uses raw substring match: %q", q)
+		}
+	}
+	if !foundLevelCount {
+		t.Errorf("expected count_over_time with '| json | level=~' filter; captured: %v", capturedLokiQueries)
 	}
 
 	// Verdict must be DEGRADED.

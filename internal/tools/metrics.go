@@ -640,10 +640,16 @@ func sweepErrorLogCounts(ctx context.Context, lokiURL, container, rangeStr strin
 		return nil, fmt.Sprintf("parse range %q: %v", rangeStr, parseErr)
 	}
 
-	// Use count_over_time with the range baked into the LogQL expression so we
-	// get an instant query at now — no start/end params needed.
+	// Count by STRUCTURED LOG LEVEL, not a raw substring. A substring match on
+	// "error" counts INFO telemetry whose JSON payload merely carries a field
+	// like "error_class":"AbortError" (564 such false positives on oxpulse-chat
+	// in 24h while the real server ERROR count was 0). Parsing `| json` and
+	// filtering the top-level `level` field counts only error-tier lines. Exact
+	// container match (not the `.*` prefix) so staging/stagingprod siblings are
+	// not folded in. Mirrors lokiQueryDefault used by fetchLokiLogs (PR #99) —
+	// the failures-sweep sibling that PR fixed elsewhere but missed here.
 	logQL := fmt.Sprintf(
-		`sum by (container) (count_over_time({container=~"%s.*"} |~ "(?i)(error|panic|fatal)" [%s]))`,
+		`sum by (container) (count_over_time({container="%s"} | json | level=~"(?i)(error|fatal|panic|critical)" [%s]))`,
 		escapeLogQLStringLiteral(container),
 		rangeStr,
 	)
