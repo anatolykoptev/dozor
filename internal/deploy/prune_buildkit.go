@@ -10,6 +10,7 @@ import (
 // It is a package-level var so tests can substitute it.
 var pruneRunner = defaultPruneRunner
 
+//nolint:unused // DI default seam — assigned to var pruneRunner, swapped in tests
 func defaultPruneRunner(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...) //nolint:gosec // trusted local config, not shell
 	cmd.Dir = dir

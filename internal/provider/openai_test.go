@@ -389,6 +389,131 @@ func TestChat_EmptyChoices(t *testing.T) {
 	}
 }
 
+// --- TestCooldown_SkipsExhaustedModel ----------------------------------------
+
+// TestCooldown_SkipsExhaustedModel verifies that after FailThreshold (2) observed
+// 429s on the primary model, the shared chain client marks it as cooled and
+// subsequent requests skip it — going straight to the fallback model.
+//
+// The test drives requests through the real Chat() path (not doChatCtx directly)
+// to exercise the full retry→kit-chain→cooldown arc. The kit client is shared
+// via o.chainClient, so cooldown state persists across calls.
+//
+// Falsification: if buildChainClient is removed (chainClient=nil), each call
+// creates a fresh kit client with no cooldown state and the primary is hit on
+// every request — hitPrimary would equal 3, not 2, and the test fails on the
+// "primary hit count grew" assertion.
+func TestCooldown_SkipsExhaustedModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping cooldown test in short mode (involves retry backoff delays)")
+	}
+
+	const (
+		primaryModel  = "model-primary"
+		fallbackModel = "model-fallback"
+		wantContent   = "served by fallback"
+	)
+
+	var (
+		hitPrimary  atomic.Int32
+		hitFallback atomic.Int32
+		observerFired atomic.Bool
+	)
+
+	// Single server handles both models; routes by "model" field in body.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch body.Model {
+		case primaryModel:
+			hitPrimary.Add(1)
+			// Always 429 so cooldown accumulates.
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write(openaiErrorBody("rate limit exceeded"))
+		default: // fallback model
+			hitFallback.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(chatCompletion(wantContent, "stop"))
+		}
+	}))
+	defer srv.Close()
+
+	// Build OpenAI with a fallback chain; wire chainClient with a test observer.
+	eps := kitllm.BuildModelChainEndpoints(srv.URL, "test-key", primaryModel, []string{fallbackModel})
+	chainClient := kitllm.NewClient(srv.URL, "test-key", primaryModel,
+		kitllm.WithHTTPClient(&http.Client{Timeout: 5 * time.Second}),
+		kitllm.WithMaxRetries(1),
+		kitllm.WithEndpoints(eps),
+		kitllm.WithModelCooldown(kitllm.CooldownConfig{}),
+		kitllm.WithModelCooldownObserver(func(model string, cooling bool, _ time.Duration) {
+			if cooling && model == primaryModel {
+				observerFired.Store(true)
+			}
+		}),
+	)
+	o := &OpenAI{
+		apiURL:        srv.URL,
+		apiKey:        "test-key",
+		model:         primaryModel,
+		fallbackChain: []string{fallbackModel},
+		chainClient:   chainClient,
+		client:        &http.Client{Timeout: 5 * time.Second},
+		maxIters:      10,
+	}
+
+	msgs := []kitllm.Message{{Role: "user", Content: "ping"}}
+
+	// Requests 1+2: primary returns 429 each time → kit chain falls through to
+	// fallback on the same request. Each call sees: primary→429→fallback→200.
+	// After 2 calls, primary has FailThreshold (2) failures recorded → enters cooldown.
+	for i := range 2 {
+		resp, err := o.Chat(context.Background(), msgs, nil)
+		if err != nil {
+			t.Fatalf("call %d: Chat() unexpected error: %v", i+1, err)
+		}
+		if resp.Content != wantContent {
+			t.Errorf("call %d: Content = %q, want %q", i+1, resp.Content, wantContent)
+		}
+	}
+
+	if n := hitPrimary.Load(); n != 2 {
+		t.Errorf("after 2 calls: primary hit count = %d, want 2", n)
+	}
+
+	// Observer fires async in kit goroutine — wait up to 500ms.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for !observerFired.Load() && time.Now().Before(deadline) {
+		// tight-poll; observer goroutine scheduled momentarily
+	}
+	if !observerFired.Load() {
+		t.Error("cooldown observer Warn did not fire after FailThreshold (2) 429s on primary model")
+	}
+
+	primaryBefore := hitPrimary.Load()
+
+	// Request 3: primary is in cooldown → chain SKIPS it → fallback serves directly.
+	resp, err := o.Chat(context.Background(), msgs, nil)
+	if err != nil {
+		t.Fatalf("call 3 (cooled): Chat() unexpected error: %v", err)
+	}
+	if resp.Content != wantContent {
+		t.Errorf("call 3 (cooled): Content = %q, want %q", resp.Content, wantContent)
+	}
+
+	// Primary must NOT have been hit on the 3rd call.
+	if n := hitPrimary.Load(); n != primaryBefore {
+		t.Errorf("call 3 (cooled): primary hit count grew from %d to %d — model was NOT skipped (cooldown not working)",
+			primaryBefore, n)
+	}
+	if n := hitFallback.Load(); n != 3 {
+		t.Errorf("fallback hit count = %d, want 3 (one per call)", n)
+	}
+}
+
 // --- TestChat_BlockedResponse -----------------------------------------------
 
 // TestChat_BlockedResponse verifies that a response with promptFeedback

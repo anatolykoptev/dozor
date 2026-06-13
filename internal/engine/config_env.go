@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -21,16 +20,6 @@ func envBool(key string, def bool) bool                              { return ki
 func envList(key, def string) []string                               { return kitenv.List(key, def) }
 func envDuration(key string, def time.Duration) time.Duration        { return kitenv.Duration(key, def) }
 func envDurationStr(key string, def time.Duration) time.Duration     { return kitenv.Duration(key, def) }
-
-// expandHome replaces leading ~/ with user's home directory.
-func expandHome(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home + path[1:]
-		}
-	}
-	return path
-}
 
 // parseTrackedBinaries parses "owner/repo:binary,owner/repo:binary" format.
 func parseTrackedBinaries(raw string) []TrackedBinaryConfig {

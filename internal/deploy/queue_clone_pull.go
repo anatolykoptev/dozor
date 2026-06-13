@@ -25,6 +25,7 @@ const (
 // Replaceable in tests.
 var gitStatusRunner = defaultGitStatusRunner
 
+//nolint:unused // DI default seam — assigned to var gitStatusRunner, swapped in tests
 func defaultGitStatusRunner(ctx context.Context, clonePath string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain") //nolint:gosec // trusted config
 	cmd.Dir = clonePath
@@ -35,6 +36,7 @@ func defaultGitStatusRunner(ctx context.Context, clonePath string) ([]byte, erro
 // Replaceable in tests.
 var gitFetchRunner = defaultGitFetchRunner
 
+//nolint:unused // DI default seam — assigned to var gitFetchRunner, swapped in tests
 func defaultGitFetchRunner(ctx context.Context, clonePath, branch string) error {
 	cmd := exec.CommandContext(ctx, "git", "fetch", "origin", branch, "--no-tags", "--quiet") //nolint:gosec // trusted config
 	cmd.Dir = clonePath
@@ -49,6 +51,7 @@ func defaultGitFetchRunner(ctx context.Context, clonePath, branch string) error 
 // Replaceable in tests.
 var gitCurrentBranchRunner = defaultGitCurrentBranchRunner
 
+//nolint:unused // DI default seam — assigned to var gitCurrentBranchRunner, swapped in tests
 func defaultGitCurrentBranchRunner(ctx context.Context, clonePath string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD") //nolint:gosec // trusted config
 	cmd.Dir = clonePath
@@ -62,6 +65,7 @@ func defaultGitCurrentBranchRunner(ctx context.Context, clonePath string) (strin
 // Replaceable in tests.
 var gitRevParseRunner = defaultGitRevParseRunner
 
+//nolint:unused // DI default seam — assigned to var gitRevParseRunner, swapped in tests
 func defaultGitRevParseRunner(ctx context.Context, clonePath, ref string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", ref) //nolint:gosec // trusted config
 	cmd.Dir = clonePath
@@ -76,6 +80,7 @@ func defaultGitRevParseRunner(ctx context.Context, clonePath, ref string) (strin
 // Replaceable in tests.
 var gitPullFFRunner = defaultGitPullFFRunner
 
+//nolint:unused // DI default seam — assigned to var gitPullFFRunner, swapped in tests
 func defaultGitPullFFRunner(ctx context.Context, clonePath, branch string) error {
 	cmd := exec.CommandContext(ctx, "git", "pull", "--ff-only", "origin", branch) //nolint:gosec // trusted config
 	cmd.Dir = clonePath
@@ -90,6 +95,7 @@ func defaultGitPullFFRunner(ctx context.Context, clonePath, branch string) error
 // Replaceable in tests.
 var gitShortSHARunner = defaultGitShortSHARunner
 
+//nolint:unused // DI default seam — assigned to var gitShortSHARunner, swapped in tests
 func defaultGitShortSHARunner(ctx context.Context, dir string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--short", "HEAD") //nolint:gosec // trusted config
 	cmd.Dir = dir

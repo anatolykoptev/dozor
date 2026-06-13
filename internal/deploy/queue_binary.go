@@ -28,6 +28,7 @@ const (
 // It can be replaced in tests.
 var systemctlRunner = defaultSystemctlRunner
 
+//nolint:unused // DI default seam — assigned to var systemctlRunner, swapped in tests
 func defaultSystemctlRunner(ctx context.Context, args ...string) ([]byte, error) {
 	//nolint:gosec // args come from trusted deploy-repos.yaml, not user input
 	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
