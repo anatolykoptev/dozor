@@ -168,6 +168,18 @@ func (o *OpenAI) Chat(ctx context.Context, messages []kitllm.Message, tools []ki
 	return resp, nil
 }
 
+// cooldownDuration resolves the per-model cooldown TTL from the environment.
+// LLM_COOLDOWN_SECONDS is read as an integer number of seconds (no DOZOR_ prefix
+// — fleet-wide single knob). Falls back to 15 minutes when unset or ≤0.
+func cooldownDuration() time.Duration {
+	if v := os.Getenv("LLM_COOLDOWN_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 15 * time.Minute
+}
+
 // buildChainClient constructs the shared chain client with per-model cooldown.
 // Called once at construction; the returned client is reused across requests so
 // cooldown state accumulates across calls (the key property that prevents dead-hop
@@ -183,10 +195,10 @@ func (o *OpenAI) buildChainClient() *kitllm.Client {
 		kitllm.WithMaxRetries(1), // dozor owns retry loop; 1 = single attempt per endpoint
 		kitllm.WithEndpoints(eps),
 		// Per-model cooldown: after 2 observed quota-class failures (429 or
-		// quota-flagged 503) a model is skipped for 60s (or Retry-After if
-		// provided), preventing dead-hop RTTs on exhausted free-tier quotas.
-		// Zero-value config fills kit defaults (FailThreshold=2, Default=60s, Max=10m).
-		kitllm.WithModelCooldown(kitllm.CooldownConfig{}),
+		// quota-flagged 503) a model is skipped for cooldownDuration() (or
+		// Retry-After if provided), preventing dead-hop RTTs on quota-exhausted
+		// free-tier models. TTL = LLM_COOLDOWN_SECONDS (default 15m).
+		kitllm.WithModelCooldown(kitllm.CooldownConfig{Default: cooldownDuration()}),
 		// Observer: logs a Warn when a model enters cooldown so quota pressure
 		// is visible in the journal without polling /metrics.
 		kitllm.WithModelCooldownObserver(func(model string, cooling bool, d time.Duration) {
