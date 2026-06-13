@@ -28,6 +28,29 @@ var watchReportTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "Mechanical watch reports sent to the operator, by severity.",
 }, []string{"severity"})
 
+// tgNotificationsTotal counts proactive Telegram notifications by kind and
+// action (sent|suppressed). "Proactive" means operator-unprompted — deploy
+// status, watch alerts, recovery messages. Reply-path (operator-command
+// responses) is excluded.
+//
+// kind values:
+//
+//	"watch_issue"     — new issue set detected by periodic triage
+//	"watch_recovery"  — service set recovered to healthy
+//	"deploy_success"  — build finished successfully (only when DOZOR_DEPLOY_NOTIFY=all)
+//	"deploy_failure"  — build failed or rolled back
+//
+// action values:  "sent" | "suppressed"
+//
+// Example PromQL to see daily suppression rate for watch:
+//
+//	rate(dozor_tg_notifications_total{kind=~"watch.*",action="suppressed"}[24h])
+//	  / rate(dozor_tg_notifications_total{kind=~"watch.*"}[24h])
+var tgNotificationsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "dozor_tg_notifications_total",
+	Help: "Proactive Telegram notifications by kind and action (sent|suppressed).",
+}, []string{"kind", "action"})
+
 const (
 	// kbQueryMaxLen is the maximum length of KB search query built from issues.
 	kbQueryMaxLen = 500
@@ -48,7 +71,18 @@ type watchDeps struct {
 	cfg            engine.Config
 	kbSearcher     *mcpclient.KBSearcher
 	notify         func(string)
-	lastHash       string
+	// lastHash is the hash of the last triage result (healthy or not).
+	// Reset to "" on recovery so the next unhealthy tick computes a fresh hash.
+	lastHash string
+	// lastNotifiedHash is the hash that was most recently notified to the
+	// operator (via routeFn + TG). It outlives a healthy interval so that
+	// when the same issue set returns after a brief recovery, the
+	// notifyCooldown can suppress it even if lastHash was cleared.
+	// Reset only when a recovery notification is sent.
+	lastNotifiedHash string
+	// wasUnhealthy tracks whether the previous tick was unhealthy so we can
+	// detect the unhealthy→healthy state transition and send a recovery notice.
+	wasUnhealthy   bool
 	notifyCooldown *notifyCooldown
 	// tickNum counts watch ticks (1-based); llmCheckEvery gates the LLM
 	// key canary to every Nth tick (DOZOR_LLM_CHECK_EVERY, default 6 —
@@ -110,8 +144,13 @@ func (w *watchDeps) tick(ctx context.Context) {
 		return
 	}
 
+	// Mark that this tick is unhealthy so the next healthy tick can detect
+	// the unhealthy→healthy state transition.
+	w.wasUnhealthy = true
+
 	hash := hashResult(result)
 	if hash == w.lastHash {
+		tgNotificationsTotal.WithLabelValues("watch_issue", "suppressed").Inc()
 		slog.Info("gateway watch: same issues, suppressed (dedup)", slog.String("hash", hash))
 		return
 	}
@@ -122,21 +161,36 @@ func (w *watchDeps) tick(ctx context.Context) {
 	}
 
 	now := time.Now()
+	// Suppress if the same hash was notified within the cooldown window,
+	// even when lastHash was cleared by an intervening healthy tick.
 	if w.notifyCooldown.shouldSuppress(hash, now) {
+		tgNotificationsTotal.WithLabelValues("watch_issue", "suppressed").Inc()
 		slog.InfoContext(ctx, "watch: notify cooldown active, suppressing watch report",
 			"hash", hash, "cooldown", w.notifyCooldown.duration)
 		return
 	}
 	w.routeFn(ctx, result, hash)
 	w.notifyCooldown.markSent(hash, now) // mark AFTER successful route
+	w.lastNotifiedHash = hash
+	tgNotificationsTotal.WithLabelValues("watch_issue", "sent").Inc()
 }
 
-// noteHealthy records a healthy tick. Healthy ticks are Debug noise; only
-// the degraded→healthy transition is operator-relevant (lastHash != ""
-// means the previous tick had issues).
+// noteHealthy records a healthy tick. On the unhealthy→healthy state
+// transition (wasUnhealthy == true) it sends a recovery TG notice and
+// resets state so the same issue set can fire again after it returns.
 func (w *watchDeps) noteHealthy() {
-	if w.lastHash != "" {
-		slog.Info("gateway watch: recovered")
+	if w.wasUnhealthy {
+		// State transition: unhealthy → healthy.
+		slog.Info("gateway watch: recovered", slog.String("last_hash", w.lastNotifiedHash))
+		if w.notify != nil && w.lastNotifiedHash != "" {
+			w.notify("✅ <b>Dozor Watch</b> — all services recovered")
+			tgNotificationsTotal.WithLabelValues("watch_recovery", "sent").Inc()
+		}
+		// Clear lastNotifiedHash so the same issue set can re-fire after
+		// recovery. The notifyCooldown still suppresses rapid flapping
+		// within the cooldown window.
+		w.lastNotifiedHash = ""
+		w.wasUnhealthy = false
 	} else {
 		slog.Debug("gateway watch: all healthy")
 	}

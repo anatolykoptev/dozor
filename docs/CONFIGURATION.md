@@ -41,6 +41,8 @@ Before opening a PR that touches `workspace/` or `skills/`, grep your diff for: 
 |----------|---------|-------------|
 | `DOZOR_WATCH_INTERVAL` | `4h` | Periodic health check interval (Go duration: `30m`, `1h`, `4h`) |
 | `DOZOR_WEBHOOK_URL` | _(empty)_ | Webhook URL for alert notifications (POST with JSON body) |
+| `DOZOR_NOTIFY_COOLDOWN` | `1h` | Per-issue-set cooldown: suppresses repeat Telegram alerts for the same service set within this window. `0` disables. |
+| `DOZOR_DEPLOY_NOTIFY` | `failure` | Which deploy events reach Telegram. `failure` (default) = only ❌/⚠️ failures and rollbacks. `all` = also ✅ success and 🔨 build-start messages (verbose mode). |
 
 ## Alert Thresholds
 
