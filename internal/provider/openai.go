@@ -170,14 +170,14 @@ func (o *OpenAI) Chat(ctx context.Context, messages []kitllm.Message, tools []ki
 
 // cooldownDuration resolves the per-model cooldown TTL from the environment.
 // LLM_COOLDOWN_SECONDS is read as an integer number of seconds (no DOZOR_ prefix
-// — fleet-wide single knob). Falls back to 15 minutes when unset or ≤0.
+// — fleet-wide single knob). Falls back to 5 minutes when unset or ≤0.
 func cooldownDuration() time.Duration {
 	if v := os.Getenv("LLM_COOLDOWN_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return time.Duration(n) * time.Second
 		}
 	}
-	return 15 * time.Minute
+	return 5 * time.Minute
 }
 
 // buildChainClient constructs the shared chain client with per-model cooldown.
@@ -197,7 +197,7 @@ func (o *OpenAI) buildChainClient() *kitllm.Client {
 		// Per-model cooldown: after 2 observed quota-class failures (429 or
 		// quota-flagged 503) a model is skipped for cooldownDuration() (or
 		// Retry-After if provided), preventing dead-hop RTTs on quota-exhausted
-		// free-tier models. TTL = LLM_COOLDOWN_SECONDS (default 15m).
+		// free-tier models. TTL = LLM_COOLDOWN_SECONDS (default 5m).
 		kitllm.WithModelCooldown(kitllm.CooldownConfig{Default: cooldownDuration()}),
 		// Observer: logs a Warn when a model enters cooldown so quota pressure
 		// is visible in the journal without polling /metrics.
