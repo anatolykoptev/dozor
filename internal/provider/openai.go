@@ -32,6 +32,7 @@ type OpenAI struct {
 	model         string
 	fallbackChain []string // optional cross-provider model chain (via cliproxyapi); empty = single-model
 	client        *http.Client
+	chainClient   *kitllm.Client // shared across calls so cooldown state persists; nil = no fallback chain
 	maxIters      int
 }
 
@@ -74,6 +75,9 @@ func NewOpenAI() (Provider, bool) {
 	}
 	o := newOpenAIWithConfig(apiURL, apiKey, model, maxItersFromEnv())
 	o.fallbackChain = chain
+	if len(chain) > 0 {
+		o.chainClient = o.buildChainClient()
+	}
 	return o, true
 }
 
@@ -164,6 +168,37 @@ func (o *OpenAI) Chat(ctx context.Context, messages []kitllm.Message, tools []ki
 	return resp, nil
 }
 
+// buildChainClient constructs the shared chain client with per-model cooldown.
+// Called once at construction; the returned client is reused across requests so
+// cooldown state accumulates across calls (the key property that prevents dead-hop
+// RTTs on quota-exhausted free-tier models).
+//
+// The observer logs a Warn on cooldown ENTRY (cooling=true). It fires async
+// inside kit (fireCooldownObserver goroutine) so it must not block or panic.
+// slog.Warn without context is intentional — the firing goroutine has no request ctx.
+func (o *OpenAI) buildChainClient() *kitllm.Client {
+	eps := kitllm.BuildModelChainEndpoints(o.apiURL, o.apiKey, o.model, o.fallbackChain)
+	return kitllm.NewClient(o.apiURL, o.apiKey, o.model,
+		kitllm.WithHTTPClient(o.client),
+		kitllm.WithMaxRetries(1), // dozor owns retry loop; 1 = single attempt per endpoint
+		kitllm.WithEndpoints(eps),
+		// Per-model cooldown: after 2 observed quota-class failures (429 or
+		// quota-flagged 503) a model is skipped for 60s (or Retry-After if
+		// provided), preventing dead-hop RTTs on exhausted free-tier quotas.
+		// Zero-value config fills kit defaults (FailThreshold=2, Default=60s, Max=10m).
+		kitllm.WithModelCooldown(kitllm.CooldownConfig{}),
+		// Observer: logs a Warn when a model enters cooldown so quota pressure
+		// is visible in the journal without polling /metrics.
+		kitllm.WithModelCooldownObserver(func(model string, cooling bool, d time.Duration) {
+			if cooling {
+				slog.Warn("llm model cooldown",
+					slog.String("model", model),
+					slog.Duration("dur", d))
+			}
+		}),
+	)
+}
+
 // doChatCtx delegates HTTP/JSON mechanics to kitllm.Client.Chat. The
 // retry/classification policy lives in Chat (via kit/retry.Do).
 //
@@ -173,20 +208,18 @@ func (o *OpenAI) Chat(ctx context.Context, messages []kitllm.Message, tools []ki
 //
 // kitllm types are passed through directly — no adapter conversion needed.
 func (o *OpenAI) doChatCtx(ctx context.Context, messages []kitllm.Message, tools []kitllm.Tool) (*kitllm.ChatResponse, error) {
-	clientOpts := []kitllm.Option{
-		kitllm.WithHTTPClient(o.client),
-		kitllm.WithMaxRetries(1), // dozor owns retry; 1 = single attempt
+	// Use the shared chain client when a fallback chain is configured so that
+	// per-model cooldown state accumulates across requests (cross-request memory).
+	// Fall back to a fresh single-endpoint client for the no-chain path.
+	var client *kitllm.Client
+	if o.chainClient != nil {
+		client = o.chainClient
+	} else {
+		client = kitllm.NewClient(o.apiURL, o.apiKey, o.model,
+			kitllm.WithHTTPClient(o.client),
+			kitllm.WithMaxRetries(1),
+		)
 	}
-	// Cross-provider model chain: при rate-limit/недоступности primary
-	// model на cliproxyapi — kit's WithEndpoints проходит по chain models
-	// (same baseURL+apiKey, разный model id, fail-fast на non-retryable).
-	// Hedge layer (withFallback) поверх работает orthogonal — fallback
-	// Provider остаётся single-model, distinct provider.
-	if len(o.fallbackChain) > 0 {
-		eps := kitllm.BuildModelChainEndpoints(o.apiURL, o.apiKey, o.model, o.fallbackChain)
-		clientOpts = append(clientOpts, kitllm.WithEndpoints(eps))
-	}
-	client := kitllm.NewClient(o.apiURL, o.apiKey, o.model, clientOpts...)
 
 	// WithMessageTimestamps materialises Message.ChatTime as a bracketed
 	// "[YYYY-MM-DD HH:MM UTC] " prefix on user/assistant text so the model

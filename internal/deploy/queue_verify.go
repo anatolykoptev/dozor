@@ -31,6 +31,7 @@ type portPublisher struct {
 // It can be replaced in tests.
 var outputRunner = defaultOutputRunner
 
+//nolint:unused // DI default seam — assigned to var outputRunner, swapped in tests
 func defaultOutputRunner(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // trusted local config, not shell
 	cmd.Dir = dir
