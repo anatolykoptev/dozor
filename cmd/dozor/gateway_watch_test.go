@@ -307,7 +307,8 @@ func TestNoteHealthy_RecoveredTransition(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	defer slog.SetDefault(prev)
 
-	w := &watchDeps{lastHash: "deadbeef"} // previous tick was unhealthy
+	// Simulate a tick that was unhealthy (wasUnhealthy=true, lastNotifiedHash set).
+	w := &watchDeps{lastHash: "deadbeef", wasUnhealthy: true, lastNotifiedHash: "deadbeef"}
 	w.noteHealthy()
 	if !strings.Contains(buf.String(), "gateway watch: recovered") {
 		t.Errorf("transition must log Info recovered, got: %s", buf.String())
@@ -315,10 +316,127 @@ func TestNoteHealthy_RecoveredTransition(t *testing.T) {
 	if w.lastHash != "" {
 		t.Errorf("lastHash must reset on healthy, got %q", w.lastHash)
 	}
+	if w.wasUnhealthy {
+		t.Errorf("wasUnhealthy must be cleared after recovery, got true")
+	}
 
 	buf.Reset()
 	w.noteHealthy() // steady healthy — Debug only, invisible at LevelInfo
 	if buf.String() != "" {
 		t.Errorf("steady healthy tick must not log at Info, got: %s", buf.String())
+	}
+}
+
+// TestNoteHealthy_SendsRecoveryTG verifies that the degraded→healthy state
+// transition sends exactly one recovery TG message via notify, and only when
+// lastNotifiedHash is non-empty (i.e. the operator was previously informed).
+// RED-on-revert: if wasUnhealthy tracking is removed, no message is sent.
+func TestNoteHealthy_SendsRecoveryTG(t *testing.T) {
+	t.Parallel()
+
+	var sent []string
+	w := &watchDeps{
+		notify:           func(msg string) { sent = append(sent, msg) },
+		lastHash:         "abc123",
+		wasUnhealthy:     true,
+		lastNotifiedHash: "abc123", // operator was informed about these issues
+	}
+
+	w.noteHealthy()
+
+	if len(sent) != 1 {
+		t.Fatalf("recovery transition must send exactly 1 TG notify, got %d", len(sent))
+	}
+	if !strings.Contains(sent[0], "recovered") {
+		t.Errorf("recovery message must contain 'recovered', got: %s", sent[0])
+	}
+	// State must be fully cleared after recovery.
+	if w.wasUnhealthy {
+		t.Error("wasUnhealthy must be false after recovery")
+	}
+	if w.lastNotifiedHash != "" {
+		t.Errorf("lastNotifiedHash must be cleared after recovery, got %q", w.lastNotifiedHash)
+	}
+}
+
+// TestNoteHealthy_NoRecoveryTG_WhenNotPreviouslyNotified verifies that a
+// healthy tick after an unhealthy-but-suppressed cycle does NOT send a TG
+// recovery notice (the operator was never told about the issue).
+// RED-on-revert: if lastNotifiedHash guard is removed, a spurious recovery
+// message fires even when the issue was never surfaced.
+func TestNoteHealthy_NoRecoveryTG_WhenNotPreviouslyNotified(t *testing.T) {
+	t.Parallel()
+
+	var sent []string
+	w := &watchDeps{
+		notify:           func(msg string) { sent = append(sent, msg) },
+		lastHash:         "abc123",
+		wasUnhealthy:     true,
+		lastNotifiedHash: "", // issue was suppressed by cooldown — operator never saw it
+	}
+
+	w.noteHealthy()
+
+	if len(sent) != 0 {
+		t.Fatalf("recovery must NOT TG-notify when issue was suppressed, got %d messages: %v", len(sent), sent)
+	}
+	if w.wasUnhealthy {
+		t.Error("wasUnhealthy must be cleared regardless of notify")
+	}
+}
+
+// TestTick_StateTransition_IssueSetSuppressionAfterRecovery verifies the
+// complete state machine: issue detected → recovery → same issue returns →
+// suppressed by notifyCooldown (within window).
+// RED-on-revert: if lastNotifiedHash is not preserved across the healthy interval,
+// the same service set re-fires immediately after a brief recovery.
+func TestTick_StateTransition_IssueSetSuppressionAfterRecovery(t *testing.T) {
+	t.Parallel()
+
+	var routeCalls int
+	nc := newNotifyCooldown(1 * time.Hour)
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	w := &watchDeps{notifyCooldown: nc}
+	w.routeFn = func(_ context.Context, _, hash string) {
+		routeCalls++
+		w.lastNotifiedHash = hash
+		nc.markSent(hash, now)
+	}
+
+	hash := "aabbccdd"
+
+	// Cycle 1: issue detected → notified.
+	w.wasUnhealthy = true
+	w.lastHash = ""
+	if nc.shouldSuppress(hash, now) {
+		t.Fatal("must not suppress on first detection")
+	}
+	w.routeFn(context.Background(), "report", hash)
+	w.lastHash = hash
+	if routeCalls != 1 {
+		t.Fatalf("want 1 route call, got %d", routeCalls)
+	}
+
+	// Brief recovery (30 min later): healthy → clears lastHash, sets lastNotifiedHash.
+	w.noteHealthy()
+	if w.lastHash != "" {
+		t.Errorf("lastHash must be cleared on healthy, got %q", w.lastHash)
+	}
+	// After recovery, lastNotifiedHash is also cleared — re-registration is allowed
+	// once the cooldown expires (this is intentional — operator gets one notice per
+	// cooldown window, not one per hour forever).
+	if w.lastNotifiedHash != "" {
+		t.Errorf("lastNotifiedHash must be cleared after recovery, got %q", w.lastNotifiedHash)
+	}
+
+	// Cycle 2: same issue returns 30 min after first notify — within cooldown window.
+	laterWithin := now.Add(30 * time.Minute)
+	if !nc.shouldSuppress(hash, laterWithin) {
+		t.Error("same hash must be suppressed within the 1h cooldown window after recovery")
+	}
+	// routeFn must NOT be called.
+	if routeCalls != 1 {
+		t.Fatalf("want still 1 route call within cooldown window, got %d", routeCalls)
 	}
 }

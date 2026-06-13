@@ -253,14 +253,21 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 		return
 	}
 
-	// Log all deploy lifecycle events to journalctl; forward failures and
-	// rollbacks to Telegram so the operator sees them without polling logs.
-	deployLog := func(msg string) {
-		slog.Info("deploy", "msg", msg)
-		if strings.HasPrefix(msg, "❌") || strings.HasPrefix(msg, "⚠️") {
-			notifyFn(msg)
-		}
+	// Log all deploy lifecycle events to journalctl.
+	//
+	// DOZOR_DEPLOY_NOTIFY controls which deploy events reach Telegram:
+	//   "failure"  (default) — only ❌/⚠️ failure and rollback messages.
+	//   "all"                — also ✅ success and 🔨 build-start messages
+	//                          (restores original verbose behaviour).
+	//
+	// With auto-deploy on every push a busy day produces 20+ ✅ pings; the
+	// default keeps the channel quiet on routine deploys.
+	deployNotifyMode := strings.ToLower(strings.TrimSpace(os.Getenv("DOZOR_DEPLOY_NOTIFY")))
+	if deployNotifyMode == "" {
+		deployNotifyMode = "failure"
 	}
+	slog.Info("deploy notify mode", slog.String("mode", deployNotifyMode))
+	deployLog := makeDeployLog(deployNotifyMode, notifyFn)
 	// DOZOR_BUILD_CONCURRENCY controls how many Docker builds may run
 	// concurrently across all service groups. Default 1 preserves the
 	// original serialized behaviour; set to 2 once the ARM host has been
@@ -292,6 +299,38 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 		slog.String("path", "/deploy/github"),
 		slog.Int("repos", len(cfg.Repos)),
 	)
+}
+
+// makeDeployLog returns a deploy lifecycle callback that logs every event to
+// journalctl and, based on mode, forwards a filtered subset to Telegram via
+// notifyFn. It also bumps tgNotificationsTotal so suppression is observable.
+//
+// mode values (DOZOR_DEPLOY_NOTIFY):
+//
+//	"failure" (default) — only ❌/⚠️ messages (failures + rollbacks) reach TG.
+//	"all"               — all messages (including ✅ success and 🔨 build-start).
+func makeDeployLog(mode string, notifyFn func(string)) func(string) {
+	return func(msg string) {
+		slog.Info("deploy", "msg", msg)
+		isFailure := strings.HasPrefix(msg, "❌") || strings.HasPrefix(msg, "⚠️")
+		isSuccess := strings.HasPrefix(msg, "✅")
+		switch mode {
+		case "all":
+			notifyFn(msg)
+			if isFailure {
+				tgNotificationsTotal.WithLabelValues("deploy_failure", "sent").Inc()
+			} else if isSuccess {
+				tgNotificationsTotal.WithLabelValues("deploy_success", "sent").Inc()
+			}
+		default: // "failure"
+			if isFailure {
+				notifyFn(msg)
+				tgNotificationsTotal.WithLabelValues("deploy_failure", "sent").Inc()
+			} else if isSuccess {
+				tgNotificationsTotal.WithLabelValues("deploy_success", "suppressed").Inc()
+			}
+		}
+	}
 }
 
 // resolveAdminChatID returns the Telegram admin chat ID for internal notifications.
