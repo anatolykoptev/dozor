@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Transporter is the minimal command-execution interface required by CleanupCollector.
@@ -19,6 +20,13 @@ type Transporter interface {
 // CleanupCollector auto-detects and cleans system resources.
 type CleanupCollector struct {
 	transport Transporter
+
+	// sudoOnce guards the single sudo availability probe.
+	// sudoAvail is the cached result: true = passwordless sudo works.
+	// NoNewPrivileges is fixed at process start and never changes, so caching
+	// the result for the process lifetime is correct.
+	sudoOnce  sync.Once
+	sudoAvail bool
 }
 
 // allTargets is the list of all supported cleanup target names.
