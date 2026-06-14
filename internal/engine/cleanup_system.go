@@ -110,9 +110,42 @@ func (c *CleanupCollector) cleanCaches(ctx context.Context) CleanupTarget {
 
 // --- apt cache ---
 
+// isSudoStructurallyUnavailable reports whether an error string from a failed
+// "sudo -n" invocation represents a structural impossibility (NoNewPrivileges flag
+// set, or /etc/sudo.conf ownership error) rather than a transient or command error.
+// In these cases sudo can NEVER succeed in this process — the failure must not be
+// reported as an error that escalates to the partial-WARN aggregate.
+func isSudoStructurallyUnavailable(errStr string) bool {
+	return strings.Contains(errStr, "no new privileges") ||
+		strings.Contains(errStr, "sudo: /etc/sudo.conf is owned by uid")
+}
+
+// probeSudo runs "sudo -n true" once and caches whether passwordless sudo is
+// available in this process. Subsequent calls return the cached result instantly.
+// The probe uses ctx only for the first call; later calls ignore ctx.
+func (c *CleanupCollector) probeSudo(ctx context.Context) bool {
+	c.sudoOnce.Do(func() {
+		res := c.transport.ExecuteUnsafe(ctx, "sudo -n true 2>&1")
+		if res.Success {
+			c.sudoAvail = true
+			return
+		}
+		combined := res.Stdout
+		if combined == "" {
+			combined = res.Stderr
+		}
+		if isSudoStructurallyUnavailable(combined) {
+			slog.InfoContext(ctx, "cleanAptCache: sudo structurally unavailable (NoNewPrivileges or ownership); apt target disabled for this process",
+				slog.String("reason", combined))
+		}
+		// sudoAvail stays false for any failure
+	})
+	return c.sudoAvail
+}
+
 // tryRunSudo executes a command via "sudo -n" (non-interactive, fails fast if passwordless
 // sudo is not configured). Returns the command output and any execution error.
-// A non-zero exit or a stderr containing "sudo:" is treated as a sudo-unavailable error.
+// Callers must have already confirmed sudo is available via probeSudo.
 func (c *CleanupCollector) tryRunSudo(ctx context.Context, args ...string) (string, error) {
 	cmd := "sudo -n " + strings.Join(args, " ") + " 2>&1"
 	res := c.transport.ExecuteUnsafe(ctx, cmd)
@@ -127,17 +160,27 @@ func (c *CleanupCollector) tryRunSudo(ctx context.Context, args ...string) (stri
 }
 
 // cleanAptCache cleans /var/cache/apt/archives via "sudo -n apt-get clean".
-// If passwordless sudo is not configured the target is skipped (FreedMB=0, Error set).
-// This is a WARNING-level target because apt caches can accumulate gigabytes over time
-// but rarely require immediate attention.
+//
+// Sudo availability is probed once per process lifetime via probeSudo:
+//   - If sudo is structurally unavailable (NoNewPrivileges flag / ownership error),
+//     the target is returned as unavailable (Available=false, no Error) — it does NOT
+//     contribute to the partial-WARN aggregate. This is the expected state when dozor
+//     runs under systemd with NoNewPrivileges=yes.
+//   - If sudo is available but apt-get clean fails, the Error field is set and the
+//     failure IS surfaced as a real error — not silenced.
 func (c *CleanupCollector) cleanAptCache(ctx context.Context) CleanupTarget {
 	t := CleanupTarget{Name: "apt"}
+	if !c.probeSudo(ctx) {
+		// Structural unavailability: Available stays false, Error stays empty.
+		// appendTarget will not push anything to res.Errors.
+		return t
+	}
 	var execErr string
 	freed := c.measureFreedMB(ctx, func() {
 		_, err := c.tryRunSudo(ctx, "apt-get", "clean")
 		if err != nil {
-			execErr = "apt cache skipped: " + err.Error()
-			slog.InfoContext(ctx, "cleanAptCache: skipping — passwordless sudo not configured or apt-get failed",
+			execErr = err.Error()
+			slog.WarnContext(ctx, "cleanAptCache: apt-get clean failed despite sudo being available",
 				slog.String("error", err.Error()))
 		}
 	})

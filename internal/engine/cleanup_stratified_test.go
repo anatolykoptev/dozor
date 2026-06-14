@@ -8,19 +8,81 @@ import (
 
 // --- cleanAptCache tests ---
 
-// TestCleanAptCache_NoSudoSkipped verifies that when sudo -n apt-get clean returns
-// "permission denied", cleanAptCache returns FreedMB=0 with an error noting the skip.
-func TestCleanAptCache_NoSudoSkipped(t *testing.T) {
+// TestCleanAptCache_SudoStructurallyUnavailable verifies that when sudo cannot run due to
+// NoNewPrivileges (or /etc/sudo.conf ownership), cleanAptCache returns Available=false
+// with no Error — so it does NOT contribute to the partial-WARN aggregate.
+// This is the expected state when dozor runs under systemd with NoNewPrivileges=yes.
+func TestCleanAptCache_SudoStructurallyUnavailable(t *testing.T) {
 	t.Parallel()
 
-	mock := &mockTransport{failWith: "permission denied"}
+	// noNewPrivTransport simulates the exact error emitted by sudo under NoNewPrivileges.
+	mock := &sudoUnavailableTransport{
+		sudoErr: `sudo: /etc/sudo.conf is owned by uid 65534, should be 0
+sudo: The "no new privileges" flag is set, which prevents sudo from running as root.`,
+	}
 	c := &CleanupCollector{transport: mock}
 	got := c.cleanAptCache(context.Background())
+
+	// Available must be false: the target is structurally skipped, not failed.
+	if got.Available {
+		t.Error("expected Available=false when sudo is structurally unavailable")
+	}
+	// Error must be empty: structural skip must NOT pollute res.Errors.
+	if got.Error != "" {
+		t.Errorf("expected empty Error for structural sudo unavailability, got %q", got.Error)
+	}
 	if got.FreedMB != 0 {
-		t.Errorf("expected FreedMB=0 when sudo fails, got %v", got.FreedMB)
+		t.Errorf("expected FreedMB=0 when sudo unavailable, got %v", got.FreedMB)
+	}
+}
+
+// TestCleanAptCache_SudoUnavailableNoErrorInAggregate verifies that when sudo is
+// unavailable (any reason), the apt target produces no error in the DiskRemediateResult
+// aggregate — so it cannot trigger "disk auto-remediate partial" WARN on its own.
+// Red-on-revert: if cleanAptCache sets t.Error on sudo failure, appendTarget pushes to
+// res.Errors, and this test will fail because res.Errors will be non-empty from apt alone.
+func TestCleanAptCache_SudoUnavailableNoErrorInAggregate(t *testing.T) {
+	t.Parallel()
+
+	// Use a transport where ONLY sudo fails (no-new-privileges style), all other tools succeed.
+	mock := &sudoUnavailableTransport{
+		sudoErr: `sudo: The "no new privileges" flag is set, which prevents sudo from running as root.`,
+	}
+	a := &ServerAgent{
+		cfg:       Config{},
+		transport: NewTransport(Config{}),
+		cleanup:   &CleanupCollector{transport: mock},
+	}
+	res := a.AutoRemediateDisk(context.Background(), AlertWarning)
+	if res == nil {
+		t.Fatal("expected non-nil result")
+	}
+	// apt must not appear in errors.
+	for _, e := range res.Errors {
+		if strings.Contains(e, "apt") {
+			t.Errorf("apt must not contribute to res.Errors when sudo is structurally unavailable; got: %v", res.Errors)
+		}
+	}
+}
+
+// TestCleanAptCache_SudoAvailableAptFails verifies that when sudo IS available but
+// apt-get clean fails, the error IS surfaced (real failure, not structural skip).
+func TestCleanAptCache_SudoAvailableAptFails(t *testing.T) {
+	t.Parallel()
+
+	// sudoOKAptFailTransport: sudo probe succeeds, apt-get clean fails.
+	mock := &sudoOKAptFailTransport{aptErr: "E: some apt error"}
+	c := &CleanupCollector{transport: mock}
+	got := c.cleanAptCache(context.Background())
+
+	if got.Available {
+		t.Error("expected Available=false when apt-get clean fails")
 	}
 	if got.Error == "" {
-		t.Error("expected non-empty Error when sudo fails, got empty")
+		t.Error("expected non-empty Error when apt-get clean fails despite sudo being available")
+	}
+	if !strings.Contains(got.Error, "apt error") {
+		t.Errorf("expected error to contain 'apt error', got %q", got.Error)
 	}
 }
 
@@ -29,7 +91,7 @@ func TestCleanAptCache_NoSudoSkipped(t *testing.T) {
 func TestCleanAptCache_Success(t *testing.T) {
 	t.Parallel()
 
-	// succeedFor returns success for all commands (sudo + df).
+	// mockSuccessTransport returns success for all commands (sudo probe + apt-get clean + df).
 	mock := &mockSuccessTransport{}
 	c := &CleanupCollector{transport: mock}
 	got := c.cleanAptCache(context.Background())
@@ -42,6 +104,77 @@ func TestCleanAptCache_Success(t *testing.T) {
 	// FreedMB is 0 because mockSuccessTransport df always returns same value.
 	// Just assert no panic and no error.
 }
+
+// --- apt-specific transport stubs ---
+
+// sudoUnavailableTransport simulates a host where sudo is structurally unavailable
+// (NoNewPrivileges / ownership error) but all non-sudo commands succeed.
+type sudoUnavailableTransport struct {
+	sudoErr string // error text returned by "sudo -n ..."
+}
+
+func (s *sudoUnavailableTransport) ExecuteUnsafe(_ context.Context, cmd string) CommandResult {
+	if strings.HasPrefix(cmd, "which ") {
+		tool := strings.TrimPrefix(cmd, "which ")
+		tool = strings.TrimSuffix(tool, " 2>/dev/null")
+		return CommandResult{Success: true, Stdout: "/usr/bin/" + tool}
+	}
+	if strings.Contains(cmd, "df -BM") {
+		return CommandResult{Success: true, Stdout: "Avail\n10000M\n"}
+	}
+	if strings.Contains(cmd, "du -sm") {
+		return CommandResult{Success: true, Stdout: "100\t/path"}
+	}
+	if strings.HasPrefix(cmd, "sudo ") {
+		// Return the structural error as stdout (sudo sends to stdout when 2>&1 merged).
+		return CommandResult{Success: false, Stdout: s.sudoErr}
+	}
+	return CommandResult{Success: true, Stdout: ""}
+}
+
+func (s *sudoUnavailableTransport) DockerCommand(_ context.Context, _ string) CommandResult {
+	return CommandResult{Success: true, Stdout: "Total reclaimed space: 0B"}
+}
+
+func (s *sudoUnavailableTransport) DockerComposeCommand(_ context.Context, _ string) CommandResult {
+	return CommandResult{Success: true, Stdout: ""}
+}
+
+func (s *sudoUnavailableTransport) ResolveComposePath() string { return "" }
+
+// sudoOKAptFailTransport simulates a host where sudo is available but apt-get clean fails.
+type sudoOKAptFailTransport struct {
+	aptErr string // error text returned by apt-get clean
+}
+
+func (s *sudoOKAptFailTransport) ExecuteUnsafe(_ context.Context, cmd string) CommandResult {
+	if strings.HasPrefix(cmd, "which ") {
+		tool := strings.TrimPrefix(cmd, "which ")
+		tool = strings.TrimSuffix(tool, " 2>/dev/null")
+		return CommandResult{Success: true, Stdout: "/usr/bin/" + tool}
+	}
+	if strings.Contains(cmd, "df -BM") {
+		return CommandResult{Success: true, Stdout: "Avail\n10000M\n"}
+	}
+	// sudo -n true (probe) succeeds; sudo -n apt-get clean fails.
+	if strings.Contains(cmd, "sudo -n true") {
+		return CommandResult{Success: true, Stdout: ""}
+	}
+	if strings.Contains(cmd, "apt-get") {
+		return CommandResult{Success: false, Stdout: s.aptErr}
+	}
+	return CommandResult{Success: true, Stdout: ""}
+}
+
+func (s *sudoOKAptFailTransport) DockerCommand(_ context.Context, _ string) CommandResult {
+	return CommandResult{Success: true, Stdout: "Total reclaimed space: 0B"}
+}
+
+func (s *sudoOKAptFailTransport) DockerComposeCommand(_ context.Context, _ string) CommandResult {
+	return CommandResult{Success: true, Stdout: ""}
+}
+
+func (s *sudoOKAptFailTransport) ResolveComposePath() string { return "" }
 
 // --- cleanSccache tests ---
 
