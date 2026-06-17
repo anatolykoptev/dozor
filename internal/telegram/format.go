@@ -20,5 +20,3 @@ func markdownToTelegramHTML(text string) string {
 	return out
 }
 
-// CompactForTelegram re-exports the go-kit function for use by telegram.go.
-var CompactForTelegram = tgfmt.CompactForTelegram

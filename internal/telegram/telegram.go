@@ -16,9 +16,6 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const (
-	telegramCompactMaxChars = 4000
-)
 
 type Channel struct {
 	bot     *tgbotapi.BotAPI
@@ -201,8 +198,6 @@ func (c *Channel) sendReply(msg bus.Message) {
 	}
 
 	text = sanitizeUTF8(text)
-
-	text = CompactForTelegram(text, telegramCompactMaxChars)
 
 	slog.Info("telegram: sending reply",
 		slog.String("chat_id", msg.ChatID),
