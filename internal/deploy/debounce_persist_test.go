@@ -2,11 +2,15 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // helper: build a Debouncer wired to a persist store at a temp path.
@@ -249,11 +253,79 @@ func TestDebouncePersist_ReloadToleratesMissingAndCorruptFile(t *testing.T) {
 		}
 		deb := NewDebouncer(clock, func(PendingEvent) { t.Fatal("must not dispatch") })
 		deb.WithPersistence(path)
+		// A corrupt state file silently drops every queued build it held — the
+		// recovery path's own silent-failure hole. Assert it bumps reload_error
+		// so a non-zero counter can alert. Delta (not absolute) because the
+		// counter is a package global; corrupt/unreadable is the ONLY path that
+		// touches reload_error, so the delta is deterministic even under -parallel.
+		before := testutil.ToFloat64(DebouncePersistTotal.WithLabelValues("", "", "reload_error"))
 		if err := deb.Reload(context.Background()); err != nil {
 			t.Fatalf("corrupt file must be tolerated (log + continue), got: %v", err)
 		}
 		if deb.Pending() != 0 {
 			t.Fatalf("pending = %d, want 0", deb.Pending())
 		}
+		if delta := testutil.ToFloat64(DebouncePersistTotal.WithLabelValues("", "", "reload_error")) - before; delta != 1 {
+			t.Errorf("corrupt reload must bump reload_error by 1, got delta %v", delta)
+		}
 	})
+}
+
+// TestDebouncePersist_RepoConfigRoundTrip guards the on-disk schema. The
+// persisted entry embeds a full RepoConfig snapshot, marshalled with
+// encoding/json — but RepoConfig carries ONLY yaml: tags (config.go), so JSON
+// falls back to exported Go field names. That round-trips correctly for every
+// field today; this test fails loudly if a future field is added that does not
+// survive marshal→unmarshal (e.g. an unexported field, or a type without a
+// JSON-stable representation), which would silently change the schema and break
+// forward-read of an in-flight state file across the deploy that introduces it.
+func TestDebouncePersist_RepoConfigRoundTrip(t *testing.T) {
+	t.Parallel()
+	// Every field set non-zero so a future addition that breaks the round-trip
+	// is caught here, not in production.
+	cfg := RepoConfig{
+		Kind:                    KindBinary,
+		Branch:                  "release",
+		ComposePath:             "compose/app.yml",
+		NoCache:                 true,
+		SourcePath:              "/home/krolik/src/app",
+		Services:                []string{"app", "worker"},
+		BuildCmd:                []string{"go", "build", "-o", "/bin/app", "./cmd/app"},
+		UserServices:            []string{"app.service", "worker.service"},
+		SmokeURL:                "https://app.example/health",
+		CanarySmokeTimeout:      Duration{D: 30 * time.Second},
+		CanarySmokeWindow:       Duration{D: 45 * time.Second},
+		BuildPaths:              []string{"app/**", "go.mod"},
+		SkipPaths:               []string{"docs/**"},
+		Profile:                 "go-cmd",
+		BuildPathsExtra:         []string{"extra/**"},
+		SkipPathsExtra:          []string{"tmp/**"},
+		DebounceSeconds:         180,
+		StaticDeployScript:      "/home/krolik/bin/deploy.sh",
+		PruneBuildkitCache:      true,
+		BuildTimeout:            Duration{D: 45 * time.Minute},
+		Heavy:                   true,
+		IgnoreNoAutoDeployLabel: true,
+		DeployClonePath:         "/home/krolik/deploy/krolik-server",
+	}
+	orig := persistFile{Entries: []persistedEntry{{
+		Key:      "anatolykoptev/app@release#app",
+		Event:    PendingEvent{Repo: "anatolykoptev/app", Service: "app", CommitSHA: "abc123def456", Config: cfg},
+		Deadline: time.Unix(1000, 0).UTC(),
+	}}}
+
+	data, err := json.MarshalIndent(orig, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got persistFile
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(got.Entries))
+	}
+	if !reflect.DeepEqual(got.Entries[0].Event.Config, cfg) {
+		t.Errorf("RepoConfig did not survive JSON round-trip:\n got  %+v\n want %+v", got.Entries[0].Event.Config, cfg)
+	}
 }

@@ -24,16 +24,18 @@ var (
 	// op label values:
 	//   "persist"        — one atomic write of the pending set succeeded (per WRITE, not per entry)
 	//   "persist_error"  — an atomic write failed (state file may be stale; build still queued in-memory)
-	//   "reload"         — (reserved) reserved for a future per-reload summary signal
+	//   "reload_error"   — boot Reload could not read or parse the state file (per RELOAD, not per entry);
+	//                      EVERY queued build it held is lost — this is the silent-failure hole on the
+	//                      recovery path itself, so a non-zero value must alert
 	//   "rearm"          — a recovered entry was re-armed for its remaining window on boot
 	//   "fire_on_boot"   — a recovered entry whose deadline elapsed during downtime fired on boot
 	//   "stale_skip"     — a recovered entry's commit was already the deployed HEAD; no rebuild
 	//
-	// Label semantics: "persist" and "persist_error" are per-WRITE events with
-	// empty repo/service (a single write rewrites the whole pending set, so a
-	// per-repo split would double-count unrelated repos). "rearm",
-	// "fire_on_boot" and "stale_skip" are per-ENTRY recovery events and carry
-	// the real repo/service labels.
+	// Label semantics: "persist", "persist_error" and "reload_error" are
+	// per-WHOLE-FILE events with empty repo/service (a single write/read covers
+	// the whole pending set, so a per-repo split would double-count unrelated
+	// repos). "rearm", "fire_on_boot" and "stale_skip" are per-ENTRY recovery
+	// events and carry the real repo/service labels.
 	DebouncePersistTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_deploy_debounce_persist_total",
 		Help: "Durable-debounce lifecycle events (persist/reload/rearm/fire_on_boot/stale_skip) for restart-survival of queued builds.",

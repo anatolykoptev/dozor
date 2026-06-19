@@ -168,16 +168,22 @@ func (d *Debouncer) Reload(ctx context.Context) error {
 			// Clean boot, nothing pending — not an error.
 			return nil
 		}
+		// Unreadable state file (not a clean "no file"): every build it held is
+		// lost. Log AND count — this is the silent-failure hole the whole fix
+		// exists to close, so it must surface as telemetry, not just a log line.
 		slog.Warn("deploy debounce: cannot read persisted state, starting clean",
 			"path", path, "error", err)
+		DebouncePersistTotal.WithLabelValues("", "", "reload_error").Inc()
 		return nil
 	}
 
 	var doc persistFile
 	if err := json.Unmarshal(data, &doc); err != nil {
-		// Corrupt file — do NOT crash the orchestrator. Log, drop, continue.
+		// Corrupt file — do NOT crash the orchestrator. Log, count, drop, continue.
+		// (Same recovery-path silent-failure hole as the read-error branch above.)
 		slog.Warn("deploy debounce: persisted state is corrupt, discarding",
 			"path", path, "error", err)
+		DebouncePersistTotal.WithLabelValues("", "", "reload_error").Inc()
 		return nil
 	}
 
