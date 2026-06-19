@@ -183,9 +183,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// For push events, find a config entry matching (repo, branch).
+	// Find ALL config entries matching (repo, branch). A monorepo can declare
+	// several independent deploy targets for one repo (keyed "owner/repo#suffix");
+	// each is dispatched separately and gated by its own BuildPaths filter, so a
+	// push that only touches one app's paths deploys only that target. A single-
+	// target repo yields one match, identical to the previous single-lookup path.
 	// For releases, look up by repo only (no branch concept for tags).
-	var rc *RepoConfig
+	var matches []*RepoConfig
 	if event == "push" {
 		// Extract short branch name from "refs/heads/<branch>".
 		const headsPrefix = "refs/heads/"
@@ -198,8 +202,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		branch := push.Ref[len(headsPrefix):]
-		rc = h.config.LookupBranch(push.Repository.FullName, branch)
-		if rc == nil {
+		matches = h.config.LookupAll(push.Repository.FullName, branch)
+		if len(matches) == 0 {
 			// No config entry matches this (repo, branch) pair.
 			slog.Debug("deploy/webhook: no config for repo+branch",
 				"repo", push.Repository.FullName,
@@ -213,8 +217,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// release event: look up by repo only.
-		rc = h.config.LookupBranch(push.Repository.FullName, "")
-		if rc == nil {
+		matches = h.config.LookupAll(push.Repository.FullName, "")
+		if len(matches) == 0 {
 			slog.Info("deploy/webhook: unknown repo",
 				"repo", push.Repository.FullName)
 			respondJSON(w, http.StatusOK, map[string]string{
@@ -225,32 +229,67 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Apply BuildPaths filter (no-op when not configured). On skip, respond now.
-	if h.skipByPathFilter(push, rc) {
-		slog.Info("deploy skipped: no build-relevant files changed",
+	// Single-target repo (the overwhelming common case): preserve the original
+	// response contract exactly, including the skip "reason" field that tooling
+	// and tests key on. Multi-target monorepos fall through to the aggregating
+	// path below.
+	if len(matches) == 1 {
+		rc := matches[0]
+		if h.skipByPathFilter(push, rc) {
+			slog.Info("deploy skipped: no build-relevant files changed",
+				"repo", push.Repository.FullName,
+				"commit", short(push.HeadCommit.ID),
+				"build_paths", rc.BuildPaths,
+			)
+			respondJSON(w, http.StatusOK, map[string]string{
+				"status": "skipped",
+				"reason": "no_relevant_paths",
+				"repo":   push.Repository.FullName,
+				"commit": short(push.HeadCommit.ID),
+			})
+			return
+		}
+		status := h.dispatchPush(push, rc)
+		slog.Info("deploy/webhook: processed",
 			"repo", push.Repository.FullName,
 			"commit", short(push.HeadCommit.ID),
-			"build_paths", rc.BuildPaths,
+			"status", status,
 		)
 		respondJSON(w, http.StatusOK, map[string]string{
-			"status": "skipped",
-			"reason": "no_relevant_paths",
+			"status": status,
 			"repo":   push.Repository.FullName,
 			"commit": short(push.HeadCommit.ID),
 		})
 		return
 	}
 
-	status := h.dispatchPush(push, rc)
+	// Multi-target monorepo: dispatch each matching target independently. Each
+	// is gated by its own BuildPaths filter; targets keyed distinctly (services
+	// / branch) debounce and queue independently (see dispatchPush). Statuses
+	// are aggregated in deterministic match order.
+	statuses := make([]string, 0, len(matches))
+	for _, rc := range matches {
+		if h.skipByPathFilter(push, rc) {
+			slog.Info("deploy skipped: no build-relevant files changed",
+				"repo", push.Repository.FullName,
+				"commit", short(push.HeadCommit.ID),
+				"build_paths", rc.BuildPaths,
+			)
+			statuses = append(statuses, "skipped")
+			continue
+		}
 
-	slog.Info("deploy/webhook: processed",
-		"repo", push.Repository.FullName,
-		"commit", short(push.HeadCommit.ID),
-		"status", status,
-	)
+		status := h.dispatchPush(push, rc)
+		slog.Info("deploy/webhook: processed",
+			"repo", push.Repository.FullName,
+			"commit", short(push.HeadCommit.ID),
+			"status", status,
+		)
+		statuses = append(statuses, status)
+	}
 
 	respondJSON(w, http.StatusOK, map[string]string{
-		"status": status,
+		"status": strings.Join(statuses, ","),
 		"repo":   push.Repository.FullName,
 		"commit": short(push.HeadCommit.ID),
 	})

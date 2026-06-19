@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -461,4 +462,46 @@ func (c *Config) LookupBranch(repoFullName, branch string) *RepoConfig {
 		}
 	}
 	return nil
+}
+
+// LookupAll returns EVERY RepoConfig whose (repo, branch) pair matches — the
+// multi-target form of LookupBranch. A monorepo with several independent deploy
+// targets keys them "owner/repo#<suffix>" (e.g. "anatolykoptev/piter-now" and
+// "anatolykoptev/piter-now#hully"); both share the same repoKey, so a single
+// push fans out to all of them, each later gated by its own BuildPaths filter.
+//
+// Matching rules mirror LookupBranch (effective branch = rc.Branch or "main";
+// branch == "" matches any). Results are sorted by map key so dispatch order is
+// deterministic. The common single-target repo returns a one-element slice, so
+// callers behave identically to the old single-lookup path.
+func (c *Config) LookupAll(repoFullName, branch string) []*RepoConfig {
+	keys := make([]string, 0, len(c.Repos))
+	for k := range c.Repos {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var matches []*RepoConfig
+	for _, key := range keys {
+		repoKey := key
+		if idx := strings.LastIndex(key, "#"); idx >= 0 {
+			repoKey = key[:idx]
+		}
+		if repoKey != repoFullName {
+			continue
+		}
+		rc := c.Repos[key]
+		if branch != "" {
+			effective := rc.Branch
+			if effective == "" {
+				effective = "main"
+			}
+			if effective != branch {
+				continue
+			}
+		}
+		cp := rc
+		matches = append(matches, &cp)
+	}
+	return matches
 }
