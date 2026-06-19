@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -64,7 +65,25 @@ func NewHandler(config *Config, queue *Queue, notify func(string)) *Handler {
 		slog.Warn("DOZOR_GITHUB_TOKEN not set; PR label check disabled (marker-only mode)")
 	}
 	h.debouncer = NewDebouncer(nil, h.dispatch)
+	// Durable debounce: mirror the pending set to ~/.dozor/deploy-debounce.json
+	// so queued builds survive a dozor restart (graceful self-deploy or crash).
+	// See debounce_persist.go (VOLATILE-PENDING-STATE fix).
+	h.debouncer.WithPersistence(DefaultDebouncePersistPath())
 	return h
+}
+
+// RecoverPending replays any debounce entries persisted by a previous dozor
+// process: re-arming timers for builds still within their window, firing those
+// whose window already elapsed during downtime, and skipping any whose commit
+// is already the deployed HEAD. Call once at boot, before serving webhooks.
+// Tolerant of a missing or corrupt state file (logs + continues).
+func (h *Handler) RecoverPending(ctx context.Context) {
+	if h.debouncer == nil {
+		return
+	}
+	if err := h.debouncer.Reload(ctx); err != nil {
+		slog.Warn("deploy: debounce reload failed", "error", err)
+	}
 }
 
 // Close releases the handler's debouncer goroutines. Safe to call once.

@@ -17,6 +17,30 @@ var (
 		Help: "Webhook events deferred or coalesced by the per-service debounce window.",
 	}, []string{"repo", "service"})
 
+	// DebouncePersistTotal makes the durable-debounce lifecycle observable so a
+	// future regression of the VOLATILE-PENDING-STATE class (queued build lost
+	// on dozor restart) surfaces as telemetry, not silence.
+	//
+	// op label values:
+	//   "persist"        — one atomic write of the pending set succeeded (per WRITE, not per entry)
+	//   "persist_error"  — an atomic write failed (state file may be stale; build still queued in-memory)
+	//   "reload_error"   — boot Reload could not read or parse the state file (per RELOAD, not per entry);
+	//                      EVERY queued build it held is lost — this is the silent-failure hole on the
+	//                      recovery path itself, so a non-zero value must alert
+	//   "rearm"          — a recovered entry was re-armed for its remaining window on boot
+	//   "fire_on_boot"   — a recovered entry whose deadline elapsed during downtime fired on boot
+	//   "stale_skip"     — a recovered entry's commit was already the deployed HEAD; no rebuild
+	//
+	// Label semantics: "persist", "persist_error" and "reload_error" are
+	// per-WHOLE-FILE events with empty repo/service (a single write/read covers
+	// the whole pending set, so a per-repo split would double-count unrelated
+	// repos). "rearm", "fire_on_boot" and "stale_skip" are per-ENTRY recovery
+	// events and carry the real repo/service labels.
+	DebouncePersistTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_deploy_debounce_persist_total",
+		Help: "Durable-debounce lifecycle events (persist/reload/rearm/fire_on_boot/stale_skip) for restart-survival of queued builds.",
+	}, []string{"repo", "service", "op"})
+
 	// SkippedTotal counts deploys that were skipped before queueing.
 	// `reason` is one of: "no_relevant_paths", "explicit_skip".
 	SkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
