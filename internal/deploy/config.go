@@ -406,7 +406,67 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Repos[repo] = rc
 	}
 
+	if err := validateMultiTarget(&cfg); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
+}
+
+// validateMultiTarget cross-checks repos that declare more than one deploy
+// target (keyed "owner/repo#<suffix>"). Each target of a repo MUST resolve to a
+// distinct queue identity AND a distinct SourcePath:
+//
+//   - Same serviceKey → the two builds collide in the queue/debounce (keyed on
+//     serviceKey, see dispatchPush); newest-wins coalesces them and one app
+//     silently never deploys. (Empty keys can't occur: validateRepoConfig
+//     defaults static→map-key and binary→user_services, and compose requires
+//     non-empty — so the only way to collide is two identical *explicit*
+//     services: lists.)
+//   - Same SourcePath → the two builds would race on one git clone (concurrent
+//     fetch / worktree-add) the moment build concurrency is raised above 1.
+//
+// Fail loud at config-load, not silently at runtime. Single-target repos (the
+// overwhelming common case) skip this entirely. Runs after per-entry
+// normalisation, so Services reflects the effective (defaulted) value.
+func validateMultiTarget(cfg *Config) error {
+	byRepo := make(map[string][]string, len(cfg.Repos))
+	for key := range cfg.Repos {
+		repoKey := key
+		if idx := strings.LastIndex(key, "#"); idx >= 0 {
+			repoKey = key[:idx]
+		}
+		byRepo[repoKey] = append(byRepo[repoKey], key)
+	}
+
+	for repoKey, keys := range byRepo {
+		if len(keys) < 2 {
+			continue
+		}
+		sort.Strings(keys)
+		svcOwner := make(map[string]string, len(keys))
+		srcOwner := make(map[string]string, len(keys))
+		for _, key := range keys {
+			rc := cfg.Repos[key]
+			svc := serviceKey(rc.Services)
+			if other, dup := svcOwner[svc]; dup {
+				return fmt.Errorf(
+					"multi-target repo %q: entries %q and %q resolve to the same service key %q — give each a distinct services:",
+					repoKey, other, key, svc)
+			}
+			svcOwner[svc] = key
+
+			if rc.SourcePath != "" {
+				if other, dup := srcOwner[rc.SourcePath]; dup {
+					return fmt.Errorf(
+						"multi-target repo %q: entries %q and %q share source_path %q — multi-target deploys need distinct deploy clones",
+						repoKey, other, key, rc.SourcePath)
+				}
+				srcOwner[rc.SourcePath] = key
+			}
+		}
+	}
+	return nil
 }
 
 // DefaultConfigPath returns ~/.dozor/deploy-repos.yaml or DOZOR_WORKSPACE/deploy-repos.yaml.
