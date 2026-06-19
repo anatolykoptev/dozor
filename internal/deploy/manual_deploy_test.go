@@ -40,6 +40,13 @@ func withShortSHARunnerManual(t *testing.T, fn func(context.Context, string) (st
 	t.Cleanup(func() { gitShortSHARunner = orig })
 }
 
+func withOriginSHARunner(t *testing.T, fn func(context.Context, string, string) (string, error)) {
+	t.Helper()
+	orig := gitManualOriginSHARunner
+	gitManualOriginSHARunner = fn
+	t.Cleanup(func() { gitManualOriginSHARunner = orig })
+}
+
 // withOutputRunner stubs the outputRunner used by resolveBuildOverrides inside
 // composeBuild. The stub returns a minimal docker compose config JSON so that
 // composeBuild can construct the build-context override without shelling out.
@@ -396,6 +403,161 @@ func TestManualDeploy_BinaryKind_RunsBinaryNotCompose(t *testing.T) {
 	}
 	if composeBuildCalled {
 		t.Error("composeBuild (docker compose) must NOT be called for a KindBinary repo")
+	}
+}
+
+// TestManualDeploy_StaticKind_UsesOriginSHA — static path DEPLOY_SHA must come
+// from origin/<branch> (gitManualOriginSHARunner), not from the on-disk HEAD.
+//
+// RED-on-revert: replace gitManualOriginSHARunner with resolveGitSHA(ctx, sourcePath) —
+// the assertion `gotSHA != "origin123"` fails because the static script is called with
+// the HEAD value returned by gitShortSHARunner ("head456") instead.
+func TestManualDeploy_StaticKind_UsesOriginSHA(t *testing.T) {
+	const originSHA = "origin123"
+	const headSHA = "head456"
+
+	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
+		return "main", nil
+	})
+	// Origin SHA runner returns a distinct value — proves the static path reads origin.
+	withOriginSHARunner(t, func(_ context.Context, _, branch string) (string, error) {
+		if branch != "main" {
+			t.Errorf("origin SHA runner: expected branch 'main', got %q", branch)
+		}
+		return originSHA, nil
+	})
+	// HEAD SHA runner would return a different value — must NOT be the one used.
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return headSHA, nil
+	})
+
+	var gotSHA string
+	withStaticScript(t, func(_ context.Context, _, _, commitSHA string, _ []string) ([]byte, error) {
+		gotSHA = commitSHA
+		return []byte("ok"), nil
+	})
+
+	req := ManualDeployRequest{
+		Repo: "anatolykoptev/piter-now",
+		Config: RepoConfig{
+			Kind:               KindStatic,
+			Branch:             "main",
+			SourcePath:         "/fake/source",
+			StaticDeployScript: "/home/krolik/bin/piter-deploy.sh",
+			Services:           []string{"piter-now"},
+		},
+	}
+
+	result := ExecuteManualDeploy(context.Background(), req)
+
+	if !result.Success {
+		t.Errorf("expected success, got error: %s", result.Error)
+	}
+	if gotSHA != originSHA {
+		t.Errorf("static script received SHA=%q; want origin SHA %q (not head SHA %q)",
+			gotSHA, originSHA, headSHA)
+	}
+	if result.BuiltSHA != originSHA {
+		t.Errorf("BuiltSHA=%q; want origin SHA %q", result.BuiltSHA, originSHA)
+	}
+}
+
+// TestManualDeploy_BinaryKind_DriftEmitsMismatchCounter — binary path must emit
+// ManualDeployBranchMismatchTotal when the source clone is on a different branch
+// than the configured deploy branch.
+//
+// RED-on-revert: remove the drift-guard block from executeManualBinaryDeploy —
+// after stays equal to before and the assertion fails.
+func TestManualDeploy_BinaryKind_DriftEmitsMismatchCounter(t *testing.T) {
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
+		return "dev", nil // clone is on dev, configured is main — drift
+	})
+	withCmdRunner(t, func(_ context.Context, _ string, _ string, _ ...string) error { return nil })
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) { return "abc1234", nil })
+	withSystemctlRunnerManual(t, func(_ context.Context, args ...string) ([]byte, error) {
+		return []byte("active\n"), nil
+	})
+
+	before := collectCounterSum(ManualDeployBranchMismatchTotal)
+
+	req := ManualDeployRequest{
+		Repo: "anatolykoptev/go-imagine",
+		Config: RepoConfig{
+			Kind:         KindBinary,
+			Branch:       "main",
+			SourcePath:   "/fake/source",
+			BuildCmd:     []string{"go", "build", "-o", "/usr/local/bin/go-imagine", "./cmd/go-imagine"},
+			UserServices: []string{"go-imagine"},
+			Services:     []string{"go-imagine"},
+		},
+	}
+	result := ExecuteManualDeploy(context.Background(), req)
+
+	if !result.Success {
+		t.Errorf("expected success: %s", result.Error)
+	}
+	after := collectCounterSum(ManualDeployBranchMismatchTotal)
+	if after <= before {
+		t.Errorf("ManualDeployBranchMismatchTotal must fire on binary drift; before=%.0f after=%.0f", before, after)
+	}
+}
+
+// TestManualDeploy_BinaryKind_UsesHonestLabel — binary path must use trigger
+// label "binary_pull", not "sha_pinned".
+//
+// RED-on-revert: change WithLabelValues("binary_pull",...) back to "sha_pinned" —
+// the "binary_pull" counter stays at before, failing the assertion.
+func TestManualDeploy_BinaryKind_UsesHonestLabel(t *testing.T) {
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
+		return "main", nil // no drift, isolate label test
+	})
+	withCmdRunner(t, func(_ context.Context, _ string, _ string, _ ...string) error { return nil })
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) { return "abc1234", nil })
+	withSystemctlRunnerManual(t, func(_ context.Context, args ...string) ([]byte, error) {
+		return []byte("active\n"), nil
+	})
+
+	// Collect only the "binary_pull" slice before and after.
+	binaryPullBefore := func() float64 {
+		ch := make(chan prometheus.Metric, 64)
+		ManualDeployTotal.Collect(ch)
+		close(ch)
+		var sum float64
+		for m := range ch {
+			var metric dto.Metric
+			if err := m.Write(&metric); err != nil {
+				continue
+			}
+			for _, lp := range metric.GetLabel() {
+				if lp.GetName() == "trigger" && lp.GetValue() == "binary_pull" {
+					if metric.Counter != nil {
+						sum += metric.Counter.GetValue()
+					}
+				}
+			}
+		}
+		return sum
+	}
+
+	before := binaryPullBefore()
+
+	req := ManualDeployRequest{
+		Repo: "anatolykoptev/go-imagine",
+		Config: RepoConfig{
+			Kind:         KindBinary,
+			Branch:       "main",
+			SourcePath:   "/fake/source",
+			BuildCmd:     []string{"go", "build", "-o", "/usr/local/bin/go-imagine", "./cmd/go-imagine"},
+			UserServices: []string{"go-imagine"},
+			Services:     []string{"go-imagine"},
+		},
+	}
+	_ = ExecuteManualDeploy(context.Background(), req)
+
+	after := binaryPullBefore()
+	if after <= before {
+		t.Errorf("ManualDeployTotal{trigger=binary_pull} must fire for KindBinary; before=%.0f after=%.0f", before, after)
 	}
 }
 

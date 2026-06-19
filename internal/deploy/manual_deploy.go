@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -39,6 +41,25 @@ var gitManualFetchRunner = func(ctx context.Context, sourcePath, branch string) 
 // gitManualCurrentBranchRunner returns the source clone's checked-out branch.
 // Seam for unit tests.
 var gitManualCurrentBranchRunner = defaultGitCurrentBranchRunner
+
+// gitManualOriginSHARunner resolves the short SHA of origin/<branch> in dir.
+// Unlike gitShortSHARunner (which reads HEAD), this reads the remote-tracking
+// ref — so the value is truthful even when the on-disk HEAD lags behind the
+// most recent fetch.
+// Seam for unit tests.
+var gitManualOriginSHARunner = defaultGitManualOriginSHARunner
+
+//nolint:unused // DI default seam — assigned to var gitManualOriginSHARunner, swapped in tests
+func defaultGitManualOriginSHARunner(ctx context.Context, dir, branch string) (string, error) {
+	ref := "origin/" + branch
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--short", ref) //nolint:gosec // trusted config
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --short %s: %w", ref, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
 
 // ExecuteManualDeploy runs a fully synchronous manual deploy, routing through
 // the same kind-aware builders as the webhook path.
@@ -123,7 +144,9 @@ func ExecuteManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 // executeManualStaticDeploy handles KindStatic manual deploys:
 //  1. Fetch origin/<branch> so SourcePath is fresh.
 //  2. Drift guard (informational, build always uses origin/<branch> via the script's env).
-//  3. Run StaticDeployScript with DEPLOY_REPO_PATH=SourcePath and DEPLOY_SHA=<sha at origin/branch>.
+//  3. Run StaticDeployScript with DEPLOY_REPO_PATH=SourcePath and DEPLOY_SHA=<sha at origin/<branch>>.
+//     SHA is resolved via gitManualOriginSHARunner (git rev-parse --short origin/<branch>),
+//     not from HEAD, so the value is truthful even when the on-disk clone lags.
 func executeManualStaticDeploy(ctx context.Context, req ManualDeployRequest, branch, sourcePath string) ManualDeployResult {
 	result := ManualDeployResult{}
 
@@ -156,9 +179,17 @@ func executeManualStaticDeploy(ctx context.Context, req ManualDeployRequest, bra
 	}
 
 	// Step 3: resolve the SHA at origin/<branch> for DEPLOY_SHA.
-	// We read it from the fetch-updated remote-tracking ref rather than
-	// the on-disk HEAD, so the script always sees the pinned ref.
-	sha := resolveGitSHA(ctx, sourcePath)
+	// We read it from the remote-tracking ref (origin/<branch>), not from
+	// the on-disk HEAD — the preceding fetch only updates the remote-tracking
+	// ref without moving HEAD, so reading HEAD here would return a stale SHA.
+	var sha string
+	if s, err := gitManualOriginSHARunner(ctx, sourcePath, branch); err != nil {
+		slog.Warn("deploy/manual: cannot resolve origin SHA; falling back to HEAD",
+			"repo", req.Repo, "branch", branch, "error", err)
+		sha = resolveGitSHA(ctx, sourcePath)
+	} else {
+		sha = s
+	}
 	result.BuiltSHA = sha
 
 	slog.Info("deploy/manual: running static deploy script",
@@ -188,12 +219,40 @@ func executeManualStaticDeploy(ctx context.Context, req ManualDeployRequest, bra
 // executeManualBinaryDeploy handles KindBinary manual deploys.
 // executeBinaryBuild does its own git pull + build + systemd restart — no
 // separate fetch or worktree step is needed here.
+//
+// Note: the trigger label is "binary_pull" (not "sha_pinned") because
+// executeBinaryBuild runs `git pull --ff-only` with no remote/branch args,
+// relying on the clone's upstream config rather than pinning to origin/<branch>.
+// A true origin/<branch> pin for the binary path is tracked as a follow-up
+// (docs/roadmap.md — "binary kind: origin/<branch> pin").
 func executeManualBinaryDeploy(ctx context.Context, req ManualDeployRequest) ManualDeployResult {
 	result := ManualDeployResult{}
+	branch := req.Config.Branch
+	if branch == "" {
+		branch = defaultBranch
+	}
+	sourcePath := req.Config.SourcePath
+
+	// Drift guard — mirror what static/compose paths already do. executeBinaryBuild
+	// builds whatever the on-disk upstream resolves to; if the clone is on the
+	// wrong branch, the operator should know. Build is not blocked (informational).
+	cloneBranch, err := gitManualCurrentBranchRunner(ctx, sourcePath)
+	if err != nil {
+		slog.Debug("deploy/manual: cannot read source clone branch (drift guard skipped)",
+			"repo", req.Repo, "error", err)
+	} else if cloneBranch != "" && cloneBranch != "HEAD" && cloneBranch != branch {
+		slog.Warn("deploy/manual: binary clone branch drift detected; build uses clone upstream",
+			"repo", req.Repo,
+			"source_path", sourcePath,
+			"configured_branch", branch,
+			"actual_branch", cloneBranch,
+		)
+		ManualDeployBranchMismatchTotal.WithLabelValues(req.Repo, branch, cloneBranch).Inc()
+	}
 
 	slog.Info("deploy/manual: running binary deploy",
 		"repo", req.Repo,
-		"source_path", req.Config.SourcePath,
+		"source_path", sourcePath,
 		"build_cmd", req.Config.BuildCmd,
 	)
 
@@ -203,14 +262,14 @@ func executeManualBinaryDeploy(ctx context.Context, req ManualDeployRequest) Man
 	}
 	br := executeBinaryBuild(ctx, buildReq)
 	if !br.Success {
-		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
+		ManualDeployTotal.WithLabelValues(req.Repo, "binary_pull", "failure").Inc()
 		result.Error = br.Error
 		return result
 	}
 
 	// Resolve SHA post-pull so BuiltSHA reflects what was actually built.
-	result.BuiltSHA = resolveGitSHA(ctx, req.Config.SourcePath)
-	ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "success").Inc()
+	result.BuiltSHA = resolveGitSHA(ctx, sourcePath)
+	ManualDeployTotal.WithLabelValues(req.Repo, "binary_pull", "success").Inc()
 	result.Success = true
 	return result
 }

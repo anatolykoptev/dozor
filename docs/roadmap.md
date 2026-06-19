@@ -213,6 +213,17 @@ Deep diagnosis before acting.
 - Aggregate health view
 - Per-server MemDB cubes (`dozor-incidents-<host>`) so a remote-host incident doesn't pollute the local reasoning context
 
+### Deferred: Binary kind — origin/<branch> pin
+
+`executeManualBinaryDeploy` currently relies on `executeBinaryBuild`'s `git pull --ff-only`
+(no explicit remote/branch args) rather than pinning to `origin/<configured-branch>`.
+This is shared with the webhook path and out of scope for the current PR.
+
+A branch drift on the binary clone is now OBSERVABLE via `dozor_manual_deploy_branch_mismatch_total`
+(added in fix/deploy-unify-sha-pinned). The full fix — running a targeted fetch + reset
+before `executeBinaryBuild`, or adding an explicit `origin/<branch>` arg to the pull —
+is tracked here as a low-urgency follow-up (binary repos typically stay on main).
+
 ---
 
 ## Priority order
