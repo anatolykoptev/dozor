@@ -217,6 +217,12 @@ func (rc RepoConfig) DebounceWindow() time.Duration {
 
 // resolvedKind returns the effective deploy kind (defaulting to KindCompose).
 func (rc RepoConfig) resolvedKind() DeployKind {
+	return rc.ResolvedKind()
+}
+
+// ResolvedKind returns the effective deploy kind (defaulting to KindCompose).
+// Exported for use by callers outside the deploy package (e.g. tools.HandleDeploy).
+func (rc RepoConfig) ResolvedKind() DeployKind {
 	switch rc.Kind {
 	case KindBinary:
 		return KindBinary

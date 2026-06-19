@@ -269,6 +269,136 @@ func TestManualDeploy_FetchFailure(t *testing.T) {
 	}
 }
 
+// withStaticScript stubs the staticScriptRunner for the duration of the test.
+func withStaticScript(t *testing.T, fn func(context.Context, string, string, string, []string) ([]byte, error)) {
+	t.Helper()
+	orig := staticScriptRunner
+	staticScriptRunner = fn
+	t.Cleanup(func() { staticScriptRunner = orig })
+}
+
+// withSystemctlRunner stubs the systemctlRunner for the duration of the test.
+func withSystemctlRunnerManual(t *testing.T, fn func(context.Context, ...string) ([]byte, error)) {
+	t.Helper()
+	orig := systemctlRunner
+	systemctlRunner = fn
+	t.Cleanup(func() { systemctlRunner = orig })
+}
+
+// TestManualDeploy_StaticKind_RunsScriptNotCompose — a KindStatic configured repo
+// routed via ExecuteManualDeploy must run the static deploy script and must NOT
+// call "docker compose build".
+//
+// RED-on-revert: remove the KindStatic case from ExecuteManualDeploy — the code
+// falls through to executeManualComposeDeploy, which calls composeBuild and
+// issues "docker compose", causing composeBuildCalled to become true and the
+// assertion to fail. The staticScriptCalled assertion also fails because the
+// script runner is never invoked.
+func TestManualDeploy_StaticKind_RunsScriptNotCompose(t *testing.T) {
+	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
+		return "main", nil
+	})
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) { return "def5678", nil })
+
+	staticScriptCalled := false
+	withStaticScript(t, func(_ context.Context, _, _, _ string, _ []string) ([]byte, error) {
+		staticScriptCalled = true
+		return []byte("static deploy OK"), nil
+	})
+
+	composeBuildCalled := false
+	withOutputRunner(t, func(_ context.Context, _, _ string, args ...string) ([]byte, error) {
+		// outputRunner is only called by composeBuild / resolveBuildOverrides.
+		composeBuildCalled = true
+		return nil, nil
+	})
+
+	req := ManualDeployRequest{
+		Repo: "anatolykoptev/dozor",
+		Config: RepoConfig{
+			Kind:               KindStatic,
+			Branch:             "main",
+			SourcePath:         "/fake/source",
+			StaticDeployScript: "/home/krolik/bin/dozor-self-deploy.sh",
+			Services:           []string{"anatolykoptev/dozor"},
+		},
+	}
+
+	result := ExecuteManualDeploy(context.Background(), req)
+
+	if !result.Success {
+		t.Errorf("expected success, got error: %s", result.Error)
+	}
+	if !staticScriptCalled {
+		t.Error("static deploy script must be called for KindStatic repo")
+	}
+	if composeBuildCalled {
+		t.Error("composeBuild must NOT be called for a KindStatic repo (would brick self-deploy)")
+	}
+}
+
+// TestManualDeploy_BinaryKind_RunsBinaryNotCompose — a KindBinary configured repo
+// routed via ExecuteManualDeploy must call executeBinaryBuild (git pull + build cmd +
+// systemd restart) and must NOT call "docker compose build".
+//
+// RED-on-revert: remove the KindBinary case from ExecuteManualDeploy — the code
+// falls through to executeManualComposeDeploy which issues "docker compose", causing
+// composeBuildCalled to become true. The systemctl assertion also fails because
+// executeBinaryBuild is never reached.
+func TestManualDeploy_BinaryKind_RunsBinaryNotCompose(t *testing.T) {
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) { return "abc1234", nil })
+
+	// cmdRunner is used by runCmd — both git pull (executeBinaryBuild) and
+	// docker compose (composeBuild) go through it. We track which commands fire.
+	var gitPullCalled bool
+	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
+		if name == "git" && len(args) > 0 && args[0] == "pull" {
+			gitPullCalled = true
+		}
+		return nil
+	})
+
+	systemctlCalled := false
+	withSystemctlRunnerManual(t, func(_ context.Context, args ...string) ([]byte, error) {
+		systemctlCalled = true
+		return []byte("active\n"), nil
+	})
+
+	composeBuildCalled := false
+	withOutputRunner(t, func(_ context.Context, _, _ string, args ...string) ([]byte, error) {
+		composeBuildCalled = true
+		return nil, nil
+	})
+
+	req := ManualDeployRequest{
+		Repo: "anatolykoptev/go-imagine",
+		Config: RepoConfig{
+			Kind:         KindBinary,
+			Branch:       "main",
+			SourcePath:   "/fake/source",
+			BuildCmd:     []string{"go", "build", "-o", "/usr/local/bin/go-imagine", "./cmd/go-imagine"},
+			UserServices: []string{"go-imagine"},
+			Services:     []string{"go-imagine"},
+		},
+	}
+
+	result := ExecuteManualDeploy(context.Background(), req)
+
+	if !result.Success {
+		t.Errorf("expected success, got error: %s", result.Error)
+	}
+	if !gitPullCalled {
+		t.Error("git pull must be called for KindBinary repo via executeBinaryBuild")
+	}
+	if !systemctlCalled {
+		t.Error("systemctl restart must be called for KindBinary repo via executeBinaryBuild")
+	}
+	if composeBuildCalled {
+		t.Error("composeBuild (docker compose) must NOT be called for a KindBinary repo")
+	}
+}
+
 // TestManualDeploy_ManualCounterFires_Success — ManualDeployTotal{result=success}
 // must fire on a successful sha_pinned deploy.
 func TestManualDeploy_ManualCounterFires_Success(t *testing.T) {

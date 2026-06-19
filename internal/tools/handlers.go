@@ -207,11 +207,14 @@ func HandleRestart(ctx context.Context, agent *engine.ServerAgent, service strin
 //
 // Deploy routing:
 //   - action=health or action=status/deploy_id — health check / status poll, no routing.
-//   - projectPath resolves to a repo configured in deploy-repos.yaml (by SourcePath match)
-//     → StartManualDeploy: SHA-pinned worktree from origin/<configured-branch>.
-//     This is the correct, unified path. Pass from_disk=true in the input to opt out.
+//   - projectPath or services resolves to a repo configured in deploy-repos.yaml
+//     → StartManualDeploy: kind-aware build using the same kind dispatch as the
+//     webhook path (KindCompose → SHA-pinned worktree; KindStatic → static script;
+//     KindBinary → git pull + build + systemd restart). Pass from_disk=true to opt out.
 //   - projectPath does NOT match any configured repo (ad-hoc path) →
 //     StartDeploy: legacy nohup path, builds on-disk working tree. A WARN is logged.
+//     This is a permanent two-path design — operators rely on ad-hoc deploys for
+//     paths not tracked in deploy-repos.yaml.
 func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.DeployInput) (string, error) {
 	if input.Action == "health" {
 		return agent.CheckDeployHealth(ctx, input.Services), nil
@@ -233,8 +236,28 @@ func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.D
 		if !result.Success {
 			return "", fmt.Errorf("deploy failed: %s", result.Error)
 		}
-		msg := fmt.Sprintf("Deploy started (SHA-pinned from origin/%s).\nRepo: %s\nServices: %s\nID: %s\nLog: %s\n\nCheck status: server_deploy({deploy_id: %q})\nVerify health: server_deploy({action: \"health\"})",
-			rc.Branch, repoName, strings.Join(rc.Services, ", "),
+
+		// Build a kind-accurate description so the operator sees what actually ran.
+		var kindDesc string
+		switch rc.ResolvedKind() {
+		case deploy.KindStatic:
+			kindDesc = fmt.Sprintf("static script (%s)", rc.StaticDeployScript)
+		case deploy.KindBinary:
+			kindDesc = fmt.Sprintf("binary build + systemd restart (%s)", strings.Join(rc.UserServices, ", "))
+		default:
+			branch := rc.Branch
+			if branch == "" {
+				branch = "main"
+			}
+			kindDesc = fmt.Sprintf("compose SHA-pinned from origin/%s", branch)
+		}
+
+		servicesDesc := strings.Join(rc.Services, ", ")
+		if servicesDesc == "" {
+			servicesDesc = "(none)"
+		}
+		msg := fmt.Sprintf("Deploy started (%s).\nRepo: %s\nServices: %s\nID: %s\nLog: %s\n\nCheck status: server_deploy({deploy_id: %q})\nVerify health: server_deploy({action: \"health\"})",
+			kindDesc, repoName, servicesDesc,
 			result.DeployID, result.LogFile, result.DeployID)
 		if input.FromDisk {
 			msg = "[DEBUG] " + msg + "\nWARN: from_disk=true — not SHA-pinned; building on-disk working tree."
@@ -308,6 +331,11 @@ func resolveConfiguredRepo(input engine.DeployInput) (repo string, rc deploy.Rep
 
 // findRepoByAnyService returns the first repo whose Services list contains
 // any of the requested service names.
+//
+// Note: this intentionally matches across ALL deploy kinds (compose, static,
+// binary). The caller (resolveConfiguredRepo) is responsible for routing the
+// matched config through the kind-aware manual deploy path; the service-name
+// match itself is kind-agnostic.
 func findRepoByAnyService(cfg *deploy.Config, services []string) (repo string, rc deploy.RepoConfig, ok bool) {
 	for _, svc := range services {
 		if r, entry, found := findRepoByService(cfg, svc); found {
