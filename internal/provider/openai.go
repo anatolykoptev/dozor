@@ -32,7 +32,7 @@ type OpenAI struct {
 	model         string
 	fallbackChain []string // optional cross-provider model chain (via cliproxyapi); empty = single-model
 	client        *http.Client
-	chainClient   *kitllm.Client    // shared across calls so cooldown state persists; nil = no fallback chain
+	chainClient   *kitllm.Client        // shared across calls so cooldown state persists; nil = no fallback chain
 	modelRegistry *kitllm.ModelRegistry // health-aware registry; nil = no chain
 	maxIters      int
 }
