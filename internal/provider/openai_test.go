@@ -541,3 +541,165 @@ func TestChat_BlockedResponse(t *testing.T) {
 	}
 }
 
+
+// --- TestBuildChainClient_FilterDropsAbsentModel ----------------------------
+
+// TestBuildChainClient_FilterDropsAbsentModel verifies that buildChainClient
+// uses BuildModelChainEndpointsFiltered: a model absent from /v1/models is
+// dropped from the chain before the first request, so it is never attempted.
+//
+// Falsification: revert buildChainClient to BuildModelChainEndpoints (static)
+// and the absent model is included in the chain — the test server for the
+// absent model will record a hit, and the assertion "absent model never hit"
+// fails (because with static chain, the absent endpoint is present and kit
+// will attempt it, recording a hit).
+func TestBuildChainClient_FilterDropsAbsentModel(t *testing.T) {
+	const (
+		primaryModel  = "model-primary"
+		absentModel   = "model-absent"   // in chain CSV, but NOT in /v1/models
+		fallbackModel = "model-fallback" // in chain CSV AND in /v1/models
+		wantContent   = "served by primary"
+	)
+
+	var (
+		hitAbsent  atomic.Int32
+		hitModels  atomic.Int32
+		hitPrimary atomic.Int32
+	)
+
+	// Single server handles /v1/models + /chat/completions.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			hitModels.Add(1)
+			// Only primary + fallback are live; absentModel is not listed.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":[{"id":"model-primary"},{"id":"model-fallback"}]}`))
+		case "/chat/completions":
+			var body struct {
+				Model string `json:"model"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			switch body.Model {
+			case absentModel:
+				hitAbsent.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(chatCompletion("served by absent — should never happen", "stop"))
+			default: // primaryModel and fallbackModel
+				hitPrimary.Add(1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(chatCompletion(wantContent, "stop"))
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	// Build OpenAI with a chain that includes absentModel; the filter should
+	// drop it before constructing the chain client.
+	reg := kitllm.NewModelRegistry(kitllm.WithModelRegistryTTL(10 * time.Second))
+	o := &OpenAI{
+		apiURL:        srv.URL,
+		apiKey:        "test-key",
+		model:         primaryModel,
+		fallbackChain: []string{absentModel, fallbackModel},
+		client:        &http.Client{Timeout: 5 * time.Second},
+		maxIters:      10,
+		modelRegistry: reg,
+	}
+	o.chainClient = o.buildChainClient()
+
+	// /v1/models was fetched at buildChainClient time.
+	if n := hitModels.Load(); n < 1 {
+		t.Errorf("models endpoint hit count = %d, want >=1", n)
+	}
+
+	// Drive one request.
+	msgs := []kitllm.Message{{Role: "user", Content: "ping"}}
+	resp, err := o.Chat(context.Background(), msgs, nil)
+	if err != nil {
+		t.Fatalf("Chat() unexpected error: %v", err)
+	}
+	if resp.Content != wantContent {
+		t.Errorf("Content = %q, want %q", resp.Content, wantContent)
+	}
+	if n := hitPrimary.Load(); n == 0 {
+		t.Error("primary never hit — something wrong with chain construction")
+	}
+
+	// The absent model must NEVER be hit — filter removed it from the chain.
+	if n := hitAbsent.Load(); n != 0 {
+		t.Errorf("absent model hit count = %d, want 0 (filter should have dropped it)", n)
+	}
+}
+
+// --- TestBuildChainClient_FilterDegrades -----------------------------------
+
+// TestBuildChainClient_FilterDegrades verifies graceful degradation: when
+// /v1/models is unreachable, buildChainClient keeps the full unfiltered chain.
+// The chain is non-empty and chat succeeds — the filter never empties the chain.
+//
+// Falsification: if the filter incorrectly returned an empty chain on /v1/models
+// failure, the Chat call would error with "no endpoints" or similar — the
+// test fails on "Chat() unexpected error".
+func TestBuildChainClient_FilterDegrades(t *testing.T) {
+	const (
+		primaryModel  = "model-primary"
+		fallbackModel = "model-fallback"
+		wantContent   = "served by primary"
+	)
+
+	var (
+		hitPrimary atomic.Int32
+		hitModels  atomic.Int32
+	)
+
+	// Server that always 503s /v1/models but serves chat normally.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			hitModels.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case "/chat/completions":
+			hitPrimary.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(chatCompletion(wantContent, "stop"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	reg := kitllm.NewModelRegistry(kitllm.WithModelRegistryTTL(10 * time.Second))
+	o := &OpenAI{
+		apiURL:        srv.URL,
+		apiKey:        "test-key",
+		model:         primaryModel,
+		fallbackChain: []string{fallbackModel},
+		client:        &http.Client{Timeout: 5 * time.Second},
+		maxIters:      10,
+		modelRegistry: reg,
+	}
+	o.chainClient = o.buildChainClient()
+
+	// /v1/models was attempted during buildChainClient.
+	if n := hitModels.Load(); n < 1 {
+		t.Errorf("models endpoint not attempted, want >=1 attempt during chain construction")
+	}
+
+	// Chat must succeed — degraded to full chain, primary is reachable.
+	msgs := []kitllm.Message{{Role: "user", Content: "ping"}}
+	resp, err := o.Chat(context.Background(), msgs, nil)
+	if err != nil {
+		t.Fatalf("Chat() unexpected error on degraded filter: %v", err)
+	}
+	if resp.Content != wantContent {
+		t.Errorf("Content = %q, want %q", resp.Content, wantContent)
+	}
+	if n := hitPrimary.Load(); n == 0 {
+		t.Error("primary never hit — chain appears empty (should have degraded to full chain)")
+	}
+}

@@ -32,7 +32,8 @@ type OpenAI struct {
 	model         string
 	fallbackChain []string // optional cross-provider model chain (via cliproxyapi); empty = single-model
 	client        *http.Client
-	chainClient   *kitllm.Client // shared across calls so cooldown state persists; nil = no fallback chain
+	chainClient   *kitllm.Client    // shared across calls so cooldown state persists; nil = no fallback chain
+	modelRegistry *kitllm.ModelRegistry // health-aware registry; nil = no chain
 	maxIters      int
 }
 
@@ -76,6 +77,10 @@ func NewOpenAI() (Provider, bool) {
 	o := newOpenAIWithConfig(apiURL, apiKey, model, maxItersFromEnv())
 	o.fallbackChain = chain
 	if len(chain) > 0 {
+		// ModelRegistry is created once here and stored on the struct so that
+		// its /v1/models cache (TTL: 5 min) is shared across all buildChainClient
+		// calls and across requests. Creating it per-call would defeat the cache.
+		o.modelRegistry = kitllm.NewModelRegistry()
 		o.chainClient = o.buildChainClient()
 	}
 	return o, true
@@ -180,16 +185,60 @@ func cooldownDuration() time.Duration {
 	return 5 * time.Minute
 }
 
-// buildChainClient constructs the shared chain client with per-model cooldown.
-// Called once at construction; the returned client is reused across requests so
-// cooldown state accumulates across calls (the key property that prevents dead-hop
-// RTTs on quota-exhausted free-tier models).
+// buildChainClient constructs the shared chain client with per-model cooldown
+// and health-aware model filtering.
 //
-// The observer logs a Warn on cooldown ENTRY (cooling=true). It fires async
-// inside kit (fireCooldownObserver goroutine) so it must not block or panic.
-// slog.Warn without context is intentional — the firing goroutine has no request ctx.
+// Called once at construction (NewOpenAI); the returned client is reused across
+// requests so cooldown state accumulates across calls (the key property that
+// prevents dead-hop RTTs on quota-exhausted free-tier models).
+//
+// Model filtering: BuildModelChainEndpointsFiltered probes {apiURL}/v1/models
+// once (TTL-cached on o.modelRegistry) and drops any chain entry absent from
+// the live set before constructing the endpoint list. Graceful degradation:
+// if the registry is nil, the fetch fails, the response is empty, or filtering
+// would empty the chain, the FULL unfiltered chain is used — no new failure mode.
+//
+// The observer logs a Warn on:
+//   - cooldown ENTRY (per-model quota exhaustion visible in the journal)
+//   - filter event: any dropped models or a degraded-registry fallback
+//
+// Both observers fire async inside kit goroutines and must not block or panic.
+// slog.Warn without context is intentional — there is no per-request ctx at
+// observer firing time.
 func (o *OpenAI) buildChainClient() *kitllm.Client {
-	eps := kitllm.BuildModelChainEndpoints(o.apiURL, o.apiKey, o.model, o.fallbackChain)
+	// modelFilterObserver is called once per buildChainClient invocation.
+	// It logs dropped models (a dead upstream model was removed from the
+	// chain) and degradation events (the live model set could not be
+	// obtained — fallback to the full chain).
+	//
+	// dozor has no Prometheus surface in the provider package, so slog is
+	// the right output here. One log line per chain build is acceptable:
+	// buildChainClient is called exactly once at startup (see NewOpenAI).
+	modelFilterObserver := func(ev kitllm.ModelFilterEvent) {
+		if ev.Degraded {
+			slog.Warn("llm model filter degraded — using full chain",
+				slog.String("reason", ev.Reason),
+				slog.String("base_url", ev.BaseURL),
+				slog.Int("chain_len", ev.Requested),
+				slog.Int("available", ev.Available))
+			return
+		}
+		if len(ev.Dropped) > 0 {
+			slog.Warn("llm model filter dropped dead models",
+				slog.Any("dropped", ev.Dropped),
+				slog.String("base_url", ev.BaseURL),
+				slog.Int("requested", ev.Requested),
+				slog.Int("kept", ev.Kept),
+				slog.Int("available", ev.Available))
+		}
+	}
+
+	eps := kitllm.BuildModelChainEndpointsFiltered(
+		context.Background(),
+		o.modelRegistry,
+		o.apiURL, o.apiKey, o.model, o.fallbackChain,
+		modelFilterObserver,
+	)
 	return kitllm.NewClient(o.apiURL, o.apiKey, o.model,
 		kitllm.WithHTTPClient(o.client),
 		kitllm.WithMaxRetries(1), // dozor owns retry loop; 1 = single attempt per endpoint
