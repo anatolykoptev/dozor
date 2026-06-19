@@ -6,8 +6,8 @@ github.com/a2aproject/a2a-go v0.3.13 h1:WpIcSHgCySIxD7OQEdV7U7WJc/HL/G2QQj0RJ0Yh
 github.com/a2aproject/a2a-go v0.3.13/go.mod h1:I7Cm+a1oL+UT6zMoP+roaRE5vdfUa1iQGVN8aSOuZ0I=
 github.com/alicebob/miniredis/v2 v2.38.0 h1:nZAzCR+Lj+Vxk4ZXzm2NuKq2O33RXj1XxJ2e2uP9jiw=
 github.com/alicebob/miniredis/v2 v2.38.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
-github.com/anatolykoptev/go-kit v0.84.0 h1:IIHuj1IadmQdaa2c6gDq5jcaBLLkiQGHp7MreQFsltc=
-github.com/anatolykoptev/go-kit v0.84.0/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
+github.com/anatolykoptev/go-kit v0.85.0 h1:Tk9kYWSZpsNIvxgHa8RZ2QGKAWebukap6minGY3rrfk=
+github.com/anatolykoptev/go-kit v0.85.0/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
 github.com/anatolykoptev/go-stt v0.2.0 h1:mQMAM7KePAaaWulfF0V+UlheJTuNsMOVjars1Q6ltlc=
 github.com/anatolykoptev/go-stt v0.2.0/go.mod h1:BUNlfoBTMUpLDtrz56laADp74mTGl/9Lk2g6CUKGAdc=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
