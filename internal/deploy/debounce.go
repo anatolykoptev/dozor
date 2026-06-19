@@ -66,6 +66,14 @@ type Debouncer struct {
 	clock    Clock
 	dispatch DispatchFunc
 
+	// persistPath, when non-empty, enables durable mirroring of the pending
+	// set to a JSON file so a process restart can recover queued builds.
+	// shaResolver resolves the deployed HEAD for the no-stale-rebuild guard on
+	// reload. Both are configured via WithPersistence; zero values keep the
+	// debouncer purely in-memory (original behaviour). See debounce_persist.go.
+	persistPath string
+	shaResolver shaResolverFunc
+
 	mu      sync.Mutex
 	pending map[string]*pendingEntry
 }
@@ -74,6 +82,7 @@ type pendingEntry struct {
 	event  PendingEvent
 	timer  Timer
 	cancel chan struct{} // closed to abort an in-flight wait (test/shutdown)
+	window time.Duration // original debounce window; persisted as LastSeen+window deadline
 }
 
 // NewDebouncer creates a Debouncer that calls `dispatch` after each quiet window.
@@ -139,7 +148,9 @@ func (d *Debouncer) Submit(key string, ev PendingEvent, window time.Duration) {
 			entry.event.ChangedPaths = nil
 		}
 		entry.timer.Reset(window)
+		entry.window = window
 		hits := entry.event.HitCount
+		d.persistLocked()
 		d.mu.Unlock()
 		DebouncedTotal.WithLabelValues(ev.Repo, ev.Service).Inc()
 		slog.Info("deploy debounced: webhook received, resetting timer",
@@ -172,8 +183,10 @@ func (d *Debouncer) Submit(key string, ev PendingEvent, window time.Duration) {
 		event:  ev,
 		timer:  d.clock.NewTimer(window),
 		cancel: cancel,
+		window: window,
 	}
 	d.pending[key] = entry
+	d.persistLocked()
 	d.mu.Unlock()
 
 	DebouncedTotal.WithLabelValues(ev.Repo, ev.Service).Inc()
@@ -204,6 +217,7 @@ func (d *Debouncer) waitAndFire(key string, entry *pendingEntry) {
 	}
 	delete(d.pending, key)
 	ev := entry.event
+	d.persistLocked()
 	d.mu.Unlock()
 
 	slog.Info("deploy fired after debounce",
@@ -219,6 +233,12 @@ func (d *Debouncer) waitAndFire(key string, entry *pendingEntry) {
 
 // Stop cancels every pending timer without firing. Used at shutdown so we do
 // not block on goroutines waiting for wall-clock timers.
+//
+// IMPORTANT: Stop must NOT re-persist the (now-empty) in-memory set. Graceful
+// restart calls Stop; the persisted file is the ONLY record of the queued
+// builds and must survive intact so the next boot's Reload can recover them.
+// This is the core of the VOLATILE-PENDING-STATE fix — clearing the file here
+// would re-introduce the lost-on-restart bug.
 func (d *Debouncer) Stop(ctx context.Context) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

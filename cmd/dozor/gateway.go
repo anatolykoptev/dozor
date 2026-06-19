@@ -287,6 +287,10 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 		slog.Int("concurrency", buildConcurrency))
 	queue := deploy.NewQueueN(ctx, deployLog, buildConcurrency)
 	handler := deploy.NewHandler(cfg, queue, deployLog)
+	// Recover any debounce entries persisted by a previous dozor process so a
+	// queued build is not lost across a restart (graceful self-deploy / crash).
+	// Re-arms / fires / stale-skips through the normal serial queue.
+	handler.RecoverPending(ctx)
 	mx.Handle("POST /deploy/github", handler)
 
 	// Tear down debouncer goroutines when the gateway shuts down.
