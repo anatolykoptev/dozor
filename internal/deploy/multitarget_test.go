@@ -104,3 +104,58 @@ func TestHandler_MultiTarget_DispatchesIndependently(t *testing.T) {
 		t.Errorf("shared-core push status=%q, want queued,queued", s)
 	}
 }
+
+// TestConfig_ValidateMultiTarget covers the fail-loud guard against colliding
+// monorepo targets (same serviceKey, or shared SourcePath).
+func TestConfig_ValidateMultiTarget(t *testing.T) {
+	t.Parallel()
+
+	target := func(svc, src string) RepoConfig {
+		return RepoConfig{SourcePath: src, Services: []string{svc}}
+	}
+
+	t.Run("distinct service and source is accepted", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{Repos: map[string]RepoConfig{
+			"o/r":       target("piter", "/clone/piter"),
+			"o/r#hully": target("hully", "/clone/hully"),
+		}}
+		if err := validateMultiTarget(cfg); err != nil {
+			t.Errorf("valid multi-target rejected: %v", err)
+		}
+	})
+
+	t.Run("duplicate service key is rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{Repos: map[string]RepoConfig{
+			"o/r":     target("web", "/clone/a"),
+			"o/r#two": target("web", "/clone/b"),
+		}}
+		if err := validateMultiTarget(cfg); err == nil {
+			t.Error("duplicate service key accepted, want error")
+		}
+	})
+
+	t.Run("shared source_path is rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &Config{Repos: map[string]RepoConfig{
+			"o/r":     target("a", "/clone/shared"),
+			"o/r#two": target("b", "/clone/shared"),
+		}}
+		if err := validateMultiTarget(cfg); err == nil {
+			t.Error("shared source_path accepted, want error")
+		}
+	})
+
+	t.Run("distinct repos with identical config are unaffected", func(t *testing.T) {
+		t.Parallel()
+		// Same svc + src but DIFFERENT repoKeys → not a multi-target repo.
+		cfg := &Config{Repos: map[string]RepoConfig{
+			"o/r":  target("a", "/clone/a"),
+			"o/r2": target("a", "/clone/a"),
+		}}
+		if err := validateMultiTarget(cfg); err != nil {
+			t.Errorf("distinct single-target repos rejected: %v", err)
+		}
+	})
+}

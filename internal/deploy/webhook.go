@@ -216,9 +216,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// release event: look up by repo only.
-		matches = h.config.LookupAll(push.Repository.FullName, "")
-		if len(matches) == 0 {
+		// release event: keep first-match semantics. A tag carries no changed
+		// files to gate per-target fan-out, so building EVERY target of a
+		// multi-target repo on one release would be surprising; multi-target
+		// fan-out is a push-only concept. This collapses to the single-target
+		// path below, identical to the previous behaviour.
+		rc := h.config.LookupBranch(push.Repository.FullName, "")
+		if rc == nil {
 			slog.Info("deploy/webhook: unknown repo",
 				"repo", push.Repository.FullName)
 			respondJSON(w, http.StatusOK, map[string]string{
@@ -227,6 +231,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		matches = []*RepoConfig{rc}
 	}
 
 	// Single-target repo (the overwhelming common case): preserve the original
