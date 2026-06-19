@@ -414,21 +414,26 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // validateMultiTarget cross-checks repos that declare more than one deploy
-// target (keyed "owner/repo#<suffix>"). Each target of a repo MUST resolve to a
-// distinct queue identity AND a distinct SourcePath:
+// target (keyed "owner/repo#<suffix>"). Two distinct shapes share a repoKey:
+// multi-APP (e.g. piter-now + piter-now#hully, same branch, different apps) and
+// multi-BRANCH (e.g. a repo's main + dev, same app, different branches). The
+// checks must not conflate them:
 //
-//   - Same serviceKey → the two builds collide in the queue/debounce (keyed on
-//     serviceKey, see dispatchPush); newest-wins coalesces them and one app
-//     silently never deploys. (Empty keys can't occur: validateRepoConfig
-//     defaults static→map-key and binary→user_services, and compose requires
-//     non-empty — so the only way to collide is two identical *explicit*
-//     services: lists.)
-//   - Same SourcePath → the two builds would race on one git clone (concurrent
-//     fetch / worktree-add) the moment build concurrency is raised above 1.
+//   - Same serviceKey (any branch) → FATAL. The queue/debounce coalesces by
+//     serviceKey with no branch component (see queue.go), so two targets with
+//     the same key collide and one silently never deploys. Empty keys can't
+//     occur (validateRepoConfig defaults static→map-key, binary→user_services,
+//     compose requires non-empty) — the only way to collide is two identical
+//     *explicit* services: lists. Fail loud at config-load.
+//   - Same SourcePath ON THE SAME BRANCH → WARN only. Two apps building from one
+//     clone on one branch are safe under the serial queue but would race on git
+//     once build concurrency is raised above 1. Multi-BRANCH entries sharing a
+//     clone (different branches, the documented multi-branch pattern) are NOT
+//     flagged — the worker fetches origin/<branch> into the shared clone, which
+//     is the intended design.
 //
-// Fail loud at config-load, not silently at runtime. Single-target repos (the
-// overwhelming common case) skip this entirely. Runs after per-entry
-// normalisation, so Services reflects the effective (defaulted) value.
+// Single-target repos (the overwhelming common case) skip this entirely. Runs
+// after per-entry normalisation, so Services reflects the effective value.
 func validateMultiTarget(cfg *Config) error {
 	byRepo := make(map[string][]string, len(cfg.Repos))
 	for key := range cfg.Repos {
@@ -445,9 +450,10 @@ func validateMultiTarget(cfg *Config) error {
 		}
 		sort.Strings(keys)
 		svcOwner := make(map[string]string, len(keys))
-		srcOwner := make(map[string]string, len(keys))
+		srcOwner := make(map[string]string, len(keys)) // keyed branch+SourcePath
 		for _, key := range keys {
 			rc := cfg.Repos[key]
+
 			svc := serviceKey(rc.Services)
 			if other, dup := svcOwner[svc]; dup {
 				return fmt.Errorf(
@@ -457,12 +463,19 @@ func validateMultiTarget(cfg *Config) error {
 			svcOwner[svc] = key
 
 			if rc.SourcePath != "" {
-				if other, dup := srcOwner[rc.SourcePath]; dup {
-					return fmt.Errorf(
-						"multi-target repo %q: entries %q and %q share source_path %q — multi-target deploys need distinct deploy clones",
-						repoKey, other, key, rc.SourcePath)
+				branch := rc.Branch
+				if branch == "" {
+					branch = "main"
 				}
-				srcOwner[rc.SourcePath] = key
+				srcKey := branch + "\x00" + rc.SourcePath
+				if other, dup := srcOwner[srcKey]; dup {
+					slog.Warn("multi-target repo shares a deploy clone on one branch — safe while build concurrency is 1, but raise DOZOR_BUILD_CONCURRENCY and these will race on the clone; consider distinct source_path clones",
+						"repo", repoKey,
+						"entries", other+", "+key,
+						"branch", branch,
+						"source_path", rc.SourcePath)
+				}
+				srcOwner[srcKey] = key
 			}
 		}
 	}

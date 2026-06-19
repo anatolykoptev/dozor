@@ -136,14 +136,33 @@ func TestConfig_ValidateMultiTarget(t *testing.T) {
 		}
 	})
 
-	t.Run("shared source_path is rejected", func(t *testing.T) {
+	t.Run("same-branch shared source_path warns but is accepted", func(t *testing.T) {
 		t.Parallel()
+		// Two apps, one clone, same (default) branch: a startup warning, not a
+		// load error — safe under the serial queue.
 		cfg := &Config{Repos: map[string]RepoConfig{
 			"o/r":     target("a", "/clone/shared"),
 			"o/r#two": target("b", "/clone/shared"),
 		}}
-		if err := validateMultiTarget(cfg); err == nil {
-			t.Error("shared source_path accepted, want error")
+		if err := validateMultiTarget(cfg); err != nil {
+			t.Errorf("same-branch shared source_path rejected: %v", err)
+		}
+	})
+
+	t.Run("multi-branch shared source_path is accepted", func(t *testing.T) {
+		t.Parallel()
+		// Same app on two branches sharing one clone is the documented
+		// multi-branch pattern — must NOT be rejected.
+		main := target("svc", "/clone/app")
+		main.Branch = "main"
+		dev := target("svc-dev", "/clone/app")
+		dev.Branch = "dev"
+		cfg := &Config{Repos: map[string]RepoConfig{
+			"o/r":     main,
+			"o/r#dev": dev,
+		}}
+		if err := validateMultiTarget(cfg); err != nil {
+			t.Errorf("multi-branch shared clone rejected: %v", err)
 		}
 	})
 
