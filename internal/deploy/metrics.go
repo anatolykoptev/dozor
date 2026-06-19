@@ -82,4 +82,33 @@ var (
 		Name: "dozor_deploy_clone_pull_total",
 		Help: "Auto-pull attempts on deploy clones before compose builds, by outcome.",
 	}, []string{"repo", "outcome"})
+
+	// ManualDeployTotal counts server_deploy MCP tool invocations (not webhook-driven).
+	// Labels:
+	//   repo    — full GitHub repo name (owner/name) or "unconfigured" for ad-hoc paths
+	//   trigger — "sha_pinned" (normal, origin/<branch> worktree) or "from_disk" (debug opt-out)
+	//   result  — "started", "success", "failure"
+	//
+	// A "started" + "success" pair means the deploy completed in the background.
+	// A counter stuck on "started" without "success"/"failure" means the background
+	// goroutine is still running (or was killed before it could record the outcome).
+	ManualDeployTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_manual_deploy_total",
+		Help: "Manual deploys triggered via server_deploy MCP tool, by repo, trigger mode, and result.",
+	}, []string{"repo", "trigger", "result"})
+
+	// ManualDeployBranchMismatchTotal counts cases where the source clone's
+	// checked-out branch differs from the configured deploy branch.
+	// Fires as a WARN signal — the build is still correct (origin/<configured>
+	// is always used), but the drift is worth alerting on so operators can
+	// reconcile or investigate.
+	//
+	// Labels:
+	//   repo       — full GitHub repo name
+	//   configured — the branch from deploy-repos.yaml (e.g. "main")
+	//   actual     — the branch the source clone has checked out (e.g. "dev")
+	ManualDeployBranchMismatchTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_manual_deploy_branch_mismatch_total",
+		Help: "Manual deploy: source clone branch ≠ configured deploy branch (build still uses origin/<configured>).",
+	}, []string{"repo", "configured", "actual"})
 )

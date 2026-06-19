@@ -1,0 +1,200 @@
+package deploy
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"time"
+)
+
+// ManualDeployRequest describes a manual deploy triggered via server_deploy MCP tool.
+// Unlike webhook-driven BuildRequest, the source of truth is the configured branch
+// in deploy-repos.yaml — NOT the on-disk HEAD of the source clone.
+type ManualDeployRequest struct {
+	// Repo is the full GitHub repo name ("owner/name"), matching a key in deploy-repos.yaml.
+	// Empty when the projectPath is not configured (ad-hoc fallback).
+	Repo string
+	// Config is the resolved RepoConfig from deploy-repos.yaml.
+	Config RepoConfig
+	// FromDisk, when true, skips git worktree pinning and builds from the
+	// on-disk source clone as-is. Intended for local debugging only.
+	// Always log a WARN when this flag is set so operators can tell it apart.
+	FromDisk bool
+}
+
+// ManualDeployResult is returned synchronously from ExecuteManualDeploy.
+type ManualDeployResult struct {
+	Success  bool
+	BuiltSHA string // short SHA of the commit that was actually built
+	Error    string
+}
+
+// gitManualFetchRunner wraps the git fetch step for the manual path.
+// Seam for unit tests — defaults to the shared runCmd runner.
+var gitManualFetchRunner = func(ctx context.Context, sourcePath, branch string) error {
+	return runCmd(ctx, sourcePath, "git", "fetch", "origin", branch, "--no-tags", "--quiet")
+}
+
+// gitManualCurrentBranchRunner returns the source clone's checked-out branch.
+// Seam for unit tests.
+var gitManualCurrentBranchRunner = defaultGitCurrentBranchRunner
+
+// ExecuteManualDeploy runs a fully synchronous manual deploy using the same
+// gitPrepare → composeBuild → composeUp pipeline as the webhook path.
+//
+// For a configured repo (req.FromDisk==false):
+//  1. Fetch origin/<branch> on SourcePath (never modifies the working tree).
+//  2. Detect branch drift: if SourcePath HEAD ≠ origin/<branch>, log WARN +
+//     bump dozor_manual_deploy_branch_mismatch_total (the build still proceeds
+//     from the correct ref — the drift is surfaced, not fatal).
+//  3. Build a detached worktree at origin/<branch> via gitPrepare.
+//  4. Inject OXPULSE_GIT_SHA via composeBuild (same as webhook path).
+//  5. Clean up the worktree.
+//
+// For req.FromDisk==true (debug opt-out):
+//
+//	Skips steps 1-3 and passes an empty worktreePath to composeBuild,
+//	which falls back to the on-disk tree. Log a WARN so it is visible.
+//
+// The caller is expected to run this in a goroutine and write the log to a
+// temp file — see StartManualDeploy in internal/engine/deploy.go.
+func ExecuteManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDeployResult {
+	branch := req.Config.Branch
+	if branch == "" {
+		branch = defaultBranch
+	}
+	sourcePath := req.Config.SourcePath
+
+	result := ManualDeployResult{}
+
+	if req.FromDisk {
+		slog.Warn("deploy/manual: from_disk=true — building on-disk source tree (debug mode, not SHA-pinned)",
+			"repo", req.Repo,
+			"source_path", sourcePath,
+		)
+		ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "started").Inc()
+		buildReq := BuildRequest{
+			Repo:      req.Repo,
+			CommitSHA: "", // resolveGitSHA reads HEAD of sourcePath at build time
+			Config:    req.Config,
+		}
+		if errMsg := composeBuild(ctx, buildReq, ""); errMsg != "" {
+			ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "failure").Inc()
+			result.Error = errMsg
+			return result
+		}
+		if errMsg := composeUp(ctx, buildReq); errMsg != "" {
+			ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "failure").Inc()
+			result.Error = errMsg
+			return result
+		}
+		result.BuiltSHA = resolveGitSHA(ctx, sourcePath)
+		ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "success").Inc()
+		result.Success = true
+		return result
+	}
+
+	// --- Configured repo: SHA-pinned from origin/<branch> ---
+
+	// Step 1: fetch so origin/<branch> is fresh.
+	if err := gitManualFetchRunner(ctx, sourcePath, branch); err != nil {
+		slog.Error("deploy/manual: git fetch failed",
+			"repo", req.Repo,
+			"source_path", sourcePath,
+			"branch", branch,
+			"error", err,
+		)
+		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
+		result.Error = fmt.Sprintf("git fetch origin %s: %v", branch, err)
+		return result
+	}
+
+	// Step 2: drift guard — source clone's checked-out branch vs configured branch.
+	cloneBranch, _ := gitManualCurrentBranchRunner(ctx, sourcePath)
+	if cloneBranch != "" && cloneBranch != "HEAD" && cloneBranch != branch {
+		slog.Warn("deploy/manual: source clone branch drift detected; build will use origin/<configured> regardless",
+			"repo", req.Repo,
+			"source_path", sourcePath,
+			"configured_branch", branch,
+			"actual_branch", cloneBranch,
+		)
+		ManualDeployBranchMismatchTotal.WithLabelValues(req.Repo, branch, cloneBranch).Inc()
+	}
+
+	// Step 3: create a detached worktree at origin/<branch>.
+	// Pass "origin/<branch>" as the target ref: gitPrepare treats any string
+	// shorter than 7 chars as "not a SHA" and uses detectDefaultBranch instead,
+	// but "origin/<branch>" is long enough (>7) that it would be treated as a
+	// SHA fragment. We therefore pass an empty CommitSHA and rely on gitPrepare's
+	// fallback (detectDefaultBranch → "origin/main"). For non-main branches we
+	// call gitPrepareBranch which builds the worktree at origin/<branch> directly.
+	worktreePath, cleanup, errMsg := gitPrepareBranch(ctx, sourcePath, branch)
+	if errMsg != "" {
+		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
+		result.Error = errMsg
+		return result
+	}
+	defer cleanup()
+
+	// Step 4: build via the same composeBuild path (injects OXPULSE_GIT_SHA).
+	buildReq := BuildRequest{
+		Repo:      req.Repo,
+		CommitSHA: resolveGitSHA(ctx, worktreePath), // short SHA at worktree HEAD
+		Config:    req.Config,
+	}
+	result.BuiltSHA = buildReq.CommitSHA
+
+	slog.Info("deploy/manual: building sha-pinned worktree",
+		"repo", req.Repo,
+		"branch", branch,
+		"worktree", worktreePath,
+		"sha", result.BuiltSHA,
+	)
+
+	if errMsg := composeBuild(ctx, buildReq, worktreePath); errMsg != "" {
+		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
+		result.Error = errMsg
+		return result
+	}
+
+	// Step 5: bring containers up.
+	if errMsg := composeUp(ctx, buildReq); errMsg != "" {
+		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
+		result.Error = errMsg
+		return result
+	}
+
+	ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "success").Inc()
+	result.Success = true
+	return result
+}
+
+// gitPrepareBranch creates a detached worktree at origin/<branch> in the
+// source clone. Unlike gitPrepare (which resolves a SHA), this always targets
+// the remote tracking ref — ensuring the manual path builds exactly what
+// origin holds regardless of the local clone's checkout state.
+func gitPrepareBranch(ctx context.Context, sourcePath, branch string) (worktreePath string, cleanup func(), errMsg string) {
+	noop := func() {}
+	if sourcePath == "" {
+		return "", noop, "source_path is empty — cannot create worktree"
+	}
+
+	target := "origin/" + branch
+	wtPath := fmt.Sprintf("/tmp/deploy-manual-%s-%d", branch, time.Now().UnixMilli())
+
+	if err := runCmd(ctx, sourcePath, "git", "worktree", "add", "--detach", wtPath, target); err != nil {
+		return "", noop, fmt.Sprintf("git worktree add (manual, origin/%s): %v", branch, err)
+	}
+
+	cleanupFn := func() {
+		if err := runCmd(context.Background(), sourcePath, "git", "worktree", "remove", "--force", wtPath); err != nil {
+			slog.Warn("deploy/manual: worktree cleanup failed, removing manually",
+				"path", wtPath, "error", err)
+			os.RemoveAll(wtPath)
+		}
+	}
+
+	slog.Info("deploy/manual: worktree created", "path", wtPath, "target", target)
+	return wtPath, cleanupFn, ""
+}

@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/anatolykoptev/dozor/internal/deploy"
 	"github.com/anatolykoptev/dozor/internal/engine"
 )
 
@@ -202,6 +204,14 @@ func HandleRestart(ctx context.Context, agent *engine.ServerAgent, service strin
 }
 
 // HandleDeploy processes a server_deploy request.
+//
+// Deploy routing:
+//   - action=health or action=status/deploy_id — health check / status poll, no routing.
+//   - projectPath resolves to a repo configured in deploy-repos.yaml (by SourcePath match)
+//     → StartManualDeploy: SHA-pinned worktree from origin/<configured-branch>.
+//     This is the correct, unified path. Pass from_disk=true in the input to opt out.
+//   - projectPath does NOT match any configured repo (ad-hoc path) →
+//     StartDeploy: legacy nohup path, builds on-disk working tree. A WARN is logged.
 func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.DeployInput) (string, error) {
 	if input.Action == "health" {
 		return agent.CheckDeployHealth(ctx, input.Services), nil
@@ -209,6 +219,35 @@ func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.D
 	if input.DeployID != "" || input.Action == modeStatus {
 		return handleDeployStatus(ctx, agent, input)
 	}
+
+	// Attempt to resolve projectPath (or the agent's ComposePath) against the
+	// deploy-repos.yaml config so we can use the SHA-pinned pipeline.
+	repoName, rc, configured := resolveConfiguredRepo(input)
+	if configured {
+		req := deploy.ManualDeployRequest{
+			Repo:     repoName,
+			Config:   rc,
+			FromDisk: input.FromDisk,
+		}
+		result := agent.StartManualDeploy(ctx, req)
+		if !result.Success {
+			return "", fmt.Errorf("deploy failed: %s", result.Error)
+		}
+		msg := fmt.Sprintf("Deploy started (SHA-pinned from origin/%s).\nRepo: %s\nServices: %s\nID: %s\nLog: %s\n\nCheck status: server_deploy({deploy_id: %q})\nVerify health: server_deploy({action: \"health\"})",
+			rc.Branch, repoName, strings.Join(rc.Services, ", "),
+			result.DeployID, result.LogFile, result.DeployID)
+		if input.FromDisk {
+			msg = "[DEBUG] " + msg + "\nWARN: from_disk=true — not SHA-pinned; building on-disk working tree."
+		}
+		return msg, nil
+	}
+
+	// Ad-hoc path: projectPath not found in deploy-repos.yaml.
+	// Fall back to the legacy nohup deploy. Log a WARN so the operator can tell
+	// this apart from the configured (SHA-pinned) path.
+	slog.Warn("deploy: projectPath not found in deploy-repos.yaml — using legacy on-disk build",
+		"project_path", input.ProjectPath,
+	)
 
 	build := true
 	if input.Build != nil {
@@ -223,8 +262,59 @@ func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.D
 	if !result.Success {
 		return "", fmt.Errorf("deploy failed: %s", result.Error)
 	}
-	return fmt.Sprintf("Deploy started.\nID: %s\nLog: %s\n\nCheck status: server_deploy({deploy_id: %q})\nVerify health: server_deploy({action: \"health\"})",
+	return fmt.Sprintf("Deploy started (legacy on-disk — path not in deploy-repos.yaml).\nID: %s\nLog: %s\n\nCheck status: server_deploy({deploy_id: %q})\nVerify health: server_deploy({action: \"health\"})",
 		result.DeployID, result.LogFile, result.DeployID), nil
+}
+
+// resolveConfiguredRepo attempts to find a deploy-repos.yaml entry whose
+// SourcePath matches input.ProjectPath (or all configured repos when
+// ProjectPath is empty and Services is set). Returns the repo key and
+// RepoConfig on success.
+//
+// Match logic:
+//  1. If input.Services is non-empty, findRepoByService is used (exact name match).
+//  2. Otherwise if input.ProjectPath is non-empty, all repos are scanned for a
+//     SourcePath match.
+//  3. If neither matches, returns configured=false and the caller falls back to
+//     the legacy on-disk path.
+//
+// Config load errors are logged and treated as "not configured" to preserve
+// backward compat for operators who run without deploy-repos.yaml.
+func resolveConfiguredRepo(input engine.DeployInput) (repo string, rc deploy.RepoConfig, configured bool) {
+	cfg, err := deploy.LoadConfig(deploy.DefaultConfigPath())
+	if err != nil {
+		slog.Debug("deploy: cannot load deploy-repos.yaml; using legacy path", "error", err)
+		return "", deploy.RepoConfig{}, false
+	}
+
+	// Service-name match (explicit services provided).
+	if len(input.Services) > 0 {
+		if r, found, ok := findRepoByAnyService(cfg, input.Services); ok {
+			return r, found, true
+		}
+	}
+
+	// SourcePath match (project path provided).
+	if input.ProjectPath != "" {
+		for key, entry := range cfg.Repos {
+			if entry.SourcePath != "" && entry.SourcePath == input.ProjectPath {
+				return key, entry, true
+			}
+		}
+	}
+
+	return "", deploy.RepoConfig{}, false
+}
+
+// findRepoByAnyService returns the first repo whose Services list contains
+// any of the requested service names.
+func findRepoByAnyService(cfg *deploy.Config, services []string) (repo string, rc deploy.RepoConfig, ok bool) {
+	for _, svc := range services {
+		if r, entry, found := findRepoByService(cfg, svc); found {
+			return r, entry, true
+		}
+	}
+	return "", deploy.RepoConfig{}, false
 }
 
 // handleDeployStatus returns the status of an existing deploy.

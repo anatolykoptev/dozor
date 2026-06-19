@@ -34,6 +34,11 @@ type DeployInput struct {
 	Services    []string `json:"services,omitempty" jsonschema:"Specific services to deploy"`
 	Build       *bool    `json:"build,omitempty" jsonschema:"Build images before deploy (default true)"`
 	Pull        *bool    `json:"pull,omitempty" jsonschema:"Pull images before deploy (default true)"`
+	// FromDisk opts out of SHA-pinned worktree deploy for repos configured in
+	// deploy-repos.yaml. When true, the on-disk source working tree is used
+	// as-is (same as the old behaviour). Intended for local debugging only;
+	// a WARN is emitted in the log when this flag is set.
+	FromDisk bool `json:"from_disk,omitempty" jsonschema:"Debug opt-out: build from on-disk working tree instead of origin/<branch> worktree (default false)"`
 }
 
 type CleanupInput struct {
