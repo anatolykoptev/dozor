@@ -440,7 +440,14 @@ func buildWatchPrompt(devMode bool) string {
 		"Allowed tags: <b>, <i>, <code>, <pre>. No other HTML. No Markdown (no **, no __).\n" +
 		"IMPORTANT: Only report issues from the CURRENT triage data below. " +
 		"Do NOT report numbers, restart counts, or error details from historical KB entries. " +
-		"Do NOT list healthy services. Do NOT run extra diagnostics unless a service is down.\n\n"
+		"Do NOT list healthy services. Do NOT run extra diagnostics unless a service is down.\n" +
+		"ACCURACY RULES — fight generic vocabulary:\n" +
+		"• Quote concrete signal verbatim (HTTP code, error string, schema name, key prefix). " +
+		"E.g. \"key AIza...JgIs HTTP 403 IP restriction\", NOT \"authentication errors\".\n" +
+		"• Do NOT rephrase alert.Title or alert.SuggestedAction into vaguer category labels " +
+		"(\"credential issues\", \"configuration errors\", \"DevOps escalation\"). " +
+		"If alert says \"Google API upstream UNAVAILABLE (HTTP 503)\", report it that way.\n" +
+		"• Action: state one specific verb + object. \"escalating to DevOps\" is BANNED filler.\n\n"
 }
 
 // enrichWithKB searches the knowledge base for similar past incidents and returns context to prepend.
