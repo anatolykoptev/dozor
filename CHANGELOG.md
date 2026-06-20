@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1](https://github.com/anatolykoptev/dozor/compare/v1.8.0...v1.8.1) (2026-06-20)
+
+
+### Bug Fixes
+
+* **release:** run GoReleaser inside release-please workflow (combined) ([#119](https://github.com/anatolykoptev/dozor/issues/119)) ([c08eb5d](https://github.com/anatolykoptev/dozor/commit/c08eb5d28fe3f19ba094a5e1cba5c20bbd2c3116))
+
 ## [1.8.0](https://github.com/anatolykoptev/dozor/compare/v1.7.0...v1.8.0) (2026-06-20)
 
 
