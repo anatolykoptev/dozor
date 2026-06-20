@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/bus"
+	"github.com/anatolykoptev/dozor/internal/engine"
 )
 
 // signBody computes the HMAC-SHA256 hex of body using secret, matching
@@ -37,7 +38,7 @@ func TestWebhookHandler_HMAC(t *testing.T) {
 		msgBus := bus.New()
 		t.Cleanup(func() { msgBus.Close() })
 		mx := http.NewServeMux()
-		registerWebhookHandler(mx, msgBus, func(string) {})
+		registerWebhookHandler(mx, msgBus, func(string) {}, func([]engine.Alert, string) {})
 		return mx, msgBus
 	}
 
@@ -94,57 +95,59 @@ func TestWebhookHandler_HMAC(t *testing.T) {
 	})
 }
 
-// TestWebhookHandler_EventClassifier covers the routing logic introduced to
-// silence ACTIVE_PROBE webhook spam and route channel_dead/recovered events
-// straight to Telegram without invoking the LLM loop.
+// TestWebhookHandler_EventClassifier covers the routing logic on the
+// POST /webhook path: silence active_probe spam, render channel_dead/recovered
+// as deterministic alert CARDS (notifyAlertFn, no LLM), and keep the legacy
+// no-event path on the agent loop. Channel events now go through notifyAlertFn,
+// NOT the plain-text notifyFn, so all service-ops alerts render identically.
 func TestWebhookHandler_EventClassifier(t *testing.T) {
 	cases := []struct {
 		name           string
+		path           string
 		body           string
 		wantInbound    bool
-		wantNotify     bool
+		wantNotify     bool // plain-text notifyFn
+		wantAlertCard  bool // notifyAlertFn (card path)
 		wantStatusBody string
 	}{
 		{
 			name:           "legacy_no_event_field_publishes_to_bus",
-			body:           `{"message":"[piter] VPN WATCHDOG: Switched to ch2"}`,
+			path:           "/webhook",
+			body:           `{"message":"some opaque external alert"}`,
 			wantInbound:    true,
-			wantNotify:     false,
 			wantStatusBody: `"accepted"`,
 		},
 		{
 			name:           "active_probe_dropped_silently",
+			path:           "/webhook",
 			body:           `{"event":"active_probe","src_ip":"70.34.243.184","container":"xray-reality"}`,
-			wantInbound:    false,
-			wantNotify:     false,
 			wantStatusBody: `"dropped"`,
 		},
 		{
-			name:           "channel_dead_forwards_to_telegram_no_llm",
+			name:           "channel_dead_renders_card_no_llm",
+			path:           "/webhook",
 			body:           `{"event":"channel_dead","channel":"ch1","fails":3,"message":"[piter] CH1 DEAD"}`,
-			wantInbound:    false,
-			wantNotify:     true,
+			wantAlertCard:  true,
 			wantStatusBody: `"forwarded"`,
 		},
 		{
-			name:           "channel_recovered_forwards_to_telegram",
+			name:           "channel_recovered_renders_card",
+			path:           "/webhook",
 			body:           `{"event":"channel_recovered","channel":"ch1","fails":0,"message":"[piter] CH1 RECOVERED"}`,
-			wantInbound:    false,
-			wantNotify:     true,
+			wantAlertCard:  true,
 			wantStatusBody: `"forwarded"`,
 		},
 		{
 			name:           "unknown_event_ignored",
+			path:           "/webhook",
 			body:           `{"event":"some_future_thing","data":"whatever"}`,
-			wantInbound:    false,
-			wantNotify:     false,
 			wantStatusBody: `"ignored"`,
 		},
 		{
 			name:           "channel_dead_without_message_synthesizes_one",
+			path:           "/webhook",
 			body:           `{"event":"channel_dead","channel":"ch2","fails":3,"last_error":"stale handshake"}`,
-			wantInbound:    false,
-			wantNotify:     true,
+			wantAlertCard:  true,
 			wantStatusBody: `"forwarded"`,
 		},
 	}
@@ -154,15 +157,12 @@ func TestWebhookHandler_EventClassifier(t *testing.T) {
 			msgBus := bus.New()
 			defer msgBus.Close()
 
-			var notifyCount atomic.Int32
-			var notifyMsg atomic.Value
-			notifyFn := func(text string) {
-				notifyCount.Add(1)
-				notifyMsg.Store(text)
-			}
+			var notifyCount, alertCount atomic.Int32
+			notifyFn := func(string) { notifyCount.Add(1) }
+			notifyAlertFn := func([]engine.Alert, string) { alertCount.Add(1) }
 
 			mx := http.NewServeMux()
-			registerWebhookHandler(mx, msgBus, notifyFn)
+			registerWebhookHandler(mx, msgBus, notifyFn, notifyAlertFn)
 
 			// Drain inbound bus to observe publishes.
 			var inboundCount atomic.Int32
@@ -181,7 +181,7 @@ func TestWebhookHandler_EventClassifier(t *testing.T) {
 				}
 			}()
 
-			req := httptest.NewRequest(http.MethodPost, "/webhook/monitor/healthcheck",
+			req := httptest.NewRequest(http.MethodPost, tc.path,
 				bytes.NewReader([]byte(tc.body)))
 			req.Header.Set("Content-Type", "application/json")
 			rr := httptest.NewRecorder()
@@ -207,6 +207,114 @@ func TestWebhookHandler_EventClassifier(t *testing.T) {
 				t.Errorf("expected notifyFn call, got none")
 			} else if !tc.wantNotify && got != 0 {
 				t.Errorf("expected NO notifyFn call, got %d", got)
+			}
+			if got := alertCount.Load(); tc.wantAlertCard && got == 0 {
+				t.Errorf("expected notifyAlertFn (card) call, got none")
+			} else if !tc.wantAlertCard && got != 0 {
+				t.Errorf("expected NO notifyAlertFn call, got %d", got)
+			}
+		})
+	}
+}
+
+// TestMonitorHealthcheckHandler_RendersCardNeverLLM is the regression guard for
+// the consolidation: the partner-edge fleet + piter scripts POST
+// {"message":"..."} to /webhook/monitor/healthcheck. That path MUST render a
+// deterministic alert card (notifyAlertFn) and MUST NEVER reach the agent loop
+// (PublishInbound). Severity is classified lexically from the message text.
+func TestMonitorHealthcheckHandler_RendersCardNeverLLM(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		wantLevel engine.AlertLevel
+	}{
+		{
+			name:      "edge_transition_down_is_critical",
+			body:      `{"message":"[edge-ru1] TRANSITION upstream=coturn-tls healthy -> dead"}`,
+			wantLevel: engine.AlertCritical,
+		},
+		{
+			name:      "vpn_failover_default_warning",
+			body:      `{"message":"[piter] SNI rotated to cloudflare.com"}`,
+			wantLevel: engine.AlertWarning,
+		},
+		{
+			name:      "recovered_is_info",
+			body:      `{"message":"[edge-ru1] TRANSITION upstream=coturn-udp dead -> recovered"}`,
+			wantLevel: engine.AlertInfo,
+		},
+		{
+			name:      "stale_handshake_is_error",
+			body:      `{"message":"[motherly] xray-update: stale config detected"}`,
+			wantLevel: engine.AlertError,
+		},
+		{
+			name:      "malformed_non_json_safe_default",
+			body:      `not json at all`,
+			wantLevel: engine.AlertWarning,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgBus := bus.New()
+			defer msgBus.Close()
+
+			var gotAlerts atomic.Value
+			var alertCount atomic.Int32
+			notifyAlertFn := func(alerts []engine.Alert, _ string) {
+				alertCount.Add(1)
+				gotAlerts.Store(alerts)
+			}
+
+			mx := http.NewServeMux()
+			registerWebhookHandler(mx, msgBus, func(string) {}, notifyAlertFn)
+
+			// Watch the inbound bus — it must stay empty (no LLM loop).
+			var inboundCount atomic.Int32
+			var wg sync.WaitGroup
+			consumeCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					_, ok := msgBus.ConsumeInbound(consumeCtx)
+					if !ok {
+						return
+					}
+					inboundCount.Add(1)
+				}
+			}()
+
+			req := httptest.NewRequest(http.MethodPost, "/webhook/monitor/healthcheck",
+				bytes.NewReader([]byte(tc.body)))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			mx.ServeHTTP(rr, req)
+
+			time.Sleep(20 * time.Millisecond)
+			cancel()
+			wg.Wait()
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d, body %s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), `"carded"`) {
+				t.Errorf("body = %q, want carded", rr.Body.String())
+			}
+			if got := inboundCount.Load(); got != 0 {
+				t.Errorf("monitor message reached the LLM loop (PublishInbound=%d) — must NEVER happen", got)
+			}
+			if got := alertCount.Load(); got != 1 {
+				t.Fatalf("notifyAlertFn called %d times, want exactly 1", got)
+			}
+			alerts, _ := gotAlerts.Load().([]engine.Alert)
+			if len(alerts) != 1 {
+				t.Fatalf("got %d alerts, want 1", len(alerts))
+			}
+			if alerts[0].Level != tc.wantLevel {
+				t.Errorf("level = %q, want %q (title=%q)", alerts[0].Level, tc.wantLevel, alerts[0].Title)
 			}
 		})
 	}

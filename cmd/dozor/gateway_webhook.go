@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/bus"
+	"github.com/anatolykoptev/dozor/internal/engine"
 	kitratelimit "github.com/anatolykoptev/go-kit/ratelimit"
 )
 
@@ -105,15 +106,21 @@ var trustProxy = false
 // Events are classified by the `event` JSON field so we don't burn an LLM
 // loop on noise:
 //
-//   - channel_dead, channel_recovered → forwarded to the admin TG chat
-//     directly via notifyFn (bypasses the agent loop)
+//   - channel_dead, channel_recovered → rendered as a deterministic alert
+//     card via notifyAlertFn (bypasses the agent loop)
 //   - active_probe → dropped with 202 (deprecated noise source; pre-empt
 //     anything that still POSTs here while we decommission active-probe-canary)
 //   - (no `event` field) → legacy path, PublishInbound to the agent loop
 //     (preserves vpn-watchdog behaviour, which posts {"message":...})
 //   - any other event name → logged + 202, not sent to LLM (deny-by-default
 //     so a typo or new source can't re-flood the agent)
-func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(string)) {
+//
+// A SEPARATE explicit route, POST /webhook/monitor/healthcheck, is registered
+// alongside (see monitorHealthcheckHandler). Without it, that path would match
+// the POST /webhook/ trailing-slash prefix and fall into the legacy LLM branch
+// — exactly what the partner-edge fleet + piter scripts hit. The explicit route
+// renders those {"message":...} posts as deterministic alert cards instead.
+func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(string), notifyAlertFn func([]engine.Alert, string)) {
 	secret := os.Getenv("DOZOR_WEBHOOK_SECRET")
 	if secret == "" {
 		slog.Warn("webhook handler running without HMAC; set DOZOR_WEBHOOK_SECRET to enforce")
@@ -157,7 +164,8 @@ func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(st
 				slog.String("event", p.Event),
 				slog.String("channel", p.Channel),
 				slog.Int("fails", p.Fails))
-			notifyFn(channelEventMessage(p))
+			alert := channelEventAlert(p)
+			notifyAlertFn([]engine.Alert{alert}, channelEventMessage(p))
 			respondStatus(w, "forwarded")
 
 		case "":
@@ -188,6 +196,151 @@ func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(st
 
 	mx.HandleFunc("POST /webhook", handler)
 	mx.HandleFunc("POST /webhook/", handler)
+	mx.HandleFunc("POST /webhook/monitor/healthcheck", monitorHealthcheckHandler(secret, notifyAlertFn))
+}
+
+// monitorHealthcheckHandler renders the {"message":"..."} posts from the
+// partner-edge fleet (telegram-alert-lib.sh) and the piter/krolik scripts
+// (vpn-watchdog, rotate-sni, xray-update, oxpulse-sfu-update) as deterministic
+// alert cards.
+//
+// These senders POST a single pre-formatted prose string and NO structured
+// fields, so severity is classified from the text via classifyMonitorMessage —
+// purely lexical, NO LLM. The handler NEVER calls msgBus.PublishInbound, so a
+// monitor post can never reach the agent loop (the bug this route fixes: Go's
+// ServeMux previously matched this path via the POST /webhook/ prefix and fell
+// into the legacy LLM branch).
+//
+// The route is backward-compatible: it parses exactly the payload the existing
+// senders already POST, so no edge-fleet redeploy is required.
+func monitorHealthcheckHandler(secret string, notifyAlertFn func([]engine.Alert, string)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := webhookSourceKey(r)
+		if !webhookLimiter.Allow(key) {
+			slog.Warn("monitor webhook rate-limited",
+				slog.String("source", key),
+				slog.String("path", r.URL.Path))
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, webhookBodyLimit))
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !checkWebhookSignature(body, r, secret) {
+			slog.Warn("monitor webhook signature mismatch",
+				slog.String("source", key),
+				slog.String("path", r.URL.Path))
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		_, text := parseWebhookPayload(body)
+		alert := classifyMonitorMessage(text)
+
+		slog.Info("monitor webhook card",
+			slog.String("source", key),
+			slog.String("level", string(alert.Level)),
+			slog.Int("len", len(text)))
+		notifyAlertFn([]engine.Alert{alert}, text)
+		respondStatus(w, "carded")
+	}
+}
+
+// monitor severity keyword sets, checked in priority order (critical wins over
+// error wins over recovered). All matching is case-insensitive substring on the
+// lower-cased message. An unmatched message defaults to AlertWarning — these
+// scripts mostly post routine update/rotation/failover events, and warning is
+// the safe non-alarming-but-visible default that still renders a card.
+var (
+	monitorCriticalWords  = []string{"dead", "down", "fail", "unreachable", "outage", "critical", "blackhole", "blocked"}
+	monitorErrorWords     = []string{"error", "degraded", "stale", "timeout", "stall", "drop"}
+	monitorRecoveredWords = []string{"recovered", "restored", "back up", "healthy", "success", "ok", " up ", "switched"}
+)
+
+// classifyMonitorMessage maps a free-form monitor message to an engine.Alert
+// with a deterministically-chosen severity. Pure lexical classification — no LLM.
+func classifyMonitorMessage(message string) engine.Alert {
+	text := strings.TrimSpace(message)
+	if text == "" {
+		text = "(empty monitor message)"
+	}
+	lower := strings.ToLower(text)
+
+	// Transition messages have the shape "... <prev> -> <cur>" (partner-edge
+	// channel-health, vpn-watchdog). The TARGET state (after the last arrow)
+	// is what determines severity — "dead -> recovered" is a recovery, not an
+	// outage. Classify on the post-arrow slice so the prev state can't bias it.
+	classifyOn := lower
+	if i := strings.LastIndex(lower, "->"); i >= 0 {
+		classifyOn = lower[i+2:]
+	}
+
+	level := engine.AlertWarning // safe default for routine update/rotation events
+	switch {
+	case containsAny(classifyOn, monitorCriticalWords):
+		level = engine.AlertCritical
+	case containsAny(classifyOn, monitorErrorWords):
+		level = engine.AlertError
+	case containsAny(classifyOn, monitorRecoveredWords):
+		level = engine.AlertInfo
+	}
+
+	// The message is the human-facing line; use its first line as the title and
+	// keep the full text as the description so multi-line prose survives.
+	title := text
+	if nl := strings.IndexByte(title, '\n'); nl >= 0 {
+		title = title[:nl]
+	}
+	description := ""
+	if title != text {
+		description = text
+	}
+
+	return engine.Alert{
+		Level:       level,
+		Service:     "monitor",
+		Title:       title,
+		Description: description,
+		Timestamp:   time.Now(),
+	}
+}
+
+// containsAny reports whether haystack contains any of needles.
+func containsAny(haystack string, needles []string) bool {
+	for _, n := range needles {
+		if strings.Contains(haystack, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// channelEventAlert maps a classified channel_dead / channel_recovered webhook
+// to an engine.Alert so it renders as a card like every other service-ops alert.
+// channel_recovered is informational; channel_dead is critical.
+func channelEventAlert(p webhookPayload) engine.Alert {
+	level := engine.AlertCritical
+	if p.Event == "channel_recovered" {
+		level = engine.AlertInfo
+	}
+	title := channelEventMessage(p)
+	desc := ""
+	if p.LastError != "" {
+		desc = "last_error: " + p.LastError
+	}
+	service := "channel"
+	if p.Channel != "" {
+		service = "channel:" + p.Channel
+	}
+	return engine.Alert{
+		Level:       level,
+		Service:     service,
+		Title:       title,
+		Description: desc,
+		Timestamp:   time.Now(),
+	}
 }
 
 // parseWebhookPayload extracts the classified payload and the best available
