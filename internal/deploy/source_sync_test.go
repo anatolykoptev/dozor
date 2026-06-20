@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -211,7 +212,7 @@ func TestSyncSourceCheckout_OnBranch(t *testing.T) {
 		}
 	})
 
-	t.Run("ff_pull_refused_is_diverged", func(t *testing.T) {
+	t.Run("ff_pull_refused_with_commits_ahead_is_diverged", func(t *testing.T) {
 		withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
 		withGitRevParse(t, func(_ context.Context, _, ref string) (string, error) {
 			if ref == "FETCH_HEAD" {
@@ -220,6 +221,14 @@ func TestSyncSourceCheckout_OnBranch(t *testing.T) {
 			return "old", nil
 		})
 		withGitPullFF(t, func(_ context.Context, _, _ string) error { return errors.New("not a fast-forward") })
+		// P0 classifier: ff-refuse → diverged ONLY when there are local commits
+		// ahead of origin. ahead>0 here makes the divergence genuine.
+		withGitRevListCount(t, func(_ context.Context, _, revRange string) (int, error) {
+			if strings.HasSuffix(revRange, "..HEAD") {
+				return 1, nil // ahead == 1 → genuine divergence
+			}
+			return 0, nil
+		})
 
 		got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
 		if got != syncDiverged {
@@ -415,6 +424,7 @@ func TestDeploySourceSyncTotal_Registered(t *testing.T) {
 	for _, res := range []sourceSyncOutcome{
 		syncUpToDate, syncFFUpdated, syncDirtySkipped, syncLockedSkipped,
 		syncDisabled, syncCheckedOutElsewhere, syncDiverged, syncError,
+		syncUntrackedCollision, syncFFAfterQuarantine, syncQuarantineCapped,
 	} {
 		// Must accept exactly (repo, result) — wrong arity panics.
 		DeploySourceSyncTotal.WithLabelValues("test/repo", string(res)).Inc()
