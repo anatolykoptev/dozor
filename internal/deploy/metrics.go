@@ -149,7 +149,10 @@ var (
 	//   "skipped_locked"       — .git/index.lock present (a concurrent build/agent/timer holds the index)
 	//   "skipped_disabled"     — DOZOR_DEPLOY_SOURCE_SYNC not set truthy (the default)
 	//   "checked_out_elsewhere"— target branch checked out in another worktree; ref left as-is (benign)
-	//   "skipped_diverged"     — local default branch diverged / has commits ahead; ff refused (benign)
+	//   "skipped_diverged"     — local default branch has commits AHEAD of origin (rev-list --count origin/<b>..HEAD > 0); ff refused (benign). NEVER a catch-all for "ff failed".
+	//   "skipped_untracked_collision" — clean ancestor (ahead==0, tracked==0) whose ff was blocked by an untracked file shadowing an incoming tracked path; auto-fixable, left untouched when quarantine is off or the retry still failed
+	//   "ff_after_quarantine"  — an untracked-collision was auto-resolved: colliding untracked files moved to ~/tmp/git-sync-quarantine and the ff then succeeded (DOZOR_DEPLOY_SOURCE_SYNC_QUARANTINE)
+	//   "skipped_quarantine_capped" — >200 untracked colliders; refused bulk-move, escalated to a human
 	//   "error"                — a git command failed unexpectedly; checkout left as-is
 	//   "panic"                — the sync goroutine panicked and was recovered (must never happen; alert if seen)
 	//

@@ -1,0 +1,29 @@
+# sync-classification.golden.tsv — the shared classification contract for the
+# repo-sync ff-collision taxonomy. Read by BOTH the Go test
+# (TestClassifySyncState_Golden in source_sync_classify_test.go) and the shell
+# test (~/bin/git-sync-classify_test.sh). A row that drifts in either impl
+# fails its test, so the two classifiers cannot silently diverge.
+#
+# Columns (tab-separated):
+#   name                 — case label
+#   tracked              — count of tracked (staged/unstaged) working-tree changes
+#   ahead                — rev-list --count origin/<b>..HEAD (local commits not on origin)
+#   behind               — rev-list --count HEAD..origin/<b> (origin commits not local)
+#   untracked_collision  — 1 if an untracked file shadows an incoming tracked path, else 0
+#   quarantine           — 1 if DOZOR_DEPLOY_SOURCE_SYNC_QUARANTINE / GIT_SYNC_QUARANTINE is on, else 0
+#   expected             — the result label both impls must produce
+#
+# Decision order (load-bearing): tracked-dirty BEFORE diverged BEFORE up-to-date
+# BEFORE the clean-ancestor ff/collision branch.
+#
+# name	tracked	ahead	behind	untracked_collision	quarantine	expected
+tracked_dirty_alone	1	0	1	0	0	skipped_dirty
+tracked_dirty_with_collision	1	0	1	1	1	skipped_dirty
+tracked_dirty_beats_diverged	1	2	1	0	0	skipped_dirty
+diverged_ahead_only	0	1	0	0	0	skipped_diverged
+diverged_ahead_and_behind	0	3	2	0	0	skipped_diverged
+diverged_beats_collision	0	1	1	1	1	skipped_diverged
+up_to_date_clean	0	0	0	0	0	up_to_date
+clean_ancestor_ff_ok	0	0	1	0	0	ff_updated
+clean_ancestor_collision_quarantine_off	0	0	1	1	0	skipped_untracked_collision
+clean_ancestor_collision_quarantine_on	0	0	1	1	1	ff_after_quarantine
