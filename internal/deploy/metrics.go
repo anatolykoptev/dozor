@@ -41,6 +41,32 @@ var (
 		Help: "Durable-debounce lifecycle events (persist/reload/rearm/fire_on_boot/stale_skip) for restart-survival of queued builds.",
 	}, []string{"repo", "service", "op"})
 
+	// QueuePersistTotal makes the durable-BUILD-QUEUE lifecycle observable so a
+	// future regression of the VOLATILE-PENDING-STATE class AT THE QUEUE LAYER
+	// (a queued-or-in-flight build lost on dozor restart, downstream of the
+	// debounce fix in dozor_deploy_debounce_persist_total) surfaces as telemetry,
+	// not silence. The debounce file only protects a build still within its quiet
+	// window; once it FIRES into the queue it lives only in the in-memory pending
+	// map + busySHA tracker, which this counter's underlying persistence closes.
+	//
+	// op label values:
+	//   "persist"        — one atomic write of the queue set (pending + in-flight) succeeded (per WRITE, not per entry)
+	//   "persist_error"  — an atomic write failed (state file may be stale; build still queued in-memory)
+	//   "reload_error"   — boot RecoverQueue could not read or parse the state file (per RELOAD, not per entry);
+	//                      EVERY queued/in-flight build it held is lost — the silent-failure hole on the
+	//                      recovery path itself, so a non-zero value must alert
+	//   "recover"        — a survivor (queued or interrupted-in-flight) was re-enqueued through Submit on boot
+	//   "stale_skip"     — a survivor's commit was already the deployed HEAD; no rebuild
+	//
+	// Label semantics mirror dozor_deploy_debounce_persist_total: "persist",
+	// "persist_error" and "reload_error" are per-WHOLE-FILE events with empty
+	// repo/service (one write/read covers the whole queue set). "recover" and
+	// "stale_skip" are per-ENTRY recovery events and carry real repo/service labels.
+	QueuePersistTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_deploy_queue_persist_total",
+		Help: "Durable build-queue lifecycle events (persist/reload/recover/stale_skip) for restart-survival of queued + in-flight builds.",
+	}, []string{"repo", "service", "op"})
+
 	// SkippedTotal counts deploys that were skipped before queueing.
 	// `reason` is one of: "no_relevant_paths", "explicit_skip".
 	SkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{

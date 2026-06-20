@@ -70,10 +70,30 @@ type Queue struct {
 	mu       sync.Mutex
 	pending  map[string]BuildRequest // service-key â next-to-build (newest-wins)
 	busySHA  map[string]string       // service-key â SHA currently building (active)
+	busyReq  map[string]BuildRequest // service-key -> full request currently building (for restart-survival persistence)
 	signal   chan struct{}           // worker wake-up (buffered N)
 
 	// For tests: visibility into the building set without exposing busySHA's SHA.
 	building map[string]bool
+
+	// persistPath, when non-empty, enables durable mirroring of the pending +
+	// in-flight set to a JSON file so a process restart can recover queued and
+	// interrupted builds. shaResolver resolves the deployed HEAD for the
+	// no-stale-rebuild guard on recovery. Both are configured via WithPersistence;
+	// zero values keep the queue purely in-memory (original behaviour).
+	// See queue_persist.go (VOLATILE-PENDING-STATE fix, queue layer).
+	persistPath string
+	shaResolver shaResolverFunc
+
+	// drainGate blocks workers from draining pending until boot recovery has
+	// finished. The constructor closes it immediately (workers drain eagerly —
+	// the original behaviour, preserved for every non-persisting caller and all
+	// tests). WithPersistence re-arms it (fresh, unclosed) so that the workers
+	// wait until RecoverQueue has re-enqueued every survivor; RecoverQueue
+	// closes it when recovery completes. This makes the boot invariant
+	// ("pending is fully in place before draining / before the debounce reload")
+	// hold against LIVE workers, not just a single-threaded test harness.
+	drainGate chan struct{}
 
 	// heavySem gates heavy builds: at most one heavy build runs at a time,
 	// regardless of DOZOR_BUILD_CONCURRENCY, to prevent OOM on the ARM host.
@@ -105,12 +125,17 @@ func NewQueueN(ctx context.Context, notify func(string), n int) *Queue {
 		notify:   notify,
 		pending:  make(map[string]BuildRequest),
 		busySHA:  make(map[string]string),
+		busyReq:  make(map[string]BuildRequest),
 		building: make(map[string]bool),
 		signal:   make(chan struct{}, n), // buffered N so all workers can be woken
 		heavySem: semaphore.NewWeighted(1),
-		cancel:   cancel,
-		done:     make(chan struct{}), // closed when all workers have exited
+		cancel:    cancel,
+		done:      make(chan struct{}), // closed when all workers have exited
+		drainGate: make(chan struct{}), // closed below: drain eagerly unless WithPersistence re-arms it
 	}
+	// Default: open the gate immediately so workers drain as soon as work
+	// arrives. WithPersistence re-arms it to defer draining until RecoverQueue.
+	close(q.drainGate)
 	q.wg.Add(n)
 	for range n {
 		go q.worker(ctx)
@@ -200,6 +225,10 @@ func (q *Queue) Submit(req BuildRequest) bool {
 		}
 	}
 	q.pending[key] = req
+	// Mirror the new pending set to disk so this queued build survives a dozor
+	// restart (graceful self-deploy / crash). Best-effort, under q.mu — see
+	// queue_persist.go. No-op when persistence is disabled (tests / zero path).
+	q.persistLocked()
 	slog.Info("deploy: queued",
 		"services", req.Config.Services,
 		"commit", short(req.CommitSHA))
@@ -289,6 +318,15 @@ func (q *Queue) Snapshot() []ServiceQueueState {
 	return out
 }
 
+// gate returns the current drain gate under the mutex, so a worker's read is
+// safe against a concurrent WithPersistence re-arm / RecoverQueue open (the
+// field is reassigned, not just closed).
+func (q *Queue) gate() <-chan struct{} {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.drainGate
+}
+
 func (q *Queue) worker(ctx context.Context) {
 	defer q.wg.Done()
 	for {
@@ -296,6 +334,19 @@ func (q *Queue) worker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-q.signal:
+			// Gate the FIRST drain until boot recovery has finished re-enqueuing
+			// survivors (and the debounce reload has run), so the boot invariant
+			// holds against live workers. With no persistence the gate is closed
+			// at construction → this read returns immediately (original eager
+			// drain). Checked per-signal (not once before the loop) so a
+			// WithPersistence re-arm that lands AFTER the worker goroutine has
+			// started still blocks the next drain rather than racing a one-shot
+			// pre-loop read. A cancelled ctx during recovery still exits promptly.
+			select {
+			case <-ctx.Done():
+				return
+			case <-q.gate():
+			}
 			q.drainPending(ctx)
 		}
 	}
@@ -334,7 +385,12 @@ func (q *Queue) drainPending(ctx context.Context) {
 		}
 		delete(q.pending, pickKey)
 		q.busySHA[pickKey] = pickReq.CommitSHA
+		q.busyReq[pickKey] = pickReq
 		q.building[pickKey] = true
+		// Mirror the pending→in-flight transition: the build is no longer pending
+		// but its full request is now tracked as in-flight, so a restart mid-build
+		// re-enqueues it (interrupted deploy completes) rather than dropping it.
+		q.persistLocked()
 		// Re-signal if more pending work exists so another worker can pick it up.
 		if len(q.pending) > 0 {
 			select {
@@ -348,7 +404,11 @@ func (q *Queue) drainPending(ctx context.Context) {
 
 		q.mu.Lock()
 		delete(q.busySHA, pickKey)
+		delete(q.busyReq, pickKey)
 		delete(q.building, pickKey)
+		// Build finished (success or failure): drop it from the persisted set so a
+		// later restart does not redundantly re-enqueue a completed build.
+		q.persistLocked()
 		q.mu.Unlock()
 		if isHeavy {
 			q.heavySem.Release(1)
