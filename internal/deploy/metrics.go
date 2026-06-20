@@ -135,4 +135,28 @@ var (
 		Name: "dozor_manual_deploy_branch_mismatch_total",
 		Help: "Manual deploy: source clone branch ≠ configured deploy branch (build still uses origin/<configured>).",
 	}, []string{"repo", "configured", "actual"})
+
+	// DeploySourceSyncTotal counts best-effort source-checkout sync attempts run
+	// off the deploy hot path after each build (success or failure). It advances
+	// each repo's ~/src/X default-branch ref to origin so go-code indexes fresh
+	// and the dev checkout stays current, instead of waiting for the hourly
+	// git-sync timer. Default OFF behind DOZOR_DEPLOY_SOURCE_SYNC.
+	//
+	// result label values:
+	//   "up_to_date"           — already at origin, or SourcePath==DeployClonePath guard (no double-pull)
+	//   "ff_updated"           — local default-branch ref was fast-forwarded to origin
+	//   "skipped_dirty"        — tracked working-tree edits present; left untouched (untracked scratch does NOT block)
+	//   "skipped_locked"       — .git/index.lock present (a concurrent build/agent/timer holds the index)
+	//   "skipped_disabled"     — DOZOR_DEPLOY_SOURCE_SYNC not set truthy (the default)
+	//   "checked_out_elsewhere"— target branch checked out in another worktree; ref left as-is (benign)
+	//   "skipped_diverged"     — local default branch diverged / has commits ahead; ff refused (benign)
+	//   "error"                — a git command failed unexpectedly; checkout left as-is
+	//   "panic"                — the sync goroutine panicked and was recovered (must never happen; alert if seen)
+	//
+	// The sync is best-effort and NEVER touches dozor_build_result_total — that
+	// counter's cadence is the control proving the sync is off the critical path.
+	DeploySourceSyncTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_deploy_source_sync_total",
+		Help: "Best-effort source-checkout (~/src/X) ff-sync attempts after each deploy, by outcome.",
+	}, []string{"repo", "result"})
 )
