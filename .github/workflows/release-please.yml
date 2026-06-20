@@ -1,16 +1,14 @@
 name: release-please
 
-# Auto-release: conventional-commit-driven versioning + GoReleaser binaries, in
-# ONE workflow (the release-please + GoReleaser canonical combo). release-please
-# maintains a "chore(main): release X.Y.Z" PR; merging it tags the commit +
-# creates the GitHub release (changelog). GoReleaser then APPENDS the cross-arch
-# binaries (.goreleaser.yaml `release.mode: append`).
+# Conventional-commit-driven versioning ONLY (tag + GitHub release + changelog).
+# This job is lightweight and stays on GitHub-hosted runners (free tier).
 #
-# WHY combined (not a separate tag-triggered release.yml): release-please creates
-# the tag with GITHUB_TOKEN, and a tag pushed by GITHUB_TOKEN does NOT trigger
-# other workflows (GitHub Actions loop-prevention). So GoReleaser must run in the
-# SAME run, gated on `releases_created`, instead of a `on: push: tags` workflow
-# that would silently never fire. Do NOT `git tag` manually.
+# Binaries are NOT built here: GoReleaser cross-compile + docker builds are heavy
+# and would consume PAID GitHub Actions minutes (operator rule: never use paid
+# GHA). The release binaries are built + uploaded LOCALLY on the krolik box by
+# ~/bin/goreleaser-release-local.sh (a systemd timer that detects a new
+# release-please tag whose GitHub release has no binary assets and runs
+# `goreleaser release` on the box). Do NOT add a goreleaser job back here.
 on:
   push:
     branches:
@@ -23,34 +21,10 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    outputs:
-      releases_created: ${{ steps.release-please.outputs.releases_created }}
     steps:
       - uses: googleapis/release-please-action@v4
-        id: release-please
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           target-branch: main
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
-
-  goreleaser:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
