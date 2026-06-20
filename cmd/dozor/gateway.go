@@ -164,9 +164,9 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	mx.Handle("/mcp/", buildMCPHTTPHandler(mcpServer))
 	mx.HandleFunc("GET /health", healthHandler("gateway"))
 	mx.Handle("/metrics", promhttp.Handler())
-	registerWebhookHandler(mx.ServeMux, msgBus, notifyFn)
+	registerWebhookHandler(mx.ServeMux, msgBus, notifyFn, notifyAlertFn)
 	registerAlertmanagerWebhookHandler(mx.ServeMux, notifyAlertFn)
-	registerDeployWebhook(sigCtx, mx.ServeMux, notifyFn)
+	registerDeployWebhook(sigCtx, mx.ServeMux, notifyFn, notifyAlertFn)
 	if dockerCli := eng.DockerClient(); dockerCli != nil {
 		registerLogsHandler(mx.ServeMux, dockerCli)
 	} else {
@@ -245,7 +245,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 
 // registerDeployWebhook sets up the GitHub webhook handler for auto-rebuild.
 // If the deploy config file is missing, the handler is silently skipped.
-func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func(string)) {
+func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func(string), notifyAlertFn func([]engine.Alert, string)) {
 	cfgPath := deploy.DefaultConfigPath()
 	cfg, err := deploy.LoadConfig(cfgPath)
 	if err != nil {
@@ -267,7 +267,7 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 		deployNotifyMode = "failure"
 	}
 	slog.Info("deploy notify mode", slog.String("mode", deployNotifyMode))
-	deployLog := makeDeployLog(deployNotifyMode, notifyFn)
+	deployLog := makeDeployLog(deployNotifyMode, notifyFn, notifyAlertFn)
 	// DOZOR_BUILD_CONCURRENCY controls how many Docker builds may run
 	// concurrently across all service groups. Default 1 preserves the
 	// original serialized behaviour; set to 2 once the ARM host has been
@@ -306,35 +306,74 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 }
 
 // makeDeployLog returns a deploy lifecycle callback that logs every event to
-// journalctl and, based on mode, forwards a filtered subset to Telegram via
-// notifyFn. It also bumps tgNotificationsTotal so suppression is observable.
+// journalctl and, based on mode, forwards a filtered subset to Telegram. It
+// also bumps tgNotificationsTotal so suppression is observable.
+//
+// Deploy FAILURES (❌ error, ⚠️ rollback) render as deterministic alert cards
+// via notifyAlertFn so they are visually identical to every other service-ops
+// alert. Routine ✅ success / 🔨 build-start messages stay plain text (cheap —
+// the operator cares about failure visibility, not routine success chatter).
 //
 // mode values (DOZOR_DEPLOY_NOTIFY):
 //
-//	"failure" (default) — only ❌/⚠️ messages (failures + rollbacks) reach TG.
-//	"all"               — all messages (including ✅ success and 🔨 build-start).
-func makeDeployLog(mode string, notifyFn func(string)) func(string) {
+//	"failure" (default) — only ❌/⚠️ failures + rollbacks reach TG (as cards).
+//	"all"               — also ✅ success and 🔨 build-start (as plain text).
+func makeDeployLog(mode string, notifyFn func(string), notifyAlertFn func([]engine.Alert, string)) func(string) {
 	return func(msg string) {
 		slog.Info("deploy", "msg", msg)
-		isFailure := strings.HasPrefix(msg, "❌") || strings.HasPrefix(msg, "⚠️")
+		isError := strings.HasPrefix(msg, "❌")
+		isRollback := strings.HasPrefix(msg, "⚠️")
+		isFailure := isError || isRollback
 		isSuccess := strings.HasPrefix(msg, "✅")
+
+		notifyFailureCard := func() {
+			level := engine.AlertCritical
+			if isRollback {
+				level = engine.AlertWarning
+			}
+			notifyAlertFn([]engine.Alert{{
+				Level:       level,
+				Service:     "deploy",
+				Title:       deployAlertTitle(msg),
+				Description: msg,
+				Timestamp:   time.Now(),
+			}}, msg)
+		}
+
 		switch mode {
 		case "all":
-			notifyFn(msg)
 			if isFailure {
+				notifyFailureCard()
 				tgNotificationsTotal.WithLabelValues("deploy_failure", "sent").Inc()
-			} else if isSuccess {
-				tgNotificationsTotal.WithLabelValues("deploy_success", "sent").Inc()
+			} else {
+				notifyFn(msg)
+				if isSuccess {
+					tgNotificationsTotal.WithLabelValues("deploy_success", "sent").Inc()
+				}
 			}
 		default: // "failure"
 			if isFailure {
-				notifyFn(msg)
+				notifyFailureCard()
 				tgNotificationsTotal.WithLabelValues("deploy_failure", "sent").Inc()
 			} else if isSuccess {
 				tgNotificationsTotal.WithLabelValues("deploy_success", "suppressed").Inc()
 			}
 		}
 	}
+}
+
+// deployAlertTitle strips the leading emoji marker and returns the first line of
+// a deploy message for use as the alert-card title (the full message stays in
+// the card description / text fallback).
+func deployAlertTitle(msg string) string {
+	title := strings.TrimSpace(strings.TrimLeft(msg, "❌⚠️✅🔨 "))
+	if nl := strings.IndexByte(title, '\n'); nl >= 0 {
+		title = title[:nl]
+	}
+	if title == "" {
+		return "deploy event"
+	}
+	return title
 }
 
 // resolveAdminChatID returns the Telegram admin chat ID for internal notifications.
