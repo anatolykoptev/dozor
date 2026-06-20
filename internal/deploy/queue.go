@@ -395,6 +395,34 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 		BuildResultTotal.WithLabelValues(req.Repo, svc, status).Inc()
 	}
 
+	// Best-effort source-checkout sync, OFF the critical path: advance this
+	// repo's ~/src/X default-branch ref to origin so go-code indexes fresh and
+	// the dev checkout stays current. Runs UNCONDITIONALLY (success OR failure —
+	// a failed build can still have merged new commits to origin), in a detached
+	// goroutine with its own timeout + recover, so a sync hang/panic/error can
+	// never block, delay, or fail the deploy or touch BuildResult. Default OFF
+	// behind DOZOR_DEPLOY_SOURCE_SYNC (the flag check inside syncSourceCheckout
+	// records "skipped_disabled" — we always launch so the disabled path is
+	// observable).
+	if req.Config.SourcePath != "" {
+		// G118: context.Background() is DELIBERATE here, not the deploy ctx — the
+		// sync must outlive a cancelled deploy and own its independent 60s timeout
+		// so it can never block the worker (architect Decision 4, failure isolation).
+		//nolint:gosec // G118: independent timeout context is the isolation requirement
+		go func(repo, src, clone string) {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("deploy: source sync goroutine panicked", "repo", repo, "source", src, "panic", r)
+					DeploySourceSyncTotal.WithLabelValues(repo, "panic").Inc()
+				}
+			}()
+			sctx, cancel := context.WithTimeout(context.Background(), sourceSyncTimeout)
+			defer cancel()
+			res := syncSourceCheckout(sctx, repo, src, clone)
+			DeploySourceSyncTotal.WithLabelValues(repo, string(res)).Inc()
+		}(req.Repo, req.Config.SourcePath, req.Config.DeployClonePath)
+	}
+
 	if result.Success {
 		q.notify(fmt.Sprintf(
 			"✅ [%s] Deployed (%s)", services, result.Duration.Round(time.Second)))
