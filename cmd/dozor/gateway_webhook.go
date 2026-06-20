@@ -249,14 +249,20 @@ func monitorHealthcheckHandler(secret string, notifyAlertFn func([]engine.Alert,
 }
 
 // monitor severity keyword sets, checked in priority order (critical wins over
-// error wins over recovered). All matching is case-insensitive substring on the
-// lower-cased message. An unmatched message defaults to AlertWarning — these
-// scripts mostly post routine update/rotation/failover events, and warning is
-// the safe non-alarming-but-visible default that still renders a card.
+// error wins over recovered). Matching is WHOLE-WORD (token) not substring —
+// critical: "unhealthy" must not collide with recovered: "healthy", and
+// "failover" (routine) must not match critical "failed". Tokens are the
+// lower-cased message split on non-alphanumeric runes. An unmatched message
+// defaults to AlertWarning — these scripts mostly post routine update/rotation/
+// failover events, and warning is the safe non-alarming-but-visible default.
+//
+// Real transition vocabulary (oxpulse-channels-health-report.sh): the states
+// are "healthy" / "unhealthy", so "healthy -> unhealthy" (a relay going DOWN)
+// MUST classify critical and "unhealthy -> healthy" (recovery) MUST be info.
 var (
-	monitorCriticalWords  = []string{"dead", "down", "fail", "unreachable", "outage", "critical", "blackhole", "blocked"}
-	monitorErrorWords     = []string{"error", "degraded", "stale", "timeout", "stall", "drop"}
-	monitorRecoveredWords = []string{"recovered", "restored", "back up", "healthy", "success", "ok", " up ", "switched"}
+	monitorCriticalTokens  = map[string]struct{}{"dead": {}, "down": {}, "failed": {}, "failure": {}, "unhealthy": {}, "unreachable": {}, "outage": {}, "critical": {}, "blackhole": {}, "blocked": {}}
+	monitorErrorTokens     = map[string]struct{}{"error": {}, "degraded": {}, "stale": {}, "timeout": {}, "stall": {}, "dropping": {}}
+	monitorRecoveredTokens = map[string]struct{}{"recovered": {}, "restored": {}, "healthy": {}, "success": {}, "ok": {}, "up": {}, "switched": {}}
 )
 
 // classifyMonitorMessage maps a free-form monitor message to an engine.Alert
@@ -270,20 +276,22 @@ func classifyMonitorMessage(message string) engine.Alert {
 
 	// Transition messages have the shape "... <prev> -> <cur>" (partner-edge
 	// channel-health, vpn-watchdog). The TARGET state (after the last arrow)
-	// is what determines severity — "dead -> recovered" is a recovery, not an
-	// outage. Classify on the post-arrow slice so the prev state can't bias it.
+	// is what determines severity — "unhealthy -> healthy" is a recovery, not
+	// an outage. Classify on the post-arrow slice so the prev state can't bias
+	// it (otherwise "healthy -> unhealthy" would see both tokens).
 	classifyOn := lower
 	if i := strings.LastIndex(lower, "->"); i >= 0 {
 		classifyOn = lower[i+2:]
 	}
+	tokens := tokenizeWords(classifyOn)
 
 	level := engine.AlertWarning // safe default for routine update/rotation events
 	switch {
-	case containsAny(classifyOn, monitorCriticalWords):
+	case hasAnyToken(tokens, monitorCriticalTokens):
 		level = engine.AlertCritical
-	case containsAny(classifyOn, monitorErrorWords):
+	case hasAnyToken(tokens, monitorErrorTokens):
 		level = engine.AlertError
-	case containsAny(classifyOn, monitorRecoveredWords):
+	case hasAnyToken(tokens, monitorRecoveredTokens):
 		level = engine.AlertInfo
 	}
 
@@ -307,10 +315,19 @@ func classifyMonitorMessage(message string) engine.Alert {
 	}
 }
 
-// containsAny reports whether haystack contains any of needles.
-func containsAny(haystack string, needles []string) bool {
-	for _, n := range needles {
-		if strings.Contains(haystack, n) {
+// tokenizeWords lower-cased-splits s into whole words on any non-alphanumeric
+// rune, so "healthy -> unhealthy" yields ["healthy","unhealthy"] (distinct) and
+// "task failover complete" yields ["task","failover","complete"] (no "failed").
+func tokenizeWords(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	})
+}
+
+// hasAnyToken reports whether any token is present in set (exact word match).
+func hasAnyToken(tokens []string, set map[string]struct{}) bool {
+	for _, t := range tokens {
+		if _, ok := set[t]; ok {
 			return true
 		}
 	}

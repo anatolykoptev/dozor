@@ -229,22 +229,34 @@ func TestMonitorHealthcheckHandler_RendersCardNeverLLM(t *testing.T) {
 		wantLevel engine.AlertLevel
 	}{
 		{
-			name:      "edge_transition_down_is_critical",
-			body:      `{"message":"[edge-ru1] TRANSITION upstream=coturn-tls healthy -> dead"}`,
+			// REAL partner-edge transition vocabulary: states are healthy /
+			// unhealthy (oxpulse-channels-health-report.sh). A relay going DOWN
+			// MUST be critical — and "unhealthy" must NOT collide with the
+			// "healthy" recovered token.
+			name:      "edge_transition_to_unhealthy_is_critical",
+			body:      `{"message":"[edge-ru1] TRANSITION upstream=coturn-tls healthy -> unhealthy"}`,
 			wantLevel: engine.AlertCritical,
 		},
 		{
-			name:      "vpn_failover_default_warning",
+			// Recovery: target state is healthy → info.
+			name:      "edge_transition_to_healthy_is_info",
+			body:      `{"message":"[edge-ru1] TRANSITION upstream=coturn-udp unhealthy -> healthy"}`,
+			wantLevel: engine.AlertInfo,
+		},
+		{
+			// "failover" is a routine operation and must NOT match critical
+			// "failed"/"failure" — whole-word matching guards this.
+			name:      "routine_failover_is_warning_not_critical",
+			body:      `{"message":"[piter] vpn-watchdog: failover to ch2 complete"}`,
+			wantLevel: engine.AlertWarning,
+		},
+		{
+			name:      "vpn_sni_rotation_default_warning",
 			body:      `{"message":"[piter] SNI rotated to cloudflare.com"}`,
 			wantLevel: engine.AlertWarning,
 		},
 		{
-			name:      "recovered_is_info",
-			body:      `{"message":"[edge-ru1] TRANSITION upstream=coturn-udp dead -> recovered"}`,
-			wantLevel: engine.AlertInfo,
-		},
-		{
-			name:      "stale_handshake_is_error",
+			name:      "stale_config_is_error",
 			body:      `{"message":"[motherly] xray-update: stale config detected"}`,
 			wantLevel: engine.AlertError,
 		},
