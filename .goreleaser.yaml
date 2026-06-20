@@ -28,6 +28,12 @@ archives:
       {{- if eq .Arch "amd64" }}x86_64
       {{- else }}{{ .Arch }}{{ end }}
 
+release:
+  # release-please already created the GitHub release (tag + changelog) by the
+  # time GoReleaser runs in release-please.yml — append the binaries to it
+  # instead of trying to create it again (which would fail).
+  mode: append
+
 changelog:
   sort: asc
   groups:
