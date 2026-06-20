@@ -286,10 +286,21 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 	slog.Info("deploy queue starting",
 		slog.Int("concurrency", buildConcurrency))
 	queue := deploy.NewQueueN(ctx, deployLog, buildConcurrency)
+	// Durable build queue: mirror pending + in-flight builds to
+	// ~/.dozor/deploy-queue.json so they survive a dozor restart (graceful
+	// self-deploy / crash / OOM). See queue_persist.go (VOLATILE-PENDING-STATE
+	// fix, queue layer — downstream of the debounce fix).
+	queue.WithPersistence(deploy.DefaultQueuePersistPath())
 	handler := deploy.NewHandler(cfg, queue, deployLog)
-	// Recover any debounce entries persisted by a previous dozor process so a
-	// queued build is not lost across a restart (graceful self-deploy / crash).
-	// Re-arms / fires / stale-skips through the normal serial queue.
+	// Recover survivors from a previous dozor process. ORDER MATTERS:
+	//  1. RecoverQueue re-enqueues queued + interrupted-in-flight builds, which
+	//     repopulates the queue's pending set, THEN
+	//  2. RecoverPending replays debounce entries — both route through
+	//     Queue.Submit, which dedups by (service-key, SHA), so a commit recovered
+	//     by BOTH layers produces exactly one build (no double-recovery).
+	if err := queue.RecoverQueue(ctx); err != nil {
+		slog.Warn("deploy: queue recovery failed", "error", err)
+	}
 	handler.RecoverPending(ctx)
 	mx.Handle("POST /deploy/github", handler)
 
