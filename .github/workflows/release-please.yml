@@ -1,0 +1,28 @@
+name: release-please
+
+# Auto-release: conventional-commit-driven versioning (industry-standard
+# release-please + GoReleaser combo, aligned with go-kit's release-please.yml).
+# release-please maintains a "chore(main): release X.Y.Z" PR from the feat/fix/
+# chore commits since the last tag; merging it tags the commit + creates the
+# GitHub release (changelog). The separate release.yml then fires on the new v*
+# tag and GoReleaser APPENDS the cross-arch binaries to that release
+# (.goreleaser.yaml `release.mode: append`). Do NOT `git tag` manually.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target-branch: main
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
