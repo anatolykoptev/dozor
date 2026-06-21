@@ -149,11 +149,8 @@ func (l *TGMessageLog) Record(m TGMessage) {
 	if m.Timestamp.IsZero() {
 		m.Timestamp = time.Now()
 	}
-	// Truncate text to bound file size.
-	if len([]rune(m.Text)) > maxTGMessageText {
-		runes := []rune(m.Text)
-		m.Text = string(runes[:maxTGMessageText])
-	}
+	// Truncate text to bound file size (rune-safe).
+	m.Text = TruncateRunes(m.Text, maxTGMessageText)
 
 	l.mu.Lock()
 	l.insertLocked(m)
