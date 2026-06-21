@@ -189,6 +189,15 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	}
 
 	// 6. Telegram channel.
+	// Bind durable TG message log before telegram.Start so the very first sends
+	// are persisted. Flush is deferred for graceful-shutdown persistence.
+	engine.DefaultTGLog.BindPersistence(engine.DefaultTGLogPath())
+	defer func() {
+		if err := engine.DefaultTGLog.Flush(); err != nil {
+			slog.Warn("tg-message-log: shutdown flush failed", slog.Any("error", err))
+		}
+	}()
+
 	if os.Getenv("DOZOR_TELEGRAM_TOKEN") != "" {
 		tg, err := telegram.New(msgBus)
 		if err != nil {

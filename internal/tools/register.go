@@ -39,5 +39,6 @@ func RegisterAllWithOpts(server *mcp.Server, agent *engine.ServerAgent, execOpts
 	registerNuclei(server, agent)
 	registerMetrics(server, agent)
 	registerAlerts(server, agent)
+	registerTGMessages(server, agent)
 	// Web tools moved to extension system (pkg/extensions/websearch/)
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/bus"
+	"github.com/anatolykoptev/dozor/internal/engine"
 	tgfmt "github.com/anatolykoptev/go-kit/telegram"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -188,6 +189,13 @@ func (c *Channel) sendReply(msg bus.Message) {
 			// fall through to text path so the alert still reaches the operator
 		} else {
 			slog.Info("telegram: photo sent", slog.String("chat_id", msg.ChatID), slog.Int("photo_bytes", len(msg.Photo)))
+			engine.DefaultTGLog.Record(engine.TGMessage{
+				Kind:      engine.ClassifyKind(msg.ID),
+				ChatID:    msg.ChatID,
+				Text:      caption,
+				HasPhoto:  true,
+				Timestamp: time.Now(),
+			})
 			return
 		}
 	}
@@ -204,12 +212,26 @@ func (c *Channel) sendReply(msg bus.Message) {
 		slog.Int("length", len(text)))
 
 	htmlText := markdownToTelegramHTML(text)
+	sent := false
 	if err := c.sendChunked(chatID, htmlText, tgbotapi.ModeHTML); err != nil {
 		slog.Warn("telegram: HTML send failed, falling back to plain text", slog.Any("error", err))
 		plain := stripMarkdown(text)
 		if err := c.sendChunked(chatID, plain, ""); err != nil {
 			slog.Error("telegram: send failed", slog.Any("error", err))
+		} else {
+			sent = true
 		}
+	} else {
+		sent = true
+	}
+	if sent {
+		engine.DefaultTGLog.Record(engine.TGMessage{
+			Kind:      engine.ClassifyKind(msg.ID),
+			ChatID:    msg.ChatID,
+			Text:      text,
+			HasPhoto:  false,
+			Timestamp: time.Now(),
+		})
 	}
 }
 
