@@ -264,26 +264,31 @@ func DefaultTGLogPath() string {
 //
 //	"alert-"   prefix           → alert
 //	"notify-"  prefix           → notify
-//	"deploy"   prefix           → deploy
 //	"session-" prefix           → session
 //	"-reply"   suffix           → reply
 //	"-ack"     suffix           → ack  (covers -approval-ack and plain -ack)
+//	"deploy"   prefix           → deploy
 //	"-session" anywhere         → session  (e.g. "<id>-session-xyz")
 //	else                        → other
+//
+// The reply/ack SUFFIX checks precede the "deploy" PREFIX check on purpose: a
+// message-type suffix (e.g. "deploy-webhook-ack") describes what the message IS
+// and wins over the originating subsystem. The alert/notify/session prefixes stay
+// ahead of the suffixes — those subsystems own their message regardless of suffix.
 func ClassifyKind(id string) string {
 	switch {
 	case strings.HasPrefix(id, "alert-"):
 		return TGKindAlert
 	case strings.HasPrefix(id, "notify-"):
 		return TGKindNotify
-	case strings.HasPrefix(id, "deploy"):
-		return TGKindDeploy
 	case strings.HasPrefix(id, "session-"):
 		return TGKindSession
 	case strings.HasSuffix(id, "-reply"):
 		return TGKindReply
 	case strings.HasSuffix(id, "-ack"):
 		return TGKindAck
+	case strings.HasPrefix(id, "deploy"):
+		return TGKindDeploy
 	case strings.Contains(id, "-session"):
 		return TGKindSession
 	default:

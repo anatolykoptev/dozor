@@ -207,6 +207,10 @@ func TestClassifyKind(t *testing.T) {
 		{"notify-boot", TGKindNotify},
 		{"deploy", TGKindDeploy},
 		{"deploy-webhook-start", TGKindDeploy},
+		// suffix wins over the deploy prefix — a deploy-subsystem ack/reply is
+		// classified by its message type, not its origin.
+		{"deploy-webhook-ack", TGKindAck},
+		{"deploy-build-reply", TGKindReply},
 		{"session-abc123", TGKindSession},
 		{"abc123-reply", TGKindReply},
 		{"msg999-reply", TGKindReply},
@@ -316,7 +320,10 @@ func TestTGMessageLog_MissingFileTolerated(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTGMessageLog_ConcurrentRecord(t *testing.T) {
+	// Bind persistence so the concurrent goroutines also exercise the disk-flush
+	// path (Record → writeTGJSONAtomic) under -race, not just the in-memory ring.
 	l := NewTGMessageLog(20)
+	l.BindPersistence(filepath.Join(t.TempDir(), "tg-messages.json"))
 	var wg sync.WaitGroup
 	for i := range 50 {
 		wg.Add(1)
@@ -324,6 +331,7 @@ func TestTGMessageLog_ConcurrentRecord(t *testing.T) {
 			defer wg.Done()
 			l.Record(makeTGMsg(TGKindAlert, "c1", "concurrent"))
 			_ = l.Recent(time.Hour, 10, "")
+			_ = l.Flush()
 		}(i)
 	}
 	wg.Wait()
