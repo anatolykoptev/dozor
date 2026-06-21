@@ -84,15 +84,10 @@ func TestAlertRing_TimeFilter(t *testing.T) {
 	r := NewAlertRing(10)
 	now := time.Now()
 
-	// Old alert — 3h ago.
-	old := makeRingAlert("old-svc", AlertWarning, 0)
-	old.Timestamp = now.Add(-3 * time.Hour)
-	r.Add(old)
-
-	// Recent alert — 10 min ago.
-	rec := makeRingAlert("new-svc", AlertCritical, 0)
-	rec.Timestamp = now.Add(-10 * time.Minute)
-	r.Add(rec)
+	// The time filter keys on DELIVERY time (addAt), not the alert's own
+	// Timestamp — so inject with explicit ingestion times.
+	r.addAt(makeRingAlert("old-svc", AlertWarning, 0), now.Add(-3*time.Hour))
+	r.addAt(makeRingAlert("new-svc", AlertCritical, 0), now.Add(-10*time.Minute))
 
 	// 1h filter: only new-svc should appear.
 	got := r.Recent(time.Hour, 10)
@@ -101,6 +96,35 @@ func TestAlertRing_TimeFilter(t *testing.T) {
 	}
 	if got[0].Service != "new-svc" {
 		t.Errorf("expected new-svc, got %s", got[0].Service)
+	}
+}
+
+// TestAlertRing_AddStampsIngestionTime is the regression guard for the empirically
+// found bug: an alert whose own Timestamp is zero/stale (e.g. an Alertmanager alert
+// delivered without startsAt, or a long-firing alert with an old StartsAt) must still
+// be visible in a since-window, because Add stamps the delivery time.
+func TestAlertRing_AddStampsIngestionTime(t *testing.T) {
+	r := NewAlertRing(5)
+
+	// Alert with a ZERO own-Timestamp (the probe-1 failure mode).
+	a := makeRingAlert("zero-ts-svc", AlertWarning, 0)
+	a.Timestamp = time.Time{}
+	r.Add(a)
+
+	// A long-firing alert whose StartsAt was 6h ago, delivered now.
+	stale := makeRingAlert("stale-start-svc", AlertCritical, 0)
+	stale.Timestamp = time.Now().Add(-6 * time.Hour)
+	r.Add(stale)
+
+	// Both were just delivered, so a 1h window must surface both.
+	got := r.Recent(time.Hour, 10)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 (both stamped at delivery), got %d", len(got))
+	}
+	for _, rec := range got {
+		if rec.Timestamp.IsZero() {
+			t.Errorf("record %q kept a zero timestamp; Add must stamp ingestion time", rec.Service)
+		}
 	}
 }
 
