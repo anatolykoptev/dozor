@@ -23,13 +23,13 @@ const alertsDefaultLimit = 50
 type AlertsActiveInput struct {
 	// Since controls the lookback window for ring (non-Prometheus) alerts.
 	// Accepts Prometheus duration strings: 1h, 30m, 2h. Default: 1h.
-	Since string `json:"since,omitempty" jsonschema:"description=Lookback window for ring (non-Prometheus) alerts — Prometheus duration string e.g. 1h 30m 2h. Default: 1h."`
+	Since string `json:"since,omitempty" jsonschema:"Lookback window for ring (non-Prometheus) alerts as a Go duration string e.g. 1h 30m 2h. Calendar units like 1d/1w are not accepted; use 24h. Default: 1h."`
 
 	// Limit caps the number of ring entries returned. Default: 50.
-	Limit int `json:"limit,omitempty" jsonschema:"description=Maximum ring entries to return. Default: 50."`
+	Limit int `json:"limit,omitempty" jsonschema:"Maximum ring entries to return. Default: 50."`
 
 	// ExcludeFiring omits the live Alertmanager call when true. Default: false (firing alerts are included).
-	ExcludeFiring bool `json:"exclude_firing,omitempty" jsonschema:"description=Set true to skip the live Alertmanager query and return only ring (non-Prometheus) alerts."`
+	ExcludeFiring bool `json:"exclude_firing,omitempty" jsonschema:"Set true to skip the live Alertmanager query and return only ring (non-Prometheus) alerts."`
 }
 
 // AlertsActiveOutput is the output schema for the alerts-active MCP tool.
