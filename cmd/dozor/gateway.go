@@ -112,10 +112,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 			notifyFn(fallbackText)
 			return
 		}
-		caption := fallbackText
-		if len(caption) > 1024 {
-			caption = caption[:1021] + "..."
-		}
+		caption := engine.TruncateRunesEllipsis(fallbackText, engine.MaxCaptionRunes)
 		msgBus.PublishOutbound(bus.Message{
 			ID:        fmt.Sprintf("alert-%d", time.Now().UnixMilli()),
 			Channel:   "telegram",
