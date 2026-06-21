@@ -27,7 +27,9 @@ type AlertRecord struct {
 	Title           string     `json:"title"`
 	Description     string     `json:"description"`
 	SuggestedAction string     `json:"suggested_action,omitempty"`
-	Timestamp       time.Time  `json:"timestamp"`
+	// Timestamp is when dozor delivered this alert to Telegram (ingestion time),
+	// not the alert's own start time — see Add.
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // AlertRing is a fixed-capacity, thread-safe circular buffer of AlertRecord values.
@@ -59,9 +61,20 @@ func NewAlertRing(capacity int) *AlertRing {
 	}
 }
 
-// Add copies relevant fields from a into the ring, overwriting the oldest entry
-// when the ring is full.
+// Add records a as delivered now, overwriting the oldest entry when the ring is full.
+//
+// The stored Timestamp is the INGESTION (Telegram-delivery) time, not the alert's
+// own a.Timestamp. The ring is a delivery log: "recent" must mean recently delivered.
+// The alertmanager path sets a.Timestamp to the alert's StartsAt (when it first began
+// firing, possibly hours ago); a long-firing alert re-delivered now would otherwise
+// fall outside the since-window despite just hitting Telegram. Stamping delivery time
+// also keeps alerts whose source omits a timestamp (zero-value) visible.
 func (r *AlertRing) Add(a Alert) {
+	r.addAt(a, time.Now())
+}
+
+// addAt is the testable core of Add; at is the delivery timestamp recorded.
+func (r *AlertRing) addAt(a Alert, at time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -71,7 +84,7 @@ func (r *AlertRing) Add(a Alert) {
 		Title:           a.Title,
 		Description:     a.Description,
 		SuggestedAction: a.SuggestedAction,
-		Timestamp:       a.Timestamp,
+		Timestamp:       at,
 	}
 	r.next = (r.next + 1) % r.capacity
 	if r.size < r.capacity {
