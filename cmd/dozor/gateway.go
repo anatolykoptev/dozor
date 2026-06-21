@@ -95,6 +95,13 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 			notifyFn(fallbackText)
 			return
 		}
+		// Capture into the active-alert ring so the alerts-active MCP tool can
+		// surface these otherwise fire-and-forget alerts after Telegram delivery.
+		// We record before rendering so that even a satori render failure does
+		// not cause the alert to be omitted from the ring.
+		for i := range alerts {
+			engine.DefaultAlertRing.Add(alerts[i])
+		}
 		renderMu.Lock()
 		card, err := engine.RenderAlertCard(context.Background(), alerts[0])
 		renderMu.Unlock()
