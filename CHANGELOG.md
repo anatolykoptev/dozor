@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.9.0](https://github.com/anatolykoptev/dozor/compare/v1.8.1...v1.9.0) (2026-07-02)
+
+
+### Features
+
+* add alerts-active MCP tool with in-memory alert ring ([#122](https://github.com/anatolykoptev/dozor/issues/122)) ([ce7c35e](https://github.com/anatolykoptev/dozor/commit/ce7c35eaabb6b7c9faf818cb36d635b5d18b3d57))
+* durable Telegram message log + tg-messages MCP tool ([#126](https://github.com/anatolykoptev/dozor/issues/126)) ([72f4e54](https://github.com/anatolykoptev/dozor/commit/72f4e54dc3295103e58f9c6494149a2fb338e3fa))
+
+
+### Bug Fixes
+
+* correct alerts-active jsonschema tags (drop description= prefix) ([#123](https://github.com/anatolykoptev/dozor/issues/123)) ([0de12b2](https://github.com/anatolykoptev/dozor/commit/0de12b2953d475fb6e826282cdfeac9938b11664))
+* ring records Telegram-delivery time, not alert StartsAt ([#125](https://github.com/anatolykoptev/dozor/issues/125)) ([792430c](https://github.com/anatolykoptev/dozor/commit/792430c079ade11f713641bd24224118950bbaf4))
+* rune-safe Telegram caption truncation (Cyrillic corruption) ([#127](https://github.com/anatolykoptev/dozor/issues/127)) ([664a114](https://github.com/anatolykoptev/dozor/commit/664a1145a3bd4f7997d146d6c4a09bd9448f97f2))
+
 ## [1.8.1](https://github.com/anatolykoptev/dozor/compare/v1.8.0...v1.8.1) (2026-06-20)
 
 
