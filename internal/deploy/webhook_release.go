@@ -14,13 +14,22 @@ var gitDiffNameOnlyRunner = defaultGitDiffNameOnlyRunner
 
 //nolint:unused // DI default seam — assigned to var gitDiffNameOnlyRunner, swapped in tests
 func defaultGitDiffNameOnlyRunner(ctx context.Context, dir, from, to string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", from, to) //nolint:gosec // trusted config
+	// from/to originate from webhook payload data (resolved deployed SHA and
+	// release target_commitish) — not operator-authored config. --end-of-options
+	// stops git from parsing either as a flag (e.g. a target_commitish of
+	// "--output=/path" would otherwise make git diff write to an arbitrary
+	// file instead of being read as a revision).
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "--end-of-options", from, to)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff --name-only %s %s: %w", from, to, err)
 	}
-	return strings.Fields(string(out)), nil
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return nil, nil
+	}
+	return strings.Split(trimmed, "\n"), nil
 }
 
 // releaseChangedFiles resolves the real set of files changed by a GitHub
@@ -45,8 +54,14 @@ func defaultGitDiffNameOnlyRunner(ctx context.Context, dir, from, to string) ([]
 // resolved (fresh repo, never deployed), or the git diff itself errors (e.g.
 // the deployed SHA isn't a valid revision in this checkout). Callers MUST
 // treat ok=false as "fall back to the original conservative default" — never
-// as "no files changed" (a resolved-but-empty diff is a real, distinct
-// outcome: files=nil/[], ok=true).
+// as "no files changed".
+//
+// Note: a resolved-but-empty diff (files=nil, ok=true — e.g. deployed already
+// equals targetCommitish) currently degrades to the SAME "build conservatively"
+// outcome as ok=false, because skipByPathFilter's own "elided diff" fallback
+// also fires on a zero-length changed-files list (webhook_dispatch.go). That
+// is safe (never a wasted skip) but not yet a distinct "definitely nothing
+// changed, skip" path — a possible future refinement, out of scope here.
 func releaseChangedFiles(ctx context.Context, rc *RepoConfig, targetCommitish string, resolveSHA shaResolverFunc) (files []string, ok bool) {
 	if resolveSHA == nil {
 		return nil, false

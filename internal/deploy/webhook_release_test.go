@@ -218,3 +218,47 @@ func TestHandler_Release_PathFilter_FallsBackToBuildWhenSHAUnresolvable(t *testi
 			"(deployed SHA unresolvable — must fall back to conservative build, not skip)", resp["status"])
 	}
 }
+
+// TestHandler_Release_PathFilter_FallsBackToBuildWhenTargetCommitishInvalid
+// covers the other half of fix requirement #4: the deployed SHA resolves
+// fine (unlike the test above), but target_commitish itself is not a valid
+// revision in the checkout — `git diff --name-only` errors out. Must
+// degrade to the same conservative "build" fallback, not panic or hang.
+// Also exercises defaultGitDiffNameOnlyRunner's real error path (the
+// fixture uses no resolver override for the diff runner itself, only for
+// shaResolver), which the SHA-unresolvable test above never reaches since
+// it short-circuits before any git diff is attempted.
+func TestHandler_Release_PathFilter_FallsBackToBuildWhenTargetCommitishInvalid(t *testing.T) {
+	t.Parallel()
+
+	dir, deployedSHA, _ := buildTwoCommitFixture(t, "CHANGELOG.md", "# Changelog\n")
+
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/memdb": {
+				ComposePath: dir,
+				SourcePath:  dir,
+				Services:    []string{"memdb-go"},
+				BuildPaths:  []string{"app/**"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+	h.shaResolver = func(context.Context, string) string { return deployedSHA }
+
+	body := releasePayload("anatolykoptev/memdb", "v1.0.0", "not-a-real-revision-in-this-repo")
+	w := postRelease(h, body)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "queued" {
+		t.Errorf("response status = %q, want queued "+
+			"(target_commitish invalid — git diff errors, must fall back to conservative build, not skip)",
+			resp["status"])
+	}
+}
