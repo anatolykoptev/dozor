@@ -49,6 +49,14 @@ type Handler struct {
 	notify    func(string)
 	debouncer *Debouncer
 	checker   *prLabelChecker
+	// shaResolver resolves the currently-deployed short SHA for a repo, given
+	// its build/source directory. Used only by the release-event path
+	// (webhook_release.go) to compute a real changed-files diff, since a
+	// GitHub "release published" payload carries no per-commit file list.
+	// Defaults to resolveGitSHA — the same primitive the debounce-persistence
+	// layer (debounce_persist.go) uses to detect a stale rebuild. Swappable in
+	// tests.
+	shaResolver shaResolverFunc
 }
 
 // NewHandler creates a GitHub webhook handler. The handler unconditionally
@@ -56,10 +64,11 @@ type Handler struct {
 // configured debounce window is zero.
 func NewHandler(config *Config, queue *Queue, notify func(string)) *Handler {
 	h := &Handler{
-		config:  config,
-		queue:   queue,
-		notify:  notify,
-		checker: newPRLabelChecker(config.GitHubToken),
+		config:      config,
+		queue:       queue,
+		notify:      notify,
+		checker:     newPRLabelChecker(config.GitHubToken),
+		shaResolver: resolveGitSHA,
 	}
 	if config.GitHubToken == "" {
 		slog.Warn("DOZOR_GITHUB_TOKEN not set; PR label check disabled (marker-only mode)")
@@ -250,6 +259,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// A release payload carries no per-commit changed-files list (unlike
+		// push's commits[].added/modified/removed) — resolve a real diff
+		// against the last-deployed SHA so skipByPathFilter's BuildPaths/
+		// SkipPaths gating applies to releases exactly as it does to pushes,
+		// instead of unconditionally building via its "elided diff" fallback.
+		attachReleaseDiff(r.Context(), &push, rc, h.shaResolver)
 		matches = []*RepoConfig{rc}
 	}
 
