@@ -221,6 +221,56 @@ func TestCleanSccache_NukesContents(t *testing.T) {
 	_ = got // result validated via commands
 }
 
+// TestCleanSccache_UsesSccacheDirEnvWhenSet verifies that cleanSccache targets
+// SCCACHE_DIR (the fleet's real ~/.cargo/config.toml [env] value,
+// /mnt/cargo/sccache-shared) rather than the sccache built-in default when the
+// env var is set — this is the RCA-driving path fix (dozor was previously
+// nuking ~/.cache/sccache, which is not where sccache actually writes on this
+// fleet).
+func TestCleanSccache_UsesSccacheDirEnvWhenSet(t *testing.T) {
+	// No t.Parallel() — t.Setenv requires sequential test.
+	t.Setenv("SCCACHE_DIR", "/mnt/cargo/sccache-shared")
+
+	rec := &recordingTransport{inner: &mockSuccessTransport{}}
+	c := &CleanupCollector{transport: rec}
+	c.cleanSccache(context.Background())
+
+	found := false
+	for _, cmd := range rec.cmds {
+		if strings.Contains(cmd, "/mnt/cargo/sccache-shared") {
+			found = true
+		}
+		if strings.Contains(cmd, "~/.cache/sccache") {
+			t.Errorf("expected the default path NOT to be used when SCCACHE_DIR is set, got: %q", cmd)
+		}
+	}
+	if !found {
+		t.Errorf("expected /mnt/cargo/sccache-shared (from SCCACHE_DIR) in commands, got: %v", rec.cmds)
+	}
+}
+
+// TestCleanSccache_FallsBackToDefaultPathWhenUnset verifies that cleanSccache
+// falls back to ~/.cache/sccache when SCCACHE_DIR is unset — preserves prior
+// behaviour for hosts that don't set it.
+func TestCleanSccache_FallsBackToDefaultPathWhenUnset(t *testing.T) {
+	// No t.Parallel() — t.Setenv requires sequential test.
+	t.Setenv("SCCACHE_DIR", "")
+
+	rec := &recordingTransport{inner: &mockSuccessTransport{}}
+	c := &CleanupCollector{transport: rec}
+	c.cleanSccache(context.Background())
+
+	found := false
+	for _, cmd := range rec.cmds {
+		if strings.Contains(cmd, "~/.cache/sccache") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected ~/.cache/sccache fallback in commands when SCCACHE_DIR unset, got: %v", rec.cmds)
+	}
+}
+
 // --- cleanNpmYarn tests ---
 
 // TestCleanNpmYarn_RemovesBothCaches verifies cleanNpmYarn targets both
@@ -309,9 +359,9 @@ func TestAutoRemediateDisk_LevelDispatching(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		level         AlertLevel
-		expectNil     bool
-		mustContain   []string // target names that must be present
+		level          AlertLevel
+		expectNil      bool
+		mustContain    []string // target names that must be present
 		mustNotContain []string // target names that must NOT be present
 	}{
 		{
@@ -319,21 +369,25 @@ func TestAutoRemediateDisk_LevelDispatching(t *testing.T) {
 			expectNil: true,
 		},
 		{
-			level:       AlertWarning,
-			mustContain: []string{"journal", "tmp", "caches", "apt", "sccache", "npm_yarn", "docker_dangling"},
-			mustNotContain: []string{"docker_builder_aged"},
+			level:          AlertWarning,
+			mustContain:    []string{"journal", "tmp", "caches", "apt", "npm_yarn", "docker_dangling"},
+			mustNotContain: []string{"docker_builder_aged", "sccache", "cargo"},
 		},
 		{
-			level:       AlertWarningHigh,
-			mustContain: []string{"journal", "tmp", "caches", "apt", "sccache", "npm_yarn", "docker_dangling", "docker_builder_aged"},
+			// sccache moved to CRITICAL-only (RCA: WARNING_HIGH-tier sccache nuking
+			// routinely wipes the LRU-managed, at-cap-by-design shared build cache).
+			// cargo starts here.
+			level:          AlertWarningHigh,
+			mustContain:    []string{"journal", "tmp", "caches", "apt", "npm_yarn", "docker_dangling", "docker_builder_aged", "cargo"},
+			mustNotContain: []string{"sccache"},
 		},
 		{
 			level:       AlertCritical,
-			mustContain: []string{"journal", "tmp", "caches"},
+			mustContain: []string{"journal", "tmp", "caches", "sccache", "cargo"},
 		},
 		{
 			level:       AlertError,
-			mustContain: []string{"journal", "tmp", "caches"},
+			mustContain: []string{"journal", "tmp", "caches", "sccache", "cargo"},
 		},
 	}
 

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -166,21 +167,33 @@ func (c *CleanupCollector) cleanPip(ctx context.Context) CleanupTarget {
 
 // --- sccache ---
 
-// cleanSccache removes the sccache on-disk cache at ~/.cache/sccache.
-// If the directory does not exist the target is returned as unavailable (no error).
-// sccache rebuilds its cache automatically on the next compile — nuking the cache
-// costs only a cold-rebuild cycle, which is acceptable under disk pressure.
+// cleanSccache removes the sccache on-disk cache. It reads the SCCACHE_DIR env
+// var — the fleet's ~/.cargo/config.toml [env] section actually configures
+// this to the shared /mnt/cargo/sccache-shared volume, not sccache's own
+// default — falling back to ~/.cache/sccache only when SCCACHE_DIR is unset.
+// If the resolved directory does not exist the target is returned as unavailable
+// (no error). sccache rebuilds its cache automatically on the next compile — nuking
+// the cache costs only a cold-rebuild cycle, which is acceptable under disk pressure.
+//
+// Called only at the CRITICAL/Error tier (see AutoRemediateDisk's doc comment):
+// sccache-shared sits at its configured SCCACHE_CACHE_SIZE cap by design
+// (LRU-managed) — nuking it at a lower tier would routinely wipe the fleet's
+// build-cache accelerator for a non-emergency disk level.
 func (c *CleanupCollector) cleanSccache(ctx context.Context) CleanupTarget {
 	t := CleanupTarget{Name: "sccache"}
+	dir := os.Getenv("SCCACHE_DIR")
+	if dir == "" {
+		dir = "~/.cache/sccache"
+	}
 	// Probe: du -sm succeeds only if the dir exists.
-	res := c.transport.ExecuteUnsafe(ctx, "du -sm ~/.cache/sccache 2>/dev/null")
+	res := c.transport.ExecuteUnsafe(ctx, fmt.Sprintf("du -sm '%s' 2>/dev/null", dir))
 	if !res.Success || strings.TrimSpace(res.Stdout) == "" {
 		// Directory absent — skip silently.
 		return t
 	}
 	t.Available = true
 	freed := c.measureFreedMB(ctx, func() {
-		c.transport.ExecuteUnsafe(ctx, "rm -rf ~/.cache/sccache 2>/dev/null")
+		c.transport.ExecuteUnsafe(ctx, fmt.Sprintf("rm -rf '%s' 2>/dev/null", dir))
 	})
 	t.FreedMB = freed
 	t.Freed = fmt.Sprintf("%.1f MB", freed)

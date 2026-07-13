@@ -10,14 +10,38 @@ import (
 // newTestAgent creates a minimal ServerAgent with a local transport for unit tests.
 // Commands that fail (e.g. journalctl not available) produce CleanupTarget{Available:false},
 // which is a valid "nothing to do" result — tests check routing, not actual bytes freed.
+//
+// cleanup.transport is wrapped in cargoMountGuardTransport: krolik (the box these
+// tests run on) has a REAL, production /mnt/cargo mount (77G+ of live shared
+// worktree build-cache as of 2026-07-12). Without the guard, any test that drives
+// AutoRemediateDisk through the WARNING_HIGH+ tier with a real transport would
+// have cleanCargo actually enumerate and age-prune that live mount as a side
+// effect of running `go test` — exactly the class of accidental-touch this task's
+// cargoDenylist/structural-validation is meant to prevent, just via a different
+// door. The guard forces the /mnt/cargo mountpoint probe to report "absent" so
+// cargo cleanly reports Available=false; every other command still hits the real
+// host exactly as before.
 func newTestAgent() *ServerAgent {
 	cfg := Config{}
 	t := NewTransport(cfg)
 	return &ServerAgent{
 		cfg:       cfg,
 		transport: t,
-		cleanup:   &CleanupCollector{transport: t},
+		cleanup:   &CleanupCollector{transport: cargoMountGuardTransport{t}},
 	}
+}
+
+// cargoMountGuardTransport wraps a real Transporter but forces the /mnt/cargo
+// mountpoint probe to report failure — see newTestAgent for why this exists.
+type cargoMountGuardTransport struct {
+	Transporter
+}
+
+func (g cargoMountGuardTransport) ExecuteUnsafe(ctx context.Context, cmd string) CommandResult {
+	if strings.HasPrefix(cmd, "mountpoint -q "+cargoRoot) {
+		return CommandResult{Success: false}
+	}
+	return g.Transporter.ExecuteUnsafe(ctx, cmd)
 }
 
 func TestAutoDiskRemediate_InfoLevel_ReturnsNil(t *testing.T) {
@@ -46,6 +70,15 @@ func TestAutoDiskRemediate_WarningLevel_ReturnsResult(t *testing.T) {
 	for _, want := range []string{"journal", "tmp", "caches"} {
 		if !names[want] {
 			t.Errorf("AlertWarning: missing target %q in result %v", want, res.Targets)
+		}
+	}
+	// sccache moved to CRITICAL-only (see disk_remediate.go doc comment): it is
+	// LRU-managed at a fixed cap by design, so nuking it at plain Warning would
+	// routinely wipe the fleet's build-cache accelerator for a non-emergency level.
+	// cargo only starts at WARNING_HIGH+.
+	for _, notWant := range []string{"sccache", "cargo"} {
+		if names[notWant] {
+			t.Errorf("AlertWarning: target %q must not run at plain Warning, got %v", notWant, res.Targets)
 		}
 	}
 	// Docker prune must NOT run on Warning.
@@ -249,5 +282,52 @@ func TestExtractIssues_NoDiskLine(t *testing.T) {
 		if iss.Service == "disk" {
 			t.Errorf("ExtractIssues: did not expect disk issue from human-readable-only format, got %+v", iss)
 		}
+	}
+}
+
+// --- DOZOR_CLEANUP_AGE_DAYS env parsing ---
+
+// TestCleanupAgeDays_Unset verifies that an unset (empty) DOZOR_CLEANUP_AGE_DAYS
+// falls back to cleanupAgeDaysDefault (4).
+func TestCleanupAgeDays_Unset(t *testing.T) {
+	// No t.Parallel() — t.Setenv requires sequential test.
+	t.Setenv("DOZOR_CLEANUP_AGE_DAYS", "")
+
+	if got := cleanupAgeDays(); got != cleanupAgeDaysDefault {
+		t.Errorf("expected default %d when unset, got %d", cleanupAgeDaysDefault, got)
+	}
+}
+
+// TestCleanupAgeDays_ValidOverride verifies that a valid positive integer overrides
+// the default.
+func TestCleanupAgeDays_ValidOverride(t *testing.T) {
+	// No t.Parallel() — t.Setenv requires sequential test.
+	t.Setenv("DOZOR_CLEANUP_AGE_DAYS", "10")
+
+	if got := cleanupAgeDays(); got != 10 {
+		t.Errorf("expected override 10, got %d", got)
+	}
+}
+
+// TestCleanupAgeDays_InvalidFallsBackToDefault verifies that a non-numeric value
+// falls back to cleanupAgeDaysDefault (and would log a WARN, not asserted here).
+func TestCleanupAgeDays_InvalidFallsBackToDefault(t *testing.T) {
+	// No t.Parallel() — t.Setenv requires sequential test.
+	t.Setenv("DOZOR_CLEANUP_AGE_DAYS", "not-a-number")
+
+	if got := cleanupAgeDays(); got != cleanupAgeDaysDefault {
+		t.Errorf("expected fallback default %d for invalid value, got %d", cleanupAgeDaysDefault, got)
+	}
+}
+
+// TestCleanupAgeDays_ZeroOrNegativeFallsBackToDefault verifies that a
+// non-positive value (which would produce a nonsensical or unbounded find
+// -atime filter) falls back to the default rather than being accepted as-is.
+func TestCleanupAgeDays_ZeroOrNegativeFallsBackToDefault(t *testing.T) {
+	// No t.Parallel() — t.Setenv requires sequential test.
+	t.Setenv("DOZOR_CLEANUP_AGE_DAYS", "0")
+
+	if got := cleanupAgeDays(); got != cleanupAgeDaysDefault {
+		t.Errorf("expected fallback default %d for zero value, got %d", cleanupAgeDaysDefault, got)
 	}
 }
