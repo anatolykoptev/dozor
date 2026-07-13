@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -13,14 +15,17 @@ import (
 //
 // cleanup.transport is wrapped in cargoMountGuardTransport: krolik (the box these
 // tests run on) has a REAL, production /mnt/cargo mount (77G+ of live shared
-// worktree build-cache as of 2026-07-12). Without the guard, any test that drives
-// AutoRemediateDisk through the WARNING_HIGH+ tier with a real transport would
-// have cleanCargo actually enumerate and age-prune that live mount as a side
-// effect of running `go test` — exactly the class of accidental-touch this task's
-// cargoDenylist/structural-validation is meant to prevent, just via a different
-// door. The guard forces the /mnt/cargo mountpoint probe to report "absent" so
-// cargo cleanly reports Available=false; every other command still hits the real
-// host exactly as before.
+// worktree build-cache as of 2026-07-12, including a 50G+ live sccache-shared
+// dir). Without the guard, any test that drives AutoRemediateDisk through the
+// WARNING_HIGH+ (cargo) or CRITICAL+ (sccache) tier with a real transport
+// would have cleanCargo/cleanSccache actually enumerate/prune or rm -rf that
+// live data as a side effect of running `go test` — exactly the class of
+// accidental-touch this task's cargoDenylist/structural-validation is meant
+// to prevent, just via a different door. The guard forces the /mnt/cargo
+// mountpoint probe, any command against cargoRoot+"/sccache-shared", and any
+// command against the real resolved home-dir sccache path to report
+// "absent" — cleanCargo/cleanSccache cleanly report Available=false; every
+// other command still hits the real host exactly as before.
 func newTestAgent() *ServerAgent {
 	cfg := Config{}
 	t := NewTransport(cfg)
@@ -32,14 +37,33 @@ func newTestAgent() *ServerAgent {
 }
 
 // cargoMountGuardTransport wraps a real Transporter but forces the /mnt/cargo
-// mountpoint probe to report failure — see newTestAgent for why this exists.
+// mountpoint probe, the cargoRoot+"/sccache-shared" path, and the real
+// home-dir sccache fallback path to report failure — see newTestAgent for
+// why this exists.
 type cargoMountGuardTransport struct {
 	Transporter
 }
 
+// guardedSccachePaths are the sccache candidate paths cleanSccache would
+// otherwise probe/rm for real against this host — see newTestAgent's doc
+// comment. Computed once; homeSccache is skipped (never guarded, harmless
+// to hit for real) if the home dir can't be resolved.
+var guardedSccachePaths = func() []string {
+	paths := []string{cargoRoot + "/sccache-shared"}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, ".cache", "sccache"))
+	}
+	return paths
+}()
+
 func (g cargoMountGuardTransport) ExecuteUnsafe(ctx context.Context, cmd string) CommandResult {
 	if strings.HasPrefix(cmd, "mountpoint -q "+cargoRoot) {
 		return CommandResult{Success: false}
+	}
+	for _, p := range guardedSccachePaths {
+		if strings.Contains(cmd, p) {
+			return CommandResult{Success: false, Stderr: "No such file or directory"}
+		}
 	}
 	return g.Transporter.ExecuteUnsafe(ctx, cmd)
 }

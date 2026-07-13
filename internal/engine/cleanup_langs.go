@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -167,13 +168,12 @@ func (c *CleanupCollector) cleanPip(ctx context.Context) CleanupTarget {
 
 // --- sccache ---
 
-// cleanSccache removes the sccache on-disk cache. It reads the SCCACHE_DIR env
-// var — the fleet's ~/.cargo/config.toml [env] section actually configures
-// this to the shared /mnt/cargo/sccache-shared volume, not sccache's own
-// default — falling back to ~/.cache/sccache only when SCCACHE_DIR is unset.
-// If the resolved directory does not exist the target is returned as unavailable
-// (no error). sccache rebuilds its cache automatically on the next compile — nuking
-// the cache costs only a cold-rebuild cycle, which is acceptable under disk pressure.
+// cleanSccache removes the sccache on-disk cache. It resolves the directory
+// via resolveSccacheDir's priority order and, if a candidate exists, rm -rf's
+// it. If no candidate exists the target is returned as unavailable (no
+// error). sccache rebuilds its cache automatically on the next compile —
+// nuking the cache costs only a cold-rebuild cycle, which is acceptable
+// under disk pressure.
 //
 // Called only at the CRITICAL/Error tier (see AutoRemediateDisk's doc comment):
 // sccache-shared sits at its configured SCCACHE_CACHE_SIZE cap by design
@@ -181,14 +181,9 @@ func (c *CleanupCollector) cleanPip(ctx context.Context) CleanupTarget {
 // build-cache accelerator for a non-emergency disk level.
 func (c *CleanupCollector) cleanSccache(ctx context.Context) CleanupTarget {
 	t := CleanupTarget{Name: "sccache"}
-	dir := os.Getenv("SCCACHE_DIR")
-	if dir == "" {
-		dir = "~/.cache/sccache"
-	}
-	// Probe: du -sm succeeds only if the dir exists.
-	res := c.transport.ExecuteUnsafe(ctx, fmt.Sprintf("du -sm '%s' 2>/dev/null", dir))
-	if !res.Success || strings.TrimSpace(res.Stdout) == "" {
-		// Directory absent — skip silently.
+	dir, ok := c.resolveSccacheDir(ctx)
+	if !ok {
+		// No candidate directory exists — skip silently.
 		return t
 	}
 	t.Available = true
@@ -198,6 +193,50 @@ func (c *CleanupCollector) cleanSccache(ctx context.Context) CleanupTarget {
 	t.FreedMB = freed
 	t.Freed = fmt.Sprintf("%.1f MB", freed)
 	return t
+}
+
+// resolveSccacheDir picks the sccache cache directory to clean, in priority
+// order, resolving every candidate to a real absolute path in Go before it
+// ever reaches a shell string — a literal "~" inside a single-quoted shell
+// command is NOT expanded by the shell (verified live: `du -sm
+// '~/.cache/sccache'` → "cannot access '~/.cache/sccache': No such file or
+// directory"), which previously made the home-dir fallback always broken.
+//
+//  1. SCCACHE_DIR env var, if set — an explicit operator override always wins.
+//  2. cargoRoot+"/sccache-shared" — the fleet-standard shared cache path
+//     (cargoRoot / the "sccache-shared" denylist entry are cleanup_cargo.go's
+//     existing convention for this mount), used when SCCACHE_DIR is unset and
+//     cargoRoot is actually mounted.
+//  3. ~/.cache/sccache, resolved via os.UserHomeDir() — last-resort fallback
+//     for hosts without the shared mount.
+//
+// Each candidate is confirmed to exist via du -sm before being returned;
+// resolveSccacheDir falls through to the next candidate on failure. Returns
+// ok=false when no candidate exists.
+func (c *CleanupCollector) resolveSccacheDir(ctx context.Context) (string, bool) {
+	if dir := os.Getenv("SCCACHE_DIR"); dir != "" {
+		return c.probeSccacheDir(ctx, dir)
+	}
+	if c.cargoMountAvailable(ctx) {
+		if dir, ok := c.probeSccacheDir(ctx, cargoRoot+"/sccache-shared"); ok {
+			return dir, true
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
+	return c.probeSccacheDir(ctx, filepath.Join(home, ".cache", "sccache"))
+}
+
+// probeSccacheDir confirms dir exists via du -sm (succeeds only if the dir
+// exists) and returns it as the resolved candidate on success.
+func (c *CleanupCollector) probeSccacheDir(ctx context.Context, dir string) (string, bool) {
+	res := c.transport.ExecuteUnsafe(ctx, fmt.Sprintf("du -sm '%s' 2>/dev/null", dir))
+	if !res.Success || strings.TrimSpace(res.Stdout) == "" {
+		return "", false
+	}
+	return dir, true
 }
 
 // --- npm / yarn caches ---

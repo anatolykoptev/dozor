@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -178,26 +180,28 @@ func (s *sudoOKAptFailTransport) ResolveComposePath() string { return "" }
 
 // --- cleanSccache tests ---
 
-// TestCleanSccache_MissingDirSkipped verifies that when ~/.cache/sccache does not exist,
-// cleanSccache returns an empty (skipped) target — not an error.
+// TestCleanSccache_MissingDirSkipped verifies that when none of the
+// candidate sccache directories exist (cargo-root shared path, then
+// home-dir fallback), cleanSccache returns an empty (skipped) target — not
+// an error.
 func TestCleanSccache_MissingDirSkipped(t *testing.T) {
 	t.Parallel()
 
-	// dir-missing transport: du returns failure (non-zero exit)
+	// dir-missing transport: du (and mountpoint) return failure (non-zero exit)
 	mock := &mockTransport{failWith: "No such file or directory"}
 	c := &CleanupCollector{transport: mock}
 	got := c.cleanSccache(context.Background())
-	// When dir missing (du fails), Available should be false and no error set.
+	// When no candidate exists, Available should be false and no error set.
 	if got.Available {
-		t.Error("expected Available=false for missing sccache dir")
+		t.Error("expected Available=false when no sccache candidate dir exists")
 	}
 	if got.Error != "" {
 		t.Errorf("expected no Error for missing dir, got %q", got.Error)
 	}
 }
 
-// TestCleanSccache_NukesContents verifies that when ~/.cache/sccache exists,
-// cleanSccache issues the rm -rf command targeting the sccache path.
+// TestCleanSccache_NukesContents verifies that when a candidate sccache dir
+// exists, cleanSccache issues the rm -rf command targeting the sccache path.
 func TestCleanSccache_NukesContents(t *testing.T) {
 	t.Parallel()
 
@@ -249,10 +253,17 @@ func TestCleanSccache_UsesSccacheDirEnvWhenSet(t *testing.T) {
 	}
 }
 
-// TestCleanSccache_FallsBackToDefaultPathWhenUnset verifies that cleanSccache
-// falls back to ~/.cache/sccache when SCCACHE_DIR is unset — preserves prior
-// behaviour for hosts that don't set it.
-func TestCleanSccache_FallsBackToDefaultPathWhenUnset(t *testing.T) {
+// TestCleanSccache_PrefersCargoRootSccacheSharedWhenEnvUnset verifies that
+// cleanSccache resolves the fleet-standard cargoRoot+"/sccache-shared" path
+// (reusing cleanup_cargo.go's cargoRoot convention) when SCCACHE_DIR is
+// unset — and never emits a literal shell "~", which a single-quoted
+// `du -sm '~/.cache/sccache'` does NOT expand (verified live on krolik:
+// "cannot access '~/.cache/sccache': No such file or directory"). Before
+// this fix, the ~/.cache/sccache literal-tilde fallback was ALWAYS broken,
+// and with SCCACHE_DIR unset (confirmed empty in dozor's own systemd unit
+// env) it was always the path taken — sccache cleanup silently no-op'd at
+// every tier.
+func TestCleanSccache_PrefersCargoRootSccacheSharedWhenEnvUnset(t *testing.T) {
 	// No t.Parallel() — t.Setenv requires sequential test.
 	t.Setenv("SCCACHE_DIR", "")
 
@@ -260,16 +271,89 @@ func TestCleanSccache_FallsBackToDefaultPathWhenUnset(t *testing.T) {
 	c := &CleanupCollector{transport: rec}
 	c.cleanSccache(context.Background())
 
+	wantPath := cargoRoot + "/sccache-shared"
 	found := false
 	for _, cmd := range rec.cmds {
-		if strings.Contains(cmd, "~/.cache/sccache") {
+		if strings.Contains(cmd, "~") {
+			t.Errorf("expected no literal '~' in any emitted command (shell single-quotes don't expand it), got: %q", cmd)
+		}
+		if strings.Contains(cmd, wantPath) {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected ~/.cache/sccache fallback in commands when SCCACHE_DIR unset, got: %v", rec.cmds)
+		t.Errorf("expected cargo-root path %q in commands, got: %v", wantPath, rec.cmds)
 	}
 }
+
+// TestCleanSccache_FallsBackToHomeDirWhenCargoRootAbsent verifies that when
+// SCCACHE_DIR is unset AND cargoRoot+"/sccache-shared" does not exist (e.g. a
+// host without the shared build-cache mount), cleanSccache falls back to
+// ~/.cache/sccache resolved via os.UserHomeDir() in Go — never a literal
+// shell "~" — as the last-resort candidate.
+func TestCleanSccache_FallsBackToHomeDirWhenCargoRootAbsent(t *testing.T) {
+	// No t.Parallel() — t.Setenv requires sequential test.
+	t.Setenv("SCCACHE_DIR", "")
+
+	rec := &recordingTransport{inner: &sccacheCargoRootAbsentTransport{}}
+	c := &CleanupCollector{transport: rec}
+	c.cleanSccache(context.Background())
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	wantPath := filepath.Join(home, ".cache", "sccache")
+
+	found := false
+	for _, cmd := range rec.cmds {
+		if strings.Contains(cmd, "~") {
+			t.Errorf("expected no literal '~' in any emitted command, got: %q", cmd)
+		}
+		if strings.Contains(cmd, wantPath) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected resolved home-dir fallback %q in commands, got: %v", wantPath, rec.cmds)
+	}
+}
+
+// sccacheCargoRootAbsentTransport simulates a host where cargoRoot+"/sccache-shared"
+// does not exist but the resolved home-dir sccache cache does — used to
+// exercise cleanSccache's final fallback tier.
+type sccacheCargoRootAbsentTransport struct{}
+
+func (s *sccacheCargoRootAbsentTransport) ExecuteUnsafe(_ context.Context, cmd string) CommandResult {
+	if strings.HasPrefix(cmd, "which ") {
+		tool := strings.TrimPrefix(cmd, "which ")
+		tool = strings.TrimSuffix(tool, " 2>/dev/null")
+		return CommandResult{Success: true, Stdout: "/usr/bin/" + tool}
+	}
+	if strings.Contains(cmd, "df -BM") {
+		return CommandResult{Success: true, Stdout: "Avail\n10000M\n"}
+	}
+	if strings.HasPrefix(cmd, "mountpoint -q ") {
+		return CommandResult{Success: true}
+	}
+	if strings.Contains(cmd, "du -sm") {
+		if strings.Contains(cmd, cargoRoot+"/sccache-shared") {
+			return CommandResult{Success: false, Stderr: "No such file or directory"}
+		}
+		return CommandResult{Success: true, Stdout: "100\t/path"}
+	}
+	return CommandResult{Success: true, Stdout: ""}
+}
+
+func (s *sccacheCargoRootAbsentTransport) DockerCommand(_ context.Context, _ string) CommandResult {
+	return CommandResult{Success: true, Stdout: "Total reclaimed space: 0B"}
+}
+
+func (s *sccacheCargoRootAbsentTransport) DockerComposeCommand(_ context.Context, _ string) CommandResult {
+	return CommandResult{Success: true, Stdout: ""}
+}
+
+func (s *sccacheCargoRootAbsentTransport) ResolveComposePath() string { return "" }
 
 // --- cleanNpmYarn tests ---
 
