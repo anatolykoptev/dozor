@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.9.0](https://github.com/anatolykoptev/dozor/compare/v1.8.1...v1.9.0) (2026-07-16)
+
+
+### Features
+
+* add alerts-active MCP tool with in-memory alert ring ([#122](https://github.com/anatolykoptev/dozor/issues/122)) ([ce7c35e](https://github.com/anatolykoptev/dozor/commit/ce7c35eaabb6b7c9faf818cb36d635b5d18b3d57))
+* **deploy:** serialise heavy builds cross-lane via the box-wide ci-lock (audit P2) ([#129](https://github.com/anatolykoptev/dozor/issues/129)) ([6cf8825](https://github.com/anatolykoptev/dozor/commit/6cf8825d1ba4cd044a47f08be7e157e9c0caaf5d))
+* durable Telegram message log + tg-messages MCP tool ([#126](https://github.com/anatolykoptev/dozor/issues/126)) ([72f4e54](https://github.com/anatolykoptev/dozor/commit/72f4e54dc3295103e58f9c6494149a2fb338e3fa))
+* **engine:** add cargo target-dir cleanup, unify cleanup age threshold, fix+retier sccache cleanup ([56b3a4b](https://github.com/anatolykoptev/dozor/commit/56b3a4bec33eb36ef96942ec452fa3c199331ac7))
+
+
+### Bug Fixes
+
+* correct alerts-active jsonschema tags (drop description= prefix) ([#123](https://github.com/anatolykoptev/dozor/issues/123)) ([0de12b2](https://github.com/anatolykoptev/dozor/commit/0de12b2953d475fb6e826282cdfeac9938b11664))
+* **engine:** resolve sccache path via Go, not broken shell tilde ([6e2e1e6](https://github.com/anatolykoptev/dozor/commit/6e2e1e6bafb65fb0e0c15d3504a757c509f23259))
+* release-event webhooks respect BuildPaths/SkipPaths via a real diff ([#128](https://github.com/anatolykoptev/dozor/issues/128)) ([5fcfb68](https://github.com/anatolykoptev/dozor/commit/5fcfb68f1b3a085a8e45a6111b99f63ea45a0018))
+* ring records Telegram-delivery time, not alert StartsAt ([#125](https://github.com/anatolykoptev/dozor/issues/125)) ([792430c](https://github.com/anatolykoptev/dozor/commit/792430c079ade11f713641bd24224118950bbaf4))
+* rune-safe Telegram caption truncation (Cyrillic corruption) ([#127](https://github.com/anatolykoptev/dozor/issues/127)) ([664a114](https://github.com/anatolykoptev/dozor/commit/664a1145a3bd4f7997d146d6c4a09bd9448f97f2))
+
 ## [1.8.1](https://github.com/anatolykoptev/dozor/compare/v1.8.0...v1.8.1) (2026-06-20)
 
 
