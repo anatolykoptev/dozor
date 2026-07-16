@@ -430,6 +430,19 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 	BuildInflight.WithLabelValues(class).Inc()
 	defer BuildInflight.WithLabelValues(class).Dec()
 
+	// P2: cross-lane box-wide lock. Heavy builds ONLY — a non-heavy build
+	// never touches the lock (cheap go/static deploys stay unblocked).
+	// Acquire before the build; defer the release so it fires on EVERY exit
+	// path (success, build error, panic, early return). Fail-safe on acquire
+	// timeout: proceeds unlocked + logs (see acquireCrossLaneLock). The
+	// buildID is the commit SHA — stable across the acquire/release pair
+	// (captured in the env closure) and namespaced per repo via
+	// GITHUB_REPOSITORY=dozor/<repo> in the lock env.
+	if isHeavy {
+		release := acquireCrossLaneLock(ctx, req.Repo, req.CommitSHA)
+		defer release()
+	}
+
 	services := strings.Join(req.Config.Services, ", ")
 	q.notify(fmt.Sprintf(
 		"\U0001f528 [%s] Building... (commit %s)", services, short(req.CommitSHA)))
