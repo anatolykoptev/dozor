@@ -153,7 +153,7 @@ func TestRegister_EmptySecret_WithOptIn(t *testing.T) {
 	t.Setenv("DOZOR_A2A_ALLOW_INSECURE", "true")
 
 	mux := http.NewServeMux()
-	err := Register(mux, nil, toolreg.NewRegistry(),"http://localhost:8765", "test", "")
+	err := Register(mux, nil, toolreg.NewRegistry(), "http://localhost:8765", "test", "")
 	if err != nil {
 		t.Fatalf("expected no error with DOZOR_A2A_ALLOW_INSECURE=true, got %v", err)
 	}
@@ -165,7 +165,7 @@ func TestRegister_WithSecret(t *testing.T) {
 	t.Setenv("DOZOR_A2A_ALLOW_INSECURE", "")
 
 	mux := http.NewServeMux()
-	err := Register(mux, nil, toolreg.NewRegistry(),"http://localhost:8765", "test", "mysecret")
+	err := Register(mux, nil, toolreg.NewRegistry(), "http://localhost:8765", "test", "mysecret")
 	if err != nil {
 		t.Fatalf("expected no error with non-empty secret, got %v", err)
 	}

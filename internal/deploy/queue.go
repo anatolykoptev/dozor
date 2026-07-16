@@ -67,11 +67,11 @@ type BuildResult struct {
 type Queue struct {
 	notify func(string)
 
-	mu       sync.Mutex
-	pending  map[string]BuildRequest // service-key â next-to-build (newest-wins)
-	busySHA  map[string]string       // service-key â SHA currently building (active)
-	busyReq  map[string]BuildRequest // service-key -> full request currently building (for restart-survival persistence)
-	signal   chan struct{}           // worker wake-up (buffered N)
+	mu      sync.Mutex
+	pending map[string]BuildRequest // service-key â next-to-build (newest-wins)
+	busySHA map[string]string       // service-key â SHA currently building (active)
+	busyReq map[string]BuildRequest // service-key -> full request currently building (for restart-survival persistence)
+	signal  chan struct{}           // worker wake-up (buffered N)
 
 	// For tests: visibility into the building set without exposing busySHA's SHA.
 	building map[string]bool
@@ -101,7 +101,7 @@ type Queue struct {
 	heavySem *semaphore.Weighted
 
 	cancel context.CancelFunc
-	done   chan struct{} // closed when all workers have exited (compat with newStoppedQueue)
+	done   chan struct{}  // closed when all workers have exited (compat with newStoppedQueue)
 	wg     sync.WaitGroup // tracks all worker goroutines
 }
 
@@ -122,13 +122,13 @@ func NewQueueN(ctx context.Context, notify func(string), n int) *Queue {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	q := &Queue{
-		notify:   notify,
-		pending:  make(map[string]BuildRequest),
-		busySHA:  make(map[string]string),
-		busyReq:  make(map[string]BuildRequest),
-		building: make(map[string]bool),
-		signal:   make(chan struct{}, n), // buffered N so all workers can be woken
-		heavySem: semaphore.NewWeighted(1),
+		notify:    notify,
+		pending:   make(map[string]BuildRequest),
+		busySHA:   make(map[string]string),
+		busyReq:   make(map[string]BuildRequest),
+		building:  make(map[string]bool),
+		signal:    make(chan struct{}, n), // buffered N so all workers can be woken
+		heavySem:  semaphore.NewWeighted(1),
 		cancel:    cancel,
 		done:      make(chan struct{}), // closed when all workers have exited
 		drainGate: make(chan struct{}), // closed below: drain eagerly unless WithPersistence re-arms it

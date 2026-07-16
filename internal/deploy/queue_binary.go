@@ -239,9 +239,9 @@ func sustainSmoke(ctx context.Context, smokeURL string, window time.Duration) er
 // Returns the first error encountered (remaining errors are logged).
 func restartParallel(ctx context.Context, svcs []string) error {
 	var (
-		mu      sync.Mutex
+		mu       sync.Mutex
 		firstErr error
-		wg      sync.WaitGroup
+		wg       sync.WaitGroup
 	)
 	for _, svc := range svcs {
 		wg.Add(1)

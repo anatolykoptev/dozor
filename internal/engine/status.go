@@ -24,11 +24,11 @@ type dockerPSEntry struct {
 // dockerInspectEntry from docker inspect.
 type dockerInspectEntry struct {
 	State struct {
-		Status        string `json:"Status"`
-		Running       bool   `json:"Running"`
-		StartedAt     string `json:"StartedAt"`
-		RestartCount  int    `json:"RestartCount"`
-		Health        *struct {
+		Status       string `json:"Status"`
+		Running      bool   `json:"Running"`
+		StartedAt    string `json:"StartedAt"`
+		RestartCount int    `json:"RestartCount"`
+		Health       *struct {
 			Status string `json:"Status"`
 		} `json:"Health"`
 	} `json:"State"`

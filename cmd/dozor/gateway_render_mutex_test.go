@@ -21,9 +21,9 @@ import (
 // Expected: peak inflight == 1 at all times.
 func TestRenderMutex_SerializesRenders(t *testing.T) {
 	var (
-		inflight    atomic.Int32
-		peakMu      sync.Mutex
-		peak        int32
+		inflight atomic.Int32
+		peakMu   sync.Mutex
+		peak     int32
 	)
 
 	// 1x1 transparent PNG (minimal valid PNG bytes for the header check).

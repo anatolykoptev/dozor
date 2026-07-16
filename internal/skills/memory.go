@@ -22,8 +22,10 @@ func RegisterMemoryTools(registry *toolreg.Registry, workspacePath string) {
 
 type readMemoryTool struct{ workspace string }
 
-func (t *readMemoryTool) Name() string        { return "read_memory" }
-func (t *readMemoryTool) Description() string  { return "Read a bootstrap file (IDENTITY.md, AGENTS.md, or MEMORY.md) from the workspace" }
+func (t *readMemoryTool) Name() string { return "read_memory" }
+func (t *readMemoryTool) Description() string {
+	return "Read a bootstrap file (IDENTITY.md, AGENTS.md, or MEMORY.md) from the workspace"
+}
 func (t *readMemoryTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -54,7 +56,7 @@ func (t *readMemoryTool) Execute(_ context.Context, args map[string]any) (string
 
 type updateMemoryTool struct{ workspace string }
 
-func (t *updateMemoryTool) Name() string        { return "update_memory" }
+func (t *updateMemoryTool) Name() string { return "update_memory" }
 func (t *updateMemoryTool) Description() string {
 	return "Add a new entry to MEMORY.md — use this to record learned patterns, resolved incidents, and operational notes for future reference"
 }

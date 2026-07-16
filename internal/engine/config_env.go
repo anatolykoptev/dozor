@@ -13,13 +13,13 @@ import (
 // (superset of prior "true"/"1"); kitenv.Duration accepts Go duration
 // strings AND float-seconds fallback, so it serves both envDuration
 // (seconds-as-int) and envDurationStr (Go format) call sites.
-func env(key, def string) string                                     { return kitenv.Str(key, def) }
-func envInt(key string, def int) int                                 { return kitenv.Int(key, def) }
-func envFloat(key string, def float64) float64                       { return kitenv.Float(key, def) }
-func envBool(key string, def bool) bool                              { return kitenv.Bool(key, def) }
-func envList(key, def string) []string                               { return kitenv.List(key, def) }
-func envDuration(key string, def time.Duration) time.Duration        { return kitenv.Duration(key, def) }
-func envDurationStr(key string, def time.Duration) time.Duration     { return kitenv.Duration(key, def) }
+func env(key, def string) string                                 { return kitenv.Str(key, def) }
+func envInt(key string, def int) int                             { return kitenv.Int(key, def) }
+func envFloat(key string, def float64) float64                   { return kitenv.Float(key, def) }
+func envBool(key string, def bool) bool                          { return kitenv.Bool(key, def) }
+func envList(key, def string) []string                           { return kitenv.List(key, def) }
+func envDuration(key string, def time.Duration) time.Duration    { return kitenv.Duration(key, def) }
+func envDurationStr(key string, def time.Duration) time.Duration { return kitenv.Duration(key, def) }
 
 // parseTrackedBinaries parses "owner/repo:binary,owner/repo:binary" format.
 func parseTrackedBinaries(raw string) []TrackedBinaryConfig {

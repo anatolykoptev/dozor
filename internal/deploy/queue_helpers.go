@@ -40,22 +40,24 @@ func defaultRunCmd(ctx context.Context, dir, name string, args ...string) error 
 	return nil
 }
 
-//nolint:unused // DI default seam — assigned to var buildRunner, swapped in tests
 // defaultBuildRunner runs `docker <args...>` and returns the full combined
 // stdout+stderr regardless of outcome. Callers (runBuildWithFullLog) dump
 // the full output to a temp file on failure so operators can inspect what
 // Docker actually complained about.
+//
+//nolint:unused // DI default seam — assigned to var buildRunner, swapped in tests
 func defaultBuildRunner(ctx context.Context, dir string, args []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...) //nolint:gosec // trusted local config, not shell
 	cmd.Dir = dir
 	return cmd.CombinedOutput()
 }
 
-//nolint:unused // DI default seam — assigned to var upRunner, swapped in tests
 // defaultUpRunner runs `docker <args...>` and returns the full combined
 // stdout+stderr regardless of outcome. Callers (runUpWithFullLog) dump the
 // full output to a temp file on failure so operators can see the real error
 // (e.g. "Container name already in use") buried beneath env-var warnings.
+//
+//nolint:unused // DI default seam — assigned to var upRunner, swapped in tests
 func defaultUpRunner(ctx context.Context, dir string, args []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...) //nolint:gosec // trusted local config, not shell
 	cmd.Dir = dir

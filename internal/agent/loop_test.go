@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	kitllm "github.com/anatolykoptev/go-kit/llm"
 	"github.com/anatolykoptev/dozor/internal/provider"
 	"github.com/anatolykoptev/dozor/internal/toolreg"
+	kitllm "github.com/anatolykoptev/go-kit/llm"
 )
 
 // ---- mockProvider ----
@@ -100,7 +100,6 @@ func toolResult(out string, err error) struct {
 }
 
 // ---- helpers ----
-
 
 // contentStr extracts string content from a kitllm.Message, which has Content as `any`.
 func contentStr(m kitllm.Message) string {

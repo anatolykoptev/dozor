@@ -44,10 +44,10 @@ func NewRuntime(name string) *Runtime {
 
 // Capabilities declares what an extension provides (for introspection & filtering).
 type Capabilities struct {
-	Tools     bool `json:"tools"`      // Registers agent tools
-	MCPTools  bool `json:"mcp_tools"`  // Registers MCP tools
-	Config    bool `json:"config"`     // Requires configuration
-	Lifecycle bool `json:"lifecycle"`  // Has start/stop lifecycle
+	Tools     bool `json:"tools"`     // Registers agent tools
+	MCPTools  bool `json:"mcp_tools"` // Registers MCP tools
+	Config    bool `json:"config"`    // Requires configuration
+	Lifecycle bool `json:"lifecycle"` // Has start/stop lifecycle
 }
 
 // ConfigValidation is the result of config validation (OpenClaw pattern).

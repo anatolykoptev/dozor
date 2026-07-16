@@ -139,7 +139,6 @@ func TestAlertmanager_TwoAlerts(t *testing.T) {
 		t.Fatalf("expected 204, got %d body=%s", rr.Code, rr.Body.String())
 	}
 
-
 	alerts := received()
 	if len(alerts) != 2 {
 		t.Fatalf("expected 2 dispatched alerts, got %d", len(alerts))
@@ -416,8 +415,8 @@ func TestAlertmanager_CommonLabelsAndAnnotations(t *testing.T) {
 // requests → N-1 timeout failures.
 func TestAlertmanager_BatchOf3_SingleNotifyCall(t *testing.T) {
 	var (
-		mu       sync.Mutex
-		calls    int
+		mu        sync.Mutex
+		calls     int
 		allAlerts []engine.Alert
 	)
 	spy := func(alerts []engine.Alert, _ string) {

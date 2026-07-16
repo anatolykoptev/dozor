@@ -22,11 +22,11 @@ func (r *Registry) RegisterIntrospectTool(server *mcp.Server) {
 }
 
 type extensionStatus struct {
-	Name         string              `json:"name"`
-	Started      bool                `json:"started"`
-	Capabilities *Capabilities       `json:"capabilities,omitempty"`
+	Name         string                `json:"name"`
+	Started      bool                  `json:"started"`
+	Capabilities *Capabilities         `json:"capabilities,omitempty"`
 	ConfigHints  map[string]ConfigHint `json:"config_hints,omitempty"`
-	Error        string              `json:"error,omitempty"`
+	Error        string                `json:"error,omitempty"`
 }
 
 func (r *Registry) introspectJSON() string {

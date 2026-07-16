@@ -212,4 +212,3 @@ func (c *prLabelChecker) checkPRLabelsAPI(ctx context.Context, repo, sha string)
 	}
 	return false
 }
-

@@ -19,4 +19,3 @@ func markdownToTelegramHTML(text string) string {
 	out, _ := tgfmt.PrepareForTelegram(text)
 	return out
 }
-

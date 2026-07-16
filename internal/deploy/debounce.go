@@ -23,14 +23,14 @@ type Timer interface {
 // realClock is the default production Clock.
 type realClock struct{}
 
-func (realClock) Now() time.Time                     { return time.Now() }
-func (realClock) NewTimer(d time.Duration) Timer     { return &realTimer{t: time.NewTimer(d)} }
+func (realClock) Now() time.Time                 { return time.Now() }
+func (realClock) NewTimer(d time.Duration) Timer { return &realTimer{t: time.NewTimer(d)} }
 
 type realTimer struct{ t *time.Timer }
 
-func (r *realTimer) C() <-chan time.Time     { return r.t.C }
+func (r *realTimer) C() <-chan time.Time        { return r.t.C }
 func (r *realTimer) Reset(d time.Duration) bool { return r.t.Reset(d) }
-func (r *realTimer) Stop() bool               { return r.t.Stop() }
+func (r *realTimer) Stop() bool                 { return r.t.Stop() }
 
 // PendingEvent is the most recent webhook payload for a given debounce key.
 // On timer fire, the debouncer hands this back to the dispatcher so the build
@@ -39,7 +39,7 @@ type PendingEvent struct {
 	Repo         string
 	Service      string
 	CommitSHA    string
-	ChangedPaths []string  // union of changed paths across coalesced pushes; nil = unknown
+	ChangedPaths []string // union of changed paths across coalesced pushes; nil = unknown
 	Config       RepoConfig
 	HitCount     int       // number of webhooks coalesced into this pending build
 	FirstSeen    time.Time // when the first webhook of this batch arrived

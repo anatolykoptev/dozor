@@ -18,7 +18,7 @@ type readSkillTool struct {
 }
 
 func (t *readSkillTool) Name() string        { return "read_skill" }
-func (t *readSkillTool) Description() string  { return "Load the full instructions of a skill by name" }
+func (t *readSkillTool) Description() string { return "Load the full instructions of a skill by name" }
 func (t *readSkillTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
