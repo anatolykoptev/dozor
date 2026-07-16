@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.10.0](https://github.com/anatolykoptev/dozor/compare/v1.9.0...v1.10.0) (2026-07-16)
+
+
+### Added
+
+* **deploy:** add loadavg backpressure guard for heavy builds (audit P3) ([#134](https://github.com/anatolykoptev/dozor/issues/134)) ([7559b9d](https://github.com/anatolykoptev/dozor/commit/7559b9d8d85ce7abfc8fa50fa88677d560a94862))
+* **deploy:** per-repo deploy_on: release option ([#136](https://github.com/anatolykoptev/dozor/issues/136)) ([19e7c4d](https://github.com/anatolykoptev/dozor/commit/19e7c4d2c7346afddd9b5d5fb256f56a78405674))
+
 ## [1.9.0](https://github.com/anatolykoptev/dozor/compare/v1.8.1...v1.9.0) (2026-07-16)
 
 
