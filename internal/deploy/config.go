@@ -109,6 +109,20 @@ type RepoConfig struct {
 	// skipped with reason="only_skip_paths".
 	SkipPaths []string `yaml:"skip_paths,omitempty"`
 
+	// DeployOn gates which GitHub event triggers a build for this repo.
+	//   - "" (default): every push to the configured branch builds — the
+	//     original push-based behaviour, unchanged.
+	//   - "release": the repo builds ONLY on a GitHub "release published"
+	//     event (a release-please release PR merge), NOT on every push.
+	//     Use for heavy services (Rust workspaces etc.) where work accrues
+	//     on main between releases and rebuilding on every push wastes the
+	//     build host. The release-event path (webhook_release.go) handles
+	//     it exactly as any other repo — no special-casing there.
+	//
+	// Any other value is rejected at config load with an error naming the
+	// repo and the bad value.
+	DeployOn string `yaml:"deploy_on,omitempty"`
+
 	// Profile selects a built-in preset for BuildPaths/SkipPaths. Known values:
 	// "go-flat", "go-cmd", "rust". Empty (default) means no preset.
 	Profile string `yaml:"profile,omitempty"`
@@ -331,6 +345,9 @@ type Config struct {
 // It is called once per repo by LoadConfig after profile resolution.
 // Mutates rc in-place to fill derived fields (Services from UserServices, etc.).
 func validateRepoConfig(repo string, rc *RepoConfig) error {
+	if rc.DeployOn != "" && rc.DeployOn != "release" {
+		return fmt.Errorf("repo %q has invalid deploy_on %q: want \"\" or \"release\"", repo, rc.DeployOn)
+	}
 	switch rc.resolvedKind() {
 	case KindBinary:
 		if rc.SourcePath == "" {
