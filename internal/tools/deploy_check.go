@@ -325,4 +325,3 @@ func (s *counterSnapshot) get(name, repo, service, qual string) float64 {
 	}
 	return 0
 }
-

@@ -151,7 +151,7 @@ func TestDebouncePersist_ReloadStaleSkip(t *testing.T) {
 		CommitSHA: "abcdef1234567890",
 		Config:    RepoConfig{DeployClonePath: "/tmp/clone"},
 	}, window)
-	deb1.Stop(context.Background())  // graceful restart; persisted file survives
+	deb1.Stop(context.Background()) // graceful restart; persisted file survives
 	clock.Advance(10 * time.Minute) // deadline passed; would fire if not stale
 
 	var mu sync.Mutex

@@ -22,7 +22,7 @@ func RegisterClientTools(registry *toolreg.Registry, mgr *ClientManager) {
 type listAgentsTool struct{ mgr *ClientManager }
 
 func (t *listAgentsTool) Name() string        { return "a2a_list_agents" }
-func (t *listAgentsTool) Description() string  { return "List available remote A2A agents" }
+func (t *listAgentsTool) Description() string { return "List available remote A2A agents" }
 func (t *listAgentsTool) Parameters() map[string]any {
 	return map[string]any{
 		"type":       "object",
@@ -52,8 +52,10 @@ func (t *listAgentsTool) Execute(_ context.Context, _ map[string]any) (string, e
 
 type discoverTool struct{ mgr *ClientManager }
 
-func (t *discoverTool) Name() string        { return "a2a_discover" }
-func (t *discoverTool) Description() string  { return "Discover capabilities of a remote A2A agent by fetching its agent card" }
+func (t *discoverTool) Name() string { return "a2a_discover" }
+func (t *discoverTool) Description() string {
+	return "Discover capabilities of a remote A2A agent by fetching its agent card"
+}
 func (t *discoverTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -96,8 +98,10 @@ func (t *discoverTool) Execute(ctx context.Context, args map[string]any) (string
 
 type callTool struct{ mgr *ClientManager }
 
-func (t *callTool) Name() string        { return "a2a_call" }
-func (t *callTool) Description() string  { return "Send a message to a remote A2A agent and get a response" }
+func (t *callTool) Name() string { return "a2a_call" }
+func (t *callTool) Description() string {
+	return "Send a message to a remote A2A agent and get a response"
+}
 func (t *callTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",

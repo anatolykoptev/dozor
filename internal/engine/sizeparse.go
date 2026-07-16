@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-
 // ParseSizeMB parses size strings like "1.5G", "500M", "100K", "(1.5 GB)".
 func ParseSizeMB(s string) float64 {
 	s = strings.TrimSpace(s)

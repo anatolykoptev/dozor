@@ -22,8 +22,8 @@ import (
 	"github.com/anatolykoptev/dozor/pkg/extensions/claudecode"
 	extmcpclient "github.com/anatolykoptev/dozor/pkg/extensions/mcpclient"
 	"github.com/anatolykoptev/dozor/pkg/extensions/websearch"
-	session "github.com/anatolykoptev/go-kit/session"
 	kitllm "github.com/anatolykoptev/go-kit/llm"
+	session "github.com/anatolykoptev/go-kit/session"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

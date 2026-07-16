@@ -415,8 +415,8 @@ func TestCooldown_SkipsExhaustedModel(t *testing.T) {
 	)
 
 	var (
-		hitPrimary  atomic.Int32
-		hitFallback atomic.Int32
+		hitPrimary    atomic.Int32
+		hitFallback   atomic.Int32
 		observerFired atomic.Bool
 	)
 
@@ -540,7 +540,6 @@ func TestChat_BlockedResponse(t *testing.T) {
 		t.Fatal("Chat() expected error for blocked response, got nil")
 	}
 }
-
 
 // --- TestBuildChainClient_FilterDropsAbsentModel ----------------------------
 

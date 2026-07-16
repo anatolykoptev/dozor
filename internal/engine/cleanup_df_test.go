@@ -93,10 +93,10 @@ func TestCleanAll_FreedFromDfDelta_TableDriven(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name    string
-		before  int
-		after   int
-		wantMB  string
+		name     string
+		before   int
+		after    int
+		wantMB   string
 		runClean func(c *CleanupCollector, ctx context.Context) CleanupTarget
 	}{
 		{

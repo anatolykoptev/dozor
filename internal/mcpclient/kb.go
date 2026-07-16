@@ -25,7 +25,6 @@ const kbSaveInitialBackoff = 200 * time.Millisecond
 // does not hold the save goroutine for too long.
 const kbSaveMaxBackoff = 2 * time.Second
 
-
 const (
 	// defaultKBUserID is the default user ID for the knowledge base.
 	defaultKBUserID = "default"

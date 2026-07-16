@@ -66,11 +66,11 @@ const (
 
 // watchDeps groups dependencies for the gateway watch loop.
 type watchDeps struct {
-	eng            *engine.ServerAgent
-	msgBus         *bus.Bus
-	cfg            engine.Config
-	kbSearcher     *mcpclient.KBSearcher
-	notify         func(string)
+	eng        *engine.ServerAgent
+	msgBus     *bus.Bus
+	cfg        engine.Config
+	kbSearcher *mcpclient.KBSearcher
+	notify     func(string)
 	// lastHash is the hash of the last triage result (healthy or not).
 	// Reset to "" on recovery so the next unhealthy tick computes a fresh hash.
 	lastHash string

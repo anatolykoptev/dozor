@@ -15,9 +15,9 @@ func makeStatus(name string, state ContainerState, dependsOn string) ServiceStat
 
 func makeAlert(service string) Alert {
 	return Alert{
-		Level:   AlertError,
-		Service: service,
-		Title:   service + " has errors",
+		Level:     AlertError,
+		Service:   service,
+		Title:     service + " has errors",
 		Timestamp: time.Now(),
 	}
 }

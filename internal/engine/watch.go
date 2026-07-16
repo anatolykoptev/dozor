@@ -138,7 +138,6 @@ func filterAlerts(alerts []Alert, ft *FailureTracker, fd *FlapDetector) []Alert 
 	return confirmed
 }
 
-
 func hashAlerts(alerts []Alert) string {
 	if len(alerts) == 0 {
 		return "none"

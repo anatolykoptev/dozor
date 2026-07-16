@@ -131,4 +131,3 @@ func (r *AlertRing) Recent(since time.Duration, limit int) []AlertRecord {
 // DefaultAlertRing is the package-level singleton used by the alerts-active MCP
 // tool and the notifyAlertFn funnel in cmd/dozor/gateway.go.
 var DefaultAlertRing = NewAlertRing(defaultRingCapacity)
-

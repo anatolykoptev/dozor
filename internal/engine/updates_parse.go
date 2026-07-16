@@ -49,7 +49,7 @@ var versionFlags = map[string]string{
 	"gh": "--version", "lazygit": "--version",
 	"nvim": "--version", "neovim": "--version",
 	"kubectl": "version --client --short 2>/dev/null || kubectl version --client",
-	"jq": "--version", "yq": "--version",
+	"jq":      "--version", "yq": "--version",
 	"micro": "--version", "mc": "--version",
 	"just": "--version", "task": "--version",
 	"deno": "--version", "bun": "--version",

@@ -210,8 +210,9 @@ func TestFormatLLMAlerts_CanonicalLines(t *testing.T) {
 // triple duplication: a proxy-model alert must render the model ONCE (in the
 // service), not in the title and description again.
 // Bug shape (2026-06-10 report #4bf4388c15fc7fad):
-//   llm:LLM proxy gemini…: upstream error (HTTP 502) — llm:LLM proxy gemini…:
-//   upstream error (HTTP 502): LLM proxy gemini…: upstream error (HTTP 502): {body}
+//
+//	llm:LLM proxy gemini…: upstream error (HTTP 502) — llm:LLM proxy gemini…:
+//	upstream error (HTTP 502): LLM proxy gemini…: upstream error (HTTP 502): {body}
 func TestAlertIssueLine_NoDuplication(t *testing.T) {
 	t.Parallel()
 

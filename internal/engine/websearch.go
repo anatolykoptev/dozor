@@ -97,7 +97,7 @@ func (p *BraveSearchProvider) Search(ctx context.Context, query string, count in
 		}
 		lines = append(lines, fmt.Sprintf("%d. %s\n   %s", i+1, item.Title, item.URL))
 		if item.Description != "" {
-			lines = append(lines, "   " + item.Description)
+			lines = append(lines, "   "+item.Description)
 		}
 	}
 
@@ -114,7 +114,7 @@ const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 func (p *DuckDuckGoSearchProvider) Search(ctx context.Context, query string, count int) (string, error) {
 	searchURL := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,searchURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -291,7 +291,7 @@ func WebFetch(ctx context.Context, fetchURL string, maxLength int) (string, erro
 		maxLength = 50000
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,fetchURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}

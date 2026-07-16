@@ -51,10 +51,10 @@ func (t *multiTypeTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"count":  map[string]any{"type": "integer"},
-			"flag":   map[string]any{"type": "boolean"},
-			"label":  map[string]any{"type": "string"},
-			"items":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"count": map[string]any{"type": "integer"},
+			"flag":  map[string]any{"type": "boolean"},
+			"label": map[string]any{"type": "string"},
+			"items": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		},
 	}
 }

@@ -238,9 +238,9 @@ func parseBoolEnv(name string) bool {
 //   - one real `git fetch origin <branch>` up front (mirrors the timer), THEN:
 //   - on target branch, ff pull         → syncFFUpdated / syncUpToDate, or on
 //     ff-refusal the P0 classifier (classifyFFFailure):
-//       ahead>0  → syncDiverged
-//       ahead==0 → untracked-collision → syncUntrackedCollision, or with the
-//                  quarantine flag ON: syncFFAfterQuarantine / syncQuarantineCapped
+//     ahead>0  → syncDiverged
+//     ahead==0 → untracked-collision → syncUntrackedCollision, or with the
+//     quarantine flag ON: syncFFAfterQuarantine / syncQuarantineCapped
 //   - on a feature branch, ref-ff       → syncFFUpdated / syncUpToDate / syncCheckedOutElsewhere / syncDiverged
 //     (a bare ref-ff cannot collide with an untracked worktree file → diverged is
 //     exact: the local ref is non-ff to origin)

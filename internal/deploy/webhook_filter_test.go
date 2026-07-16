@@ -346,7 +346,7 @@ func TestHandler_DebounceCoalescesBurst(t *testing.T) {
 	cfg := &Config{
 		Repos: map[string]RepoConfig{
 			"anatolykoptev/memdb": {
-				ComposePath:     "/tmp", SourcePath: "/tmp",
+				ComposePath: "/tmp", SourcePath: "/tmp",
 				Services:        []string{"memdb-go"},
 				DebounceSeconds: 60,
 			},
