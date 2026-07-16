@@ -1,70 +1,20 @@
-name: Deploy
+name: Deploy (manual)
 
+# Manual deploy escape hatch. Normal auto-deploy now happens ONLY on release
+# (the gated `deploy` job in release-please.yml). Use this to deploy an arbitrary
+# ref without cutting a release — e.g. an emergency hotfix off main, or to
+# re-deploy a specific tag. Shares the reusable _deploy.yml logic.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-
-env:
-  BINARY_NAME: dozor
-  INSTALL_DIR: /home/krolik/.local/bin
-  SERVICE_USER: krolik
+    inputs:
+      ref:
+        description: "Git ref to build + deploy"
+        required: false
+        default: main
 
 jobs:
   deploy:
-    runs-on: ubuntu-24.04-arm
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-
-      - name: Build
-        run: go build -o $BINARY_NAME ./cmd/dozor
-
-      - name: Setup SSH
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_PORT: ${{ secrets.SSH_PORT }}
-        run: |
-          set -e
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H -p "$SSH_PORT" -T 10 "$SSH_HOST" >> ~/.ssh/known_hosts
-
-          cat > ~/.ssh/config << EOF
-          Host server
-            HostName $SSH_HOST
-            Port $SSH_PORT
-            User $SSH_USER
-            IdentityFile ~/.ssh/id_rsa
-            StrictHostKeyChecking no
-          EOF
-
-      - name: Deploy binary
-        run: |
-          scp $BINARY_NAME server:/tmp/$BINARY_NAME
-          ssh server "
-            sudo systemctl --user -M $SERVICE_USER@ stop $BINARY_NAME || true
-            sudo install -o $SERVICE_USER -g $SERVICE_USER -m 0755 /tmp/$BINARY_NAME $INSTALL_DIR/$BINARY_NAME
-            sudo systemctl --user -M $SERVICE_USER@ start $BINARY_NAME
-            rm /tmp/$BINARY_NAME
-          "
-
-      - name: Health check
-        run: |
-          sleep 2
-          ssh server "sudo systemctl --user -M $SERVICE_USER@ is-active $BINARY_NAME"
-          ssh server "curl -sf http://localhost:8765/health"
-
-      - name: Show status
-        if: always()
-        run: |
-          ssh server "sudo systemctl --user -M $SERVICE_USER@ status $BINARY_NAME --no-pager" || true
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      ref: ${{ inputs.ref }}
+    secrets: inherit
