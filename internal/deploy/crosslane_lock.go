@@ -118,9 +118,19 @@ func defaultCILockReleaser(env []string) {
 // repo namespacing via GITHUB_REPOSITORY=dozor/<repo> keeps dozor slots
 // distinct from CI runner slots for the same SHA.
 func ciLockEnv(repo, buildID string) []string {
+	// Guard against a JOB_KEY divergence: the scripts derive RUN_ID via
+	// ${GITHUB_RUN_ID:-$$}, and bash `:-` fires on EMPTY too — so an empty
+	// buildID would make the acquire and release (separate procs) fall to
+	// DIFFERENT $$ PIDs, the release key mismatch, and the acquired slot leak
+	// until the 1h stale-steal. A fixed placeholder keeps RUN_ID non-empty and
+	// stable across the acquire/release pair (reachable via head_commit:null).
+	runID := buildID
+	if runID == "" {
+		runID = "nosha"
+	}
 	return []string{
 		"GITHUB_REPOSITORY=dozor/" + repo,
-		"GITHUB_RUN_ID=" + buildID,
+		"GITHUB_RUN_ID=" + runID,
 		"GITHUB_JOB=" + ciLockJob,
 		"CI_LOCK_WAIT_SECS=" + strconv.Itoa(ciLockWaitSecs),
 	}
@@ -143,10 +153,12 @@ func acquireCrossLaneLock(ctx context.Context, repo, buildID string) func() {
 		wait := time.Duration(ciLockWaitSecs) * time.Second
 		slog.Warn("cross-lane lock acquire timed out, proceeding unlocked",
 			"repo", repo, "build_id", buildID, "wait", wait, "error", err)
+		CrossLaneLockTotal.WithLabelValues("timeout_proceeded").Inc()
 		// Fail-safe: still attempt release (no-op if acquire wrote no state).
 		return func() { ciLockReleaser(env) }
 	}
 	slog.Info("deploy: cross-lane lock acquired for heavy build",
 		"repo", repo, "build_id", buildID)
+	CrossLaneLockTotal.WithLabelValues("acquired").Inc()
 	return func() { ciLockReleaser(env) }
 }

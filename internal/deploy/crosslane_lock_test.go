@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // fakeLock is a stand-in for the box-wide ci-lock scripts. It records
@@ -304,5 +306,46 @@ func TestCrossLaneLock_AcquireTimeoutProceedsUnlocked(t *testing.T) {
 	}
 	if rel != 1 {
 		t.Fatalf("expected fail-safe release attempt after timeout, got releases=%d", rel)
+	}
+}
+
+// TestCrossLaneLock_CounterOutcomes asserts the P2 loop-fix metric increments
+// on BOTH outcomes so a silently-degraded (timeout → unlocked) lock is visible
+// to dashboards/alerting.
+func TestCrossLaneLock_CounterOutcomes(t *testing.T) {
+	origAcq := ciLockAcquirer
+	origRel := ciLockReleaser
+	t.Cleanup(func() { ciLockAcquirer = origAcq; ciLockReleaser = origRel })
+	ciLockReleaser = func([]string) {}
+
+	ciLockAcquirer = func(context.Context, []string) (bool, error) { return true, nil }
+	before := testutil.ToFloat64(CrossLaneLockTotal.WithLabelValues("acquired"))
+	acquireCrossLaneLock(context.Background(), "owner/rust-svc", "sha1")()
+	if delta := testutil.ToFloat64(CrossLaneLockTotal.WithLabelValues("acquired")) - before; delta != 1 {
+		t.Fatalf("acquired counter: want +1, got +%v", delta)
+	}
+
+	ciLockAcquirer = func(context.Context, []string) (bool, error) {
+		return false, errors.New("ci-lock: timed out")
+	}
+	before = testutil.ToFloat64(CrossLaneLockTotal.WithLabelValues("timeout_proceeded"))
+	acquireCrossLaneLock(context.Background(), "owner/rust-svc", "sha2")()
+	if delta := testutil.ToFloat64(CrossLaneLockTotal.WithLabelValues("timeout_proceeded")) - before; delta != 1 {
+		t.Fatalf("timeout_proceeded counter: want +1, got +%v", delta)
+	}
+}
+
+// TestCiLockEnv_EmptyBuildIDGetsPlaceholder locks the empty-SHA guard: an empty
+// buildID must NOT pass through (else the scripts' ${GITHUB_RUN_ID:-$$} diverges
+// acquire vs release JOB_KEY → the slot leaks until the 1h stale-steal). RED
+// against the pre-guard verbatim pass-through.
+func TestCiLockEnv_EmptyBuildIDGetsPlaceholder(t *testing.T) {
+	if got := envRunID(ciLockEnv("owner/rust-svc", "")); got == "" {
+		t.Fatal("GITHUB_RUN_ID empty for empty buildID — falls back to $$, diverging acquire/release JOB_KEY")
+	} else if got != "nosha" {
+		t.Fatalf("GITHUB_RUN_ID = %q for empty buildID, want placeholder %q", got, "nosha")
+	}
+	if got := envRunID(ciLockEnv("owner/rust-svc", "abc123")); got != "abc123" {
+		t.Fatalf("non-empty buildID should pass through unchanged, got %q", got)
 	}
 }

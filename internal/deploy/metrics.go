@@ -118,6 +118,19 @@ var (
 		Help: "Builds currently executing, by class (heavy|light).",
 	}, []string{"class"})
 
+	// CrossLaneLockTotal counts cross-lane box-wide ci-lock outcomes for HEAVY
+	// builds (P2). outcome label values:
+	//   "acquired"          — the shared ci-lock slot was acquired; the heavy build
+	//                         is serialised against the CI-runner + other heavy lanes
+	//   "timeout_proceeded" — no slot freed within CI_LOCK_WAIT_SECS; the build
+	//                         proceeded UNLOCKED (fail-safe, no deadlock). A
+	//                         sustained tick here means cross-lane serialisation is
+	//                         silently degrading to a no-op — alert on it.
+	CrossLaneLockTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_crosslane_lock_total",
+		Help: "Cross-lane box-wide build-lock outcomes for heavy builds, by outcome.",
+	}, []string{"outcome"})
+
 	// DeployClonePullTotal counts auto-pull attempts on deploy clones before
 	// each compose build. outcome label values:
 	//   "up_to_date"      — remote had no new commits, nothing to do
