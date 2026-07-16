@@ -131,6 +131,26 @@ var (
 		Help: "Cross-lane box-wide build-lock outcomes for heavy builds, by outcome.",
 	}, []string{"outcome"})
 
+	// LoadDeferredTotal counts absolute-load backpressure guard outcomes for
+	// HEAVY builds (P3). The guard waits for the box 1-minute load average to
+	// drop below DOZOR_MAX_LOADAVG (default 2*NumCPU) before a heavy build
+	// proceeds, with a fail-safe cap (DOZOR_LOAD_WAIT_SECS, default 600s).
+	// outcome label values:
+	//   "proceeded_immediately"  — load already below threshold, no wait
+	//   "proceeded_after_wait"   — waited, load dropped below threshold, proceeded
+	//   "proceeded_timeout"      — waited to the cap (or ctx cancelled), still high, proceeded anyway
+	//   "proceeded_read_error"   — couldn't read loadavg, proceeded (fail-open)
+	//
+	// A sustained tick on "proceeded_timeout" means the box is chronically
+	// overloaded — the guard is silently degrading to a no-op. A tick on
+	// "proceeded_read_error" on a Linux host means /proc/loadavg is missing
+	// (unexpected; investigate). On non-Linux hosts read errors are expected
+	// and the guard is a no-op by design.
+	LoadDeferredTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_build_load_deferred_total",
+		Help: "Absolute-load backpressure guard outcomes for heavy builds, by outcome.",
+	}, []string{"outcome"})
+
 	// DeployClonePullTotal counts auto-pull attempts on deploy clones before
 	// each compose build. outcome label values:
 	//   "up_to_date"      — remote had no new commits, nothing to do
