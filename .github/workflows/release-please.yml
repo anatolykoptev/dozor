@@ -1,14 +1,17 @@
 name: release-please
 
-# Conventional-commit-driven versioning ONLY (tag + GitHub release + changelog).
-# This job is lightweight and stays on GitHub-hosted runners (free tier).
+# Conventional-commit-driven versioning (tag + GitHub release + changelog) AND
+# deploy-on-release. The release-please job is lightweight (free tier). When it
+# cuts a release, the gated `deploy` job (below) builds the tagged binary and
+# ships it to krolik — this is the ONLY path that auto-deploys dozor now
+# (deploy.yml is manual-only). Deploy is folded in HERE rather than a separate
+# `on: release` workflow because a GITHUB_TOKEN-created release does NOT trigger
+# other workflows (GitHub's recursion guard) — an `on: release` deploy would
+# silently never fire. `release_created` gating keeps it in this one job graph.
 #
-# Binaries are NOT built here: GoReleaser cross-compile + docker builds are heavy
-# and would consume PAID GitHub Actions minutes (operator rule: never use paid
-# GHA). The release binaries are built + uploaded LOCALLY on the krolik box by
-# ~/bin/goreleaser-release-local.sh (a systemd timer that detects a new
-# release-please tag whose GitHub release has no binary assets and runs
-# `goreleaser release` on the box). Do NOT add a goreleaser job back here.
+# Release BINARIES (downloadable cross-arch assets) are still built LOCALLY on
+# krolik by ~/bin/goreleaser-release-local.sh (heavy GoReleaser cross-compile
+# must not burn PAID GHA minutes). Do NOT add a goreleaser job here.
 on:
   push:
     branches:
@@ -22,10 +25,23 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           target-branch: main
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # Auto-deploy ONLY when a release was just cut (recursion-guard-safe, see header).
+  deploy:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      ref: ${{ needs.release-please.outputs.tag_name }}
+    secrets: inherit
