@@ -430,6 +430,17 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 	BuildInflight.WithLabelValues(class).Inc()
 	defer BuildInflight.WithLabelValues(class).Dec()
 
+	// P3: absolute-load backpressure guard. Heavy builds ONLY — waits for the
+	// box 1-minute load average to drop below DOZOR_MAX_LOADAVG (default
+	// 2*NumCPU) before proceeding. Fail-safe: proceeds anyway after the cap
+	// (DOZOR_LOAD_WAIT_SECS, default 600s). Fail-open: proceeds immediately
+	// if /proc/loadavg can't be read (non-Linux). Runs BEFORE the P2
+	// cross-lane lock so it does NOT hold the box-wide ci-lock while
+	// idle-waiting on load (that would stall the CI lane).
+	if isHeavy {
+		waitForLoadBelowThreshold(ctx)
+	}
+
 	// P2: cross-lane box-wide lock. Heavy builds ONLY — a non-heavy build
 	// never touches the lock (cheap go/static deploys stay unblocked).
 	// Acquire before the build; defer the release so it fires on EVERY exit
