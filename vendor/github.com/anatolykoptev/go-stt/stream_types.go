@@ -1,14 +1,24 @@
 package stt
 
 // StreamParams configures a WebSocket streaming session.
+//
+// VAD and Punctuate use *bool so that the zero value (nil) can default to
+// true (matching the server's default behavior). Use stt.Bool(true) or
+// stt.Bool(false) to set them explicitly.
 type StreamParams struct {
 	Language       string // default: "en"
-	VAD            bool   // default: true
+	VAD            *bool  // default: true (nil → true)
 	InterimResults bool
 	SmartFormat    bool
-	Punctuate      bool   // default: true
+	Punctuate      *bool  // default: true (nil → true)
 	Encoding       string // "pcm_s16le" (default) or "pcm_f32le"
 	SampleRate     int    // default: 16000
+}
+
+// Bool is a helper that returns a pointer to b, for use with *bool fields
+// in StreamParams (e.g. stt.StreamParams{VAD: stt.Bool(false)}).
+func Bool(b bool) *bool {
+	return &b
 }
 
 // StreamEvent is received from the server during streaming.

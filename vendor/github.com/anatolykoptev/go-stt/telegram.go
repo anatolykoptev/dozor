@@ -11,7 +11,7 @@ import (
 // TranscribeURL downloads audio from a URL, transcribes it, and cleans up the temp file.
 // Useful for Telegram voice messages where you have the file download URL.
 func (c *Client) TranscribeURL(ctx context.Context, audioURL string) (*Response, error) {
-	tmp, err := downloadToTemp(ctx, audioURL)
+	tmp, err := c.downloadToTemp(ctx, audioURL)
 	if err != nil {
 		return nil, fmt.Errorf("download audio: %w", err)
 	}
@@ -21,7 +21,7 @@ func (c *Client) TranscribeURL(ctx context.Context, audioURL string) (*Response,
 
 // TranscribeURLVerbose is like TranscribeURL but returns verbose results.
 func (c *Client) TranscribeURLVerbose(ctx context.Context, audioURL string) (*VerboseResponse, error) {
-	tmp, err := downloadToTemp(ctx, audioURL)
+	tmp, err := c.downloadToTemp(ctx, audioURL)
 	if err != nil {
 		return nil, fmt.Errorf("download audio: %w", err)
 	}
@@ -29,12 +29,17 @@ func (c *Client) TranscribeURLVerbose(ctx context.Context, audioURL string) (*Ve
 	return c.TranscribeVerbose(ctx, tmp)
 }
 
-func downloadToTemp(ctx context.Context, url string) (string, error) {
+// downloadToTemp downloads audio from url to a temp file and returns its path.
+// It uses the Client's configured http.Client (with timeout) instead of
+// http.DefaultClient, and the Client's tempDir if configured (fallback
+// os.TempDir()). The caller is responsible for removing the temp file.
+func (c *Client) downloadToTemp(ctx context.Context, url string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	c.setAuth(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -42,7 +47,8 @@ func downloadToTemp(ctx context.Context, url string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download: HTTP %d", resp.StatusCode)
 	}
-	f, err := os.CreateTemp("", "stt-voice-*.ogg")
+	dir := c.tempDir
+	f, err := os.CreateTemp(dir, "stt-voice-*.ogg")
 	if err != nil {
 		return "", err
 	}

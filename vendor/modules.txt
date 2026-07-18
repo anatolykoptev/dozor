@@ -37,7 +37,7 @@ github.com/anatolykoptev/go-kit/toolutil
 github.com/anatolykoptev/go-kit/tracing
 github.com/anatolykoptev/go-kit/tracing/httpmw
 github.com/anatolykoptev/go-kit/tracing/slogh
-# github.com/anatolykoptev/go-stt v0.2.0
+# github.com/anatolykoptev/go-stt v0.3.0
 ## explicit; go 1.24
 github.com/anatolykoptev/go-stt
 # github.com/beorn7/perks v1.0.1

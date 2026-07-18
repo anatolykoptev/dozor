@@ -30,7 +30,8 @@ func (c *Client) TranscribeVerbose(ctx context.Context, audioPath string) (*Verb
 	}
 	defer f.Close()
 
-	body, ct, err := c.buildMultipart(f, filepath.Base(audioPath), "verbose_json")
+	var body bytes.Buffer
+	ct, err := c.buildMultipart(&body, f, filepath.Base(audioPath), "verbose_json")
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +69,8 @@ func (c *Client) TranscribeRaw(ctx context.Context, audioPath string) ([]byte, e
 	}
 	defer f.Close()
 
-	body, ct, err := c.buildMultipart(f, filepath.Base(audioPath), "")
+	var body bytes.Buffer
+	ct, err := c.buildMultipart(&body, f, filepath.Base(audioPath), "")
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +100,8 @@ func (c *Client) TranscribeReader(ctx context.Context, r io.Reader, filename str
 
 // transcribeFromReader is the shared implementation for Transcribe and TranscribeReader.
 func (c *Client) transcribeFromReader(ctx context.Context, r io.Reader, filename, formatOverride string) (*Response, error) {
-	body, ct, err := c.buildMultipart(r, filename, formatOverride)
+	var body bytes.Buffer
+	ct, err := c.buildMultipart(&body, r, filename, formatOverride)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +138,7 @@ func (c *Client) Models(ctx context.Context) (*ModelList, error) {
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
+		c.setAuth(req)
 
 		resp, err := c.http.Do(req)
 		if err != nil {
