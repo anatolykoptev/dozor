@@ -22,6 +22,10 @@ type streamFileConfig struct {
 	chunkDuration time.Duration
 	interimResult bool
 	sampleRate    int
+	vad           *bool
+	smartFormat   bool
+	punctuate     *bool
+	encoding      string
 }
 
 func defaultStreamFileConfig() streamFileConfig {
@@ -52,6 +56,26 @@ func WithStreamSampleRate(rate int) StreamFileOption {
 	return func(c *streamFileConfig) { c.sampleRate = rate }
 }
 
+// WithStreamVAD enables or disables voice activity detection (default: true).
+func WithStreamVAD(v bool) StreamFileOption {
+	return func(c *streamFileConfig) { c.vad = &v }
+}
+
+// WithStreamSmartFormat enables or disables smart formatting (default: false).
+func WithStreamSmartFormat(v bool) StreamFileOption {
+	return func(c *streamFileConfig) { c.smartFormat = v }
+}
+
+// WithStreamPunctuate enables or disables automatic punctuation (default: true).
+func WithStreamPunctuate(v bool) StreamFileOption {
+	return func(c *streamFileConfig) { c.punctuate = &v }
+}
+
+// WithStreamEncoding sets the audio encoding (default: "pcm_s16le").
+func WithStreamEncoding(enc string) StreamFileOption {
+	return func(c *streamFileConfig) { c.encoding = enc }
+}
+
 // StreamFile streams a WAV/PCM file over WebSocket in chunks and returns all final events.
 // It simulates real-time playback by sleeping between chunks.
 func StreamFile(ctx context.Context, baseURL string, audioPath string, opts ...StreamFileOption) ([]StreamEvent, error) {
@@ -69,7 +93,11 @@ func StreamFile(ctx context.Context, baseURL string, audioPath string, opts ...S
 
 	params := StreamParams{
 		Language:       cfg.language,
+		VAD:            cfg.vad,
 		InterimResults: cfg.interimResult,
+		SmartFormat:    cfg.smartFormat,
+		Punctuate:      cfg.punctuate,
+		Encoding:       cfg.encoding,
 		SampleRate:     cfg.sampleRate,
 	}
 

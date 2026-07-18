@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/a2aproject/a2a-go v0.3.13
 	github.com/anatolykoptev/go-kit v0.85.0
-	github.com/anatolykoptev/go-stt v0.2.0
+	github.com/anatolykoptev/go-stt v0.3.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/google/uuid v1.6.0

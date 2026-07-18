@@ -1,7 +1,6 @@
 package stt
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,65 +11,93 @@ import (
 )
 
 // buildMultipart creates a multipart body with audio content and all configured fields.
-// formatOverride replaces c.format when non-empty.
-func (c *Client) buildMultipart(audioReader io.Reader, filename, formatOverride string) (*bytes.Buffer, string, error) {
-	var body bytes.Buffer
-	w := multipart.NewWriter(&body)
+// formatOverride replaces c.format when non-empty. The body is written to w so
+// that callers (and tests) can inject a custom io.Writer.
+func (c *Client) buildMultipart(w io.Writer, audioReader io.Reader, filename, formatOverride string) (string, error) {
+	mw := multipart.NewWriter(w)
 
-	part, err := w.CreateFormFile("file", filename)
+	part, err := mw.CreateFormFile("file", filename)
 	if err != nil {
-		return nil, "", fmt.Errorf("create form file: %w", err)
+		return "", fmt.Errorf("create form file: %w", err)
 	}
 	if _, err := io.Copy(part, audioReader); err != nil {
-		return nil, "", fmt.Errorf("copy audio: %w", err)
+		return "", fmt.Errorf("copy audio: %w", err)
 	}
 
-	_ = w.WriteField("model", c.model)
-	_ = w.WriteField("language", c.language)
+	if err := writeField(mw, "model", c.model); err != nil {
+		return "", err
+	}
+	if err := writeField(mw, "language", c.language); err != nil {
+		return "", err
+	}
 
 	format := c.format
 	if formatOverride != "" {
 		format = formatOverride
 	}
-	_ = w.WriteField("response_format", format)
-
-	if err := c.writeOptionalFields(w); err != nil {
-		return nil, "", err
+	if err := writeField(mw, "response_format", format); err != nil {
+		return "", err
 	}
 
-	if err := w.Close(); err != nil {
-		return nil, "", fmt.Errorf("close writer: %w", err)
+	if err := c.writeOptionalFields(mw); err != nil {
+		return "", err
 	}
-	return &body, w.FormDataContentType(), nil
+
+	if err := mw.Close(); err != nil {
+		return "", fmt.Errorf("close writer: %w", err)
+	}
+	return mw.FormDataContentType(), nil
 }
 
 // writeOptionalFields writes optional client fields to the multipart writer.
 func (c *Client) writeOptionalFields(w *multipart.Writer) error {
 	if c.punctuate != nil {
-		_ = w.WriteField("punctuate", strconv.FormatBool(*c.punctuate))
+		if err := writeField(w, "punctuate", strconv.FormatBool(*c.punctuate)); err != nil {
+			return err
+		}
 	}
 	if c.smartFormat != nil {
-		_ = w.WriteField("smart_format", strconv.FormatBool(*c.smartFormat))
+		if err := writeField(w, "smart_format", strconv.FormatBool(*c.smartFormat)); err != nil {
+			return err
+		}
 	}
 	if c.diarize {
-		_ = w.WriteField("diarize", "true")
+		if err := writeField(w, "diarize", "true"); err != nil {
+			return err
+		}
 	}
 	if c.diarizeSpeakers > 0 {
-		_ = w.WriteField("diarize_speakers", strconv.Itoa(c.diarizeSpeakers))
+		if err := writeField(w, "diarize_speakers", strconv.Itoa(c.diarizeSpeakers)); err != nil {
+			return err
+		}
 	}
 	if len(c.keywords) > 0 {
 		b, err := json.Marshal(c.keywords)
 		if err != nil {
 			return fmt.Errorf("marshal keywords: %w", err)
 		}
-		_ = w.WriteField("keywords", string(b))
+		if err := writeField(w, "keywords", string(b)); err != nil {
+			return err
+		}
 	}
 	if len(c.customSpelling) > 0 {
 		b, err := json.Marshal(c.customSpelling)
 		if err != nil {
 			return fmt.Errorf("marshal custom_spelling: %w", err)
 		}
-		_ = w.WriteField("custom_spelling", string(b))
+		if err := writeField(w, "custom_spelling", string(b)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeField writes a single form field to the multipart writer, wrapping any
+// error so that a failing WriteField is never silently ignored (which would
+// produce a malformed request body).
+func writeField(w *multipart.Writer, name, value string) error {
+	if err := w.WriteField(name, value); err != nil {
+		return fmt.Errorf("write field %q: %w", name, err)
 	}
 	return nil
 }
@@ -82,6 +109,7 @@ func (c *Client) postTranscription(ctx context.Context, body io.Reader, contentT
 		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", contentType)
+	c.setAuth(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
