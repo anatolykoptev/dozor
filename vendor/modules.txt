@@ -37,6 +37,9 @@ github.com/anatolykoptev/go-kit/toolutil
 github.com/anatolykoptev/go-kit/tracing
 github.com/anatolykoptev/go-kit/tracing/httpmw
 github.com/anatolykoptev/go-kit/tracing/slogh
+# github.com/anatolykoptev/go-mcpserver v0.16.0
+## explicit; go 1.26
+github.com/anatolykoptev/go-mcpserver
 # github.com/anatolykoptev/go-stt v0.3.0
 ## explicit; go 1.24
 github.com/anatolykoptev/go-stt
@@ -110,7 +113,7 @@ github.com/go-logr/stdr
 # github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 ## explicit; go 1.16
 github.com/go-telegram-bot-api/telegram-bot-api/v5
-# github.com/google/jsonschema-go v0.4.2
+# github.com/google/jsonschema-go v0.4.3
 ## explicit; go 1.23.0
 github.com/google/jsonschema-go/jsonschema
 # github.com/google/uuid v1.6.0
@@ -134,7 +137,7 @@ github.com/moby/docker-image-spec/specs-go/v1
 ## explicit; go 1.18
 # github.com/moby/term v0.5.2
 ## explicit; go 1.18
-# github.com/modelcontextprotocol/go-sdk v1.5.0
+# github.com/modelcontextprotocol/go-sdk v1.6.1
 ## explicit; go 1.25.0
 github.com/modelcontextprotocol/go-sdk/auth
 github.com/modelcontextprotocol/go-sdk/internal/json

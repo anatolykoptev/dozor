@@ -1,0 +1,2 @@
+Managed Nodes:
+- krolik: 185.196.220.67 (SSH: 22)
