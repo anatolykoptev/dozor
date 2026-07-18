@@ -1,0 +1,12 @@
+{
+  "nodes": [
+    {
+      "name": "krolik",
+      "public_ip": "185.196.220.67",
+      "private_ip": "10.0.0.109",
+      "ssh_port": 22,
+      "type": "remote",
+      "status": "offline"
+    }
+  ]
+}

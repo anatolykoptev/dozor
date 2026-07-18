@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -24,6 +23,7 @@ import (
 	"github.com/anatolykoptev/dozor/pkg/extensions/websearch"
 	kitllm "github.com/anatolykoptev/go-kit/llm"
 	session "github.com/anatolykoptev/go-kit/session"
+	"github.com/anatolykoptev/go-mcpserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -140,10 +140,13 @@ func isLoopbackBind(host string) bool {
 
 // buildMCPServer creates an MCP server and registers all core tools.
 func buildMCPServer(eng *engine.ServerAgent, execOpts tools.ExecOptions) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{
+	server := mcpserver.NewServer(&mcp.Implementation{
 		Name:    "dozor",
 		Version: version,
-	}, nil)
+	}, mcpserver.Config{
+		KeepAlive:   30 * time.Second,
+		SchemaCache: mcp.NewSchemaCache(),
+	})
 	tools.RegisterAllWithOpts(server, eng, execOpts)
 	return server
 }
@@ -171,25 +174,6 @@ func buildExtensionRegistry(eng *engine.ServerAgent, registry *toolreg.Registry,
 	}
 	slog.Info("extensions loaded", slog.Int("count", len(extRegistry.List())))
 	return extRegistry
-}
-
-// buildMCPHTTPHandler returns a streamable HTTP handler for the given MCP server.
-func buildMCPHTTPHandler(server *mcp.Server) http.Handler {
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return server
-	}, &mcp.StreamableHTTPOptions{Stateless: true})
-}
-
-// healthHandler returns a simple JSON health endpoint handler.
-func healthHandler(mode string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if mode != "" {
-			fmt.Fprintf(w, `{"status":"ok","service":"dozor","version":"%s","mode":"%s"}`, version, mode)
-		} else {
-			fmt.Fprintf(w, `{"status":"ok","service":"dozor","version":"%s"}`, version)
-		}
-	}
 }
 
 // startHTTPServer runs srv in a goroutine and shuts it down when ctx is done.

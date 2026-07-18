@@ -25,6 +25,8 @@ import (
 	"github.com/anatolykoptev/go-kit/tracing"
 	"github.com/anatolykoptev/go-kit/tracing/httpmw"
 	"github.com/anatolykoptev/go-kit/tracing/slogh"
+	"github.com/anatolykoptev/go-mcpserver"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -162,26 +164,40 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	}()
 	defer webhookLimiter.Close()
 
-	// 4. HTTP mux: MCP + health + webhook + metrics.
-	mx := httpmw.NewServeMux()
-	mx.Handle("/mcp", buildMCPHTTPHandler(mcpServer))
-	mx.Handle("/mcp/", buildMCPHTTPHandler(mcpServer))
-	mx.HandleFunc("GET /health", healthHandler("gateway"))
-	mx.Handle("/metrics", promhttp.Handler())
-	registerWebhookHandler(mx.ServeMux, msgBus, notifyFn, notifyAlertFn)
-	registerAlertmanagerWebhookHandler(mx.ServeMux, notifyAlertFn)
-	registerDeployWebhook(sigCtx, mx.ServeMux, notifyFn, notifyAlertFn)
-	if dockerCli := eng.DockerClient(); dockerCli != nil {
-		registerLogsHandler(mx.ServeMux, dockerCli)
-	} else {
-		slog.Warn("/api/logs not registered: docker client unavailable (Docker unreachable at startup)")
-	}
-
-	// 5. A2A protocol (fail-closed: exits if DOZOR_A2A_SECRET is unset and
-	// DOZOR_A2A_ALLOW_INSECURE is not explicitly set to "true").
-	a2aSecret := os.Getenv("DOZOR_A2A_SECRET")
-	if err := a2a.Register(mx.ServeMux, stack.loop, stack.registry, "http://127.0.0.1:"+port, version, a2aSecret); err != nil {
-		slog.Error("a2a registration failed — refusing to start", slog.Any("error", err))
+	// 4. HTTP mux: build via mcpserver.Build (MCP + health + middleware) with
+	// custom gateway routes (webhooks, A2A, metrics, logs) via Routes func.
+	mcpHandler, err := mcpserver.Build(mcpServer, mcpserver.Config{
+		Name:                       "dozor",
+		Version:                    version,
+		Port:                       port,
+		KeepAlive:                  30 * time.Second,
+		SchemaCache:                mcp.NewSchemaCache(),
+		DisableLocalhostProtection: true,
+		Logger:                     slog.Default(),
+		MCPLogger:                  slog.Default(),
+		JSONResponse:               true,
+		Metrics:                    nil, // prometheus handler mounted directly below
+		Routes: func(mux *http.ServeMux) {
+			mux.Handle("/metrics", promhttp.Handler())
+			registerWebhookHandler(mux, msgBus, notifyFn, notifyAlertFn)
+			registerAlertmanagerWebhookHandler(mux, notifyAlertFn)
+			registerDeployWebhook(sigCtx, mux, notifyFn, notifyAlertFn)
+			if dockerCli := eng.DockerClient(); dockerCli != nil {
+				registerLogsHandler(mux, dockerCli)
+			} else {
+				slog.Warn("/api/logs not registered: docker client unavailable (Docker unreachable at startup)")
+			}
+			// 5. A2A protocol (fail-closed: exits if DOZOR_A2A_SECRET is unset and
+			// DOZOR_A2A_ALLOW_INSECURE is not explicitly set to "true").
+			a2aSecret := os.Getenv("DOZOR_A2A_SECRET")
+			if err := a2a.Register(mux, stack.loop, stack.registry, "http://127.0.0.1:"+port, version, a2aSecret); err != nil {
+				slog.Error("a2a registration failed — refusing to start", slog.Any("error", err))
+				os.Exit(1)
+			}
+		},
+	})
+	if err != nil {
+		slog.Error("MCP handler build failed", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -250,7 +266,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	}
 	startHTTPServer(sigCtx, &http.Server{
 		Addr:         bindHost + ":" + port,
-		Handler:      httpmw.Handler("dozor", recoveryMiddleware(mx)),
+		Handler:      httpmw.Handler("dozor", recoveryMiddleware(mcpHandler)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 300 * time.Second,
 	}, "gateway")

@@ -3,15 +3,12 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/tools"
-	"github.com/anatolykoptev/go-kit/tracing/httpmw"
+	"github.com/anatolykoptev/go-mcpserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -47,25 +44,24 @@ func runServe(cfg engine.Config, eng *engine.ServerAgent) {
 		port = p
 	}
 
-	mx := httpmw.NewServeMux()
-	mx.Handle("/mcp", buildMCPHTTPHandler(server))
-	mx.Handle("/mcp/", buildMCPHTTPHandler(server))
-	mx.HandleFunc("GET /health", healthHandler(""))
-
-	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
 	bindHost := resolveBindHost()
-	slog.Info("binding MCP server", slog.String("addr", bindHost+":"+port))
 	if !isLoopbackBind(bindHost) {
 		slog.Warn("MCP server bound to non-loopback interface — network-reachable",
 			slog.String("bind_host", bindHost),
 			slog.String("hint", "set DOZOR_BIND_HOST=127.0.0.1 for loopback-only binding"))
 	}
-	startHTTPServer(sigCtx, &http.Server{
-		Addr:         bindHost + ":" + port,
-		Handler:      mx,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second,
-	}, "MCP server")
+
+	if err := mcpserver.Run(server, mcpserver.Config{
+		Name:                       "dozor",
+		Version:                    version,
+		Port:                       port,
+		KeepAlive:                  30 * time.Second,
+		SchemaCache:                mcp.NewSchemaCache(),
+		DisableLocalhostProtection: true,
+		Logger:                     slog.Default(),
+		MCPLogger:                  slog.Default(),
+		JSONResponse:               true,
+	}); err != nil {
+		slog.Error("MCP server failed", slog.Any("error", err))
+	}
 }
