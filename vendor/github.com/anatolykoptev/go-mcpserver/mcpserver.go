@@ -103,7 +103,7 @@ func Run(server *mcp.Server, cfg Config) error {
 	}
 
 	srv := &http.Server{
-		Addr:         ":" + cfg.Port,
+		Addr:         net.JoinHostPort(cfg.Host, cfg.Port),
 		Handler:      h,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,

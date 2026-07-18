@@ -10,6 +10,8 @@ github.com/anatolykoptev/go-kit v0.85.0 h1:Tk9kYWSZpsNIvxgHa8RZ2QGKAWebukap6minG
 github.com/anatolykoptev/go-kit v0.85.0/go.mod h1:MHxQfTaJIEjYdiR3U+Q/n4SR0uz0H5mdvwWpz72df+I=
 github.com/anatolykoptev/go-mcpserver v0.16.0 h1:REoP0fOD3wo+J3Zc4r0TSlxmuz/RPDX+F0qUcVOv7Fg=
 github.com/anatolykoptev/go-mcpserver v0.16.0/go.mod h1:tLjcm6ftgBQoiz7b2AdL5B7EVlrdYe0uehmfk3TiPjU=
+github.com/anatolykoptev/go-mcpserver v0.16.1 h1:bAhP28LQQcxLQaEAphkVN+rRXT3p80hP5Y7y88VmkWk=
+github.com/anatolykoptev/go-mcpserver v0.16.1/go.mod h1:tLjcm6ftgBQoiz7b2AdL5B7EVlrdYe0uehmfk3TiPjU=
 github.com/anatolykoptev/go-stt v0.3.0 h1:Mo+tg4Z7wNlVUwZ1Tlrga8MXGIgy4Trx9CE+orzSO7o=
 github.com/anatolykoptev/go-stt v0.3.0/go.mod h1:ZBaKmLsDVOogdZwOzSq5np7gBzS9IsbaTzn1iMvDxp0=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=

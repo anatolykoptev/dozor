@@ -169,6 +169,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	mcpHandler, err := mcpserver.Build(mcpServer, mcpserver.Config{
 		Name:                       "dozor",
 		Version:                    version,
+		Host:                       resolveBindHost(),
 		Port:                       port,
 		KeepAlive:                  30 * time.Second,
 		SchemaCache:                mcp.NewSchemaCache(),

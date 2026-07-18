@@ -54,6 +54,7 @@ func runServe(cfg engine.Config, eng *engine.ServerAgent) {
 	if err := mcpserver.Run(server, mcpserver.Config{
 		Name:                       "dozor",
 		Version:                    version,
+		Host:                       bindHost,
 		Port:                       port,
 		KeepAlive:                  30 * time.Second,
 		SchemaCache:                mcp.NewSchemaCache(),

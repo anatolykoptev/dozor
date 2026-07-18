@@ -26,6 +26,7 @@ const (
 type Config struct {
 	Name    string // service name for /health + logs (required)
 	Version string // version for /health + logs (required)
+	Host    string // bind host; empty → "0.0.0.0" (all interfaces)
 	Port    string // HTTP port; empty → MCP_PORT env → "8080"
 
 	WriteTimeout    time.Duration // default 0 (disabled for SSE compat; tools manage own timeout)
