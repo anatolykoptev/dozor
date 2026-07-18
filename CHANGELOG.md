@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.11.0](https://github.com/anatolykoptev/dozor/compare/v1.10.0...v1.11.0) (2026-07-18)
+
+
+### Added
+
+* **mcp:** migrate to go-mcpserver for KeepAlive, SchemaCache, graceful shutdown ([#144](https://github.com/anatolykoptev/dozor/issues/144)) ([dab749b](https://github.com/anatolykoptev/dozor/commit/dab749bda0a9e95af48d019bd3a9a056dc15a397))
+
+
+### Fixed
+
+* **serve:** pass bindHost to mcpserver.Run via Config.Host ([#145](https://github.com/anatolykoptev/dozor/issues/145)) ([7d2a6e0](https://github.com/anatolykoptev/dozor/commit/7d2a6e096cb1b11aab6ddc103a2604f3463df60e))
+
+
+### Dependencies
+
+* bump go-stt to v0.3.0 ([#141](https://github.com/anatolykoptev/dozor/issues/141)) ([ecba056](https://github.com/anatolykoptev/dozor/commit/ecba05694159e86e7084eb021e79afeca1fe66a6))
+
 ## [1.10.0](https://github.com/anatolykoptev/dozor/compare/v1.9.0...v1.10.0) (2026-07-16)
 
 
