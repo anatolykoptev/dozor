@@ -493,7 +493,7 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 		// sync must outlive a cancelled deploy and own its independent 60s timeout
 		// so it can never block the worker (architect Decision 4, failure isolation).
 		//nolint:gosec // G118: independent timeout context is the isolation requirement
-		go func(repo, src, clone string) {
+		go func(repo, src, clone, branch string) {
 			defer func() {
 				if r := recover(); r != nil {
 					slog.Error("deploy: source sync goroutine panicked", "repo", repo, "source", src, "panic", r)
@@ -502,9 +502,9 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 			}()
 			sctx, cancel := context.WithTimeout(context.Background(), sourceSyncTimeout)
 			defer cancel()
-			res := syncSourceCheckout(sctx, repo, src, clone)
+			res := syncSourceCheckout(sctx, repo, src, clone, branch)
 			DeploySourceSyncTotal.WithLabelValues(repo, string(res)).Inc()
-		}(req.Repo, req.Config.SourcePath, req.Config.DeployClonePath)
+		}(req.Repo, req.Config.SourcePath, req.Config.DeployClonePath, req.Config.Branch)
 	}
 
 	if result.Success {

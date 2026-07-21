@@ -248,7 +248,7 @@ func parseBoolEnv(name string) bool {
 // Every outcome is observable: the caller bumps DeploySourceSyncTotal; every
 // error path also logs a WARN. Best-effort — it is the caller's contract that
 // this runs in a detached, timeout-bounded goroutine off the deploy hot path.
-func syncSourceCheckout(ctx context.Context, repo, sourcePath, deployClonePath string) sourceSyncOutcome {
+func syncSourceCheckout(ctx context.Context, repo, sourcePath, deployClonePath, branch string) sourceSyncOutcome {
 	if !sourceSyncEnabled {
 		return syncDisabled
 	}
@@ -290,7 +290,12 @@ func syncSourceCheckout(ctx context.Context, repo, sourcePath, deployClonePath s
 		return syncDirtySkipped
 	}
 
-	branch := detectDefaultBranch(ctx, sourcePath)
+	// Use the per-target configured branch (req.Config.Branch) when present;
+	// fall back to the main/master guess ONLY when the caller passed none,
+	// preserving backward-compat for repos without a `branch:` config field.
+	if branch == "" {
+		branch = detectDefaultBranch(ctx, sourcePath)
+	}
 	cur, err := gitCurrentBranchRunner(ctx, sourcePath)
 	if err != nil {
 		slog.Warn("deploy: source sync — cannot resolve current branch",

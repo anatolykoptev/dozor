@@ -137,7 +137,7 @@ func TestSyncOnBranch_CleanAncestorFFFail_IsNotDiverged(t *testing.T) {
 		return 1, nil
 	})
 
-	got := syncSourceCheckout(context.Background(), "anatolykoptev/go-job", dir, "/clone")
+	got := syncSourceCheckout(context.Background(), "anatolykoptev/go-job", dir, "/clone", "")
 	if got != syncUntrackedCollision {
 		t.Fatalf("clean ancestor + untracked collision (quarantine off): got %q, want %q (must NOT be %q)",
 			got, syncUntrackedCollision, syncDiverged)
@@ -165,7 +165,7 @@ func TestSyncOnBranch_FFFail_AheadGreaterZero_IsDiverged(t *testing.T) {
 		return 0, nil
 	})
 
-	got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+	got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 	if got != syncDiverged {
 		t.Fatalf("ff fail with ahead>0: got %q, want %q", got, syncDiverged)
 	}
@@ -189,7 +189,7 @@ func TestSyncOnBranch_FFFail_AheadCountError_IsError(t *testing.T) {
 		return 0, errors.New("rev-list exploded")
 	})
 
-	got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+	got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 	if got != syncError {
 		t.Fatalf("ff fail with un-computable ahead: got %q, want %q", got, syncError)
 	}
@@ -246,7 +246,7 @@ func TestQuarantine_MovesColliders_RetrySucceeds_FFAfterQuarantine(t *testing.T)
 	var moved []string
 	withQuarantineMover(t, func(srcAbs, _ string) error { moved = append(moved, srcAbs); return nil })
 
-	got := syncSourceCheckout(context.Background(), "anatolykoptev/go-job", dir, "/clone")
+	got := syncSourceCheckout(context.Background(), "anatolykoptev/go-job", dir, "/clone", "")
 	if got != syncFFAfterQuarantine {
 		t.Fatalf("quarantine+retry-ok: got %q, want %q", got, syncFFAfterQuarantine)
 	}
@@ -279,7 +279,7 @@ func TestQuarantine_NonCollidingUntrackedNotMoved(t *testing.T) {
 	moverCalled := false
 	withQuarantineMover(t, func(_, _ string) error { moverCalled = true; return nil })
 
-	got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+	got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 	if got != syncUntrackedCollision {
 		t.Fatalf("no real collider: got %q, want %q", got, syncUntrackedCollision)
 	}
@@ -311,7 +311,7 @@ func TestQuarantine_TrackedColliderNeverMoved_Aborts(t *testing.T) {
 	moverCalled := false
 	withQuarantineMover(t, func(_, _ string) error { moverCalled = true; return nil })
 
-	got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+	got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 	if moverCalled {
 		t.Fatal("a tracked collider must NEVER be moved")
 	}
@@ -347,7 +347,7 @@ func TestQuarantine_OverCap_NotBulkMoved(t *testing.T) {
 	moverCalled := false
 	withQuarantineMover(t, func(_, _ string) error { moverCalled = true; return nil })
 
-	got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+	got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 	if got != syncQuarantineCapped {
 		t.Fatalf("over-cap: got %q, want %q", got, syncQuarantineCapped)
 	}
@@ -376,7 +376,7 @@ func TestQuarantine_FlagOff_LeavesCollisionUntouched(t *testing.T) {
 		return nil, nil
 	})
 
-	got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+	got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 	if got != syncUntrackedCollision {
 		t.Fatalf("flag off: got %q, want %q", got, syncUntrackedCollision)
 	}
