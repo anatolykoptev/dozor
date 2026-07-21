@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/anatolykoptev/dozor/compare/v1.11.0...v1.11.1) (2026-07-21)
+
+
+### Fixed
+
+* **deploy:** source-sync honors the configured branch, not a main/master guess ([#146](https://github.com/anatolykoptev/dozor/issues/146)) ([43b70a2](https://github.com/anatolykoptev/dozor/commit/43b70a256f755d48b44be5160c1efbc7e4423428))
+
 ## [1.11.0](https://github.com/anatolykoptev/dozor/compare/v1.10.0...v1.11.0) (2026-07-18)
 
 
