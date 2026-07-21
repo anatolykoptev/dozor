@@ -60,6 +60,33 @@ func mustGitRepoWithOriginMain(t *testing.T) string {
 	return dir
 }
 
+// mustGitRepoWithOriginDev creates a real git repo in a temp dir whose ONLY
+// remote-tracking ref is `origin/dev` — there is NO `origin/main` and NO
+// `origin/master`. This makes detectDefaultBranch fall back to "master" (the
+// branch does not exist), reproducing the oxpulse-chat-dev staging clone where
+// a `git fetch origin master` fails with "couldn't find remote ref master".
+// The repo's current branch is `dev`. Skips if git is unavailable.
+func mustGitRepoWithOriginDev(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found, skipping")
+	}
+	dir := t.TempDir()
+	mustRun(t, dir, "git", "init", "--initial-branch=dev", "-q")
+	mustRun(t, dir, "git", "config", "user.email", "t@t.com")
+	mustRun(t, dir, "git", "config", "user.name", "T")
+	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, dir, "git", "add", ".")
+	mustRun(t, dir, "git", "commit", "-m", "init", "-q")
+	// Forge origin/dev ONLY — no origin/main, no origin/master. This is the
+	// live oxpulse-chat-dev shape: detectDefaultBranch cannot find origin/main
+	// and falls back to "master", which the remote also lacks.
+	mustRun(t, dir, "git", "update-ref", "refs/remotes/origin/dev", "HEAD")
+	return dir
+}
+
 // ---------------------------------------------------------------------------
 // FF-2: contract-equivalence / drift guard.
 // Asserts syncSourceCheckout's decision table matches the established ff/dirty/
@@ -74,7 +101,7 @@ func TestSyncSourceCheckout_ContractMatrix(t *testing.T) {
 		withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { called = true; return nil, nil })
 		withGitIndexLock(t, func(string) bool { called = true; return false })
 
-		got := syncSourceCheckout(context.Background(), "r", "/src", "/clone")
+		got := syncSourceCheckout(context.Background(), "r", "/src", "/clone", "")
 		if got != syncDisabled {
 			t.Fatalf("flag off: got %q, want %q", got, syncDisabled)
 		}
@@ -88,7 +115,7 @@ func TestSyncSourceCheckout_ContractMatrix(t *testing.T) {
 		called := false
 		withGitIndexLock(t, func(string) bool { called = true; return false })
 
-		got := syncSourceCheckout(context.Background(), "r", "/same", "/same")
+		got := syncSourceCheckout(context.Background(), "r", "/same", "/same", "")
 		if got != syncUpToDate {
 			t.Fatalf("source==clone guard: got %q, want %q (no double-pull)", got, syncUpToDate)
 		}
@@ -99,7 +126,7 @@ func TestSyncSourceCheckout_ContractMatrix(t *testing.T) {
 
 	t.Run("empty_source_path", func(t *testing.T) {
 		withSourceSyncEnabled(t, true)
-		got := syncSourceCheckout(context.Background(), "r", "", "/clone")
+		got := syncSourceCheckout(context.Background(), "r", "", "/clone", "")
 		if got != syncUpToDate {
 			t.Fatalf("empty source: got %q, want %q", got, syncUpToDate)
 		}
@@ -111,7 +138,7 @@ func TestSyncSourceCheckout_ContractMatrix(t *testing.T) {
 		statusCalled := false
 		withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { statusCalled = true; return nil, nil })
 
-		got := syncSourceCheckout(context.Background(), "r", "/src", "/clone")
+		got := syncSourceCheckout(context.Background(), "r", "/src", "/clone", "")
 		if got != syncLockedSkipped {
 			t.Fatalf("index.lock: got %q, want %q", got, syncLockedSkipped)
 		}
@@ -129,7 +156,7 @@ func TestSyncSourceCheckout_ContractMatrix(t *testing.T) {
 		fetched := false
 		withGitFetch(t, func(_ context.Context, _, _ string) error { fetched = true; return nil })
 
-		got := syncSourceCheckout(context.Background(), "r", "/src", "/clone")
+		got := syncSourceCheckout(context.Background(), "r", "/src", "/clone", "")
 		if got != syncDirtySkipped {
 			t.Fatalf("dirty tracked: got %q, want %q", got, syncDirtySkipped)
 		}
@@ -151,7 +178,7 @@ func TestSyncSourceCheckout_ContractMatrix(t *testing.T) {
 		withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
 		withGitRevParse(t, func(_ context.Context, _, ref string) (string, error) { return "same", nil })
 
-		got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+		got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 		if got != syncUpToDate {
 			t.Fatalf("untracked only: got %q, want %q (must proceed past dirty-check)", got, syncUpToDate)
 		}
@@ -177,7 +204,7 @@ func TestSyncSourceCheckout_OnBranch(t *testing.T) {
 		pulled := false
 		withGitPullFF(t, func(_ context.Context, _, _ string) error { pulled = true; return nil })
 
-		got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+		got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 		if got != syncUpToDate {
 			t.Fatalf("on-branch up-to-date: got %q, want %q", got, syncUpToDate)
 		}
@@ -203,7 +230,7 @@ func TestSyncSourceCheckout_OnBranch(t *testing.T) {
 		pulled := false
 		withGitPullFF(t, func(_ context.Context, _, _ string) error { pulled = true; return nil })
 
-		got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+		got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 		if got != syncFFUpdated {
 			t.Fatalf("on-branch ff: got %q, want %q", got, syncFFUpdated)
 		}
@@ -230,7 +257,7 @@ func TestSyncSourceCheckout_OnBranch(t *testing.T) {
 			return 0, nil
 		})
 
-		got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+		got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 		if got != syncDiverged {
 			t.Fatalf("on-branch ff-refuse (local commits ahead): got %q, want %q", got, syncDiverged)
 		}
@@ -241,7 +268,7 @@ func TestSyncSourceCheckout_OnBranch(t *testing.T) {
 		// error — the freshness step that both branches depend on did not run.
 		withGitFetch(t, func(_ context.Context, _, _ string) error { return errors.New("network down") })
 
-		got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+		got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 		if got != syncError {
 			t.Fatalf("up-front fetch error: got %q, want %q", got, syncError)
 		}
@@ -286,7 +313,7 @@ func TestSyncSourceCheckout_OffBranch(t *testing.T) {
 			return "after", nil
 		})
 
-		got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+		got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 		if got != syncFFUpdated {
 			t.Fatalf("off-branch ref-ff: got %q, want %q", got, syncFFUpdated)
 		}
@@ -305,7 +332,7 @@ func TestSyncSourceCheckout_OffBranch(t *testing.T) {
 		})
 		withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "x", nil })
 
-		got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+		got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 		if got != syncCheckedOutElsewhere {
 			t.Fatalf("off-branch checked-out-elsewhere: got %q, want %q", got, syncCheckedOutElsewhere)
 		}
@@ -318,7 +345,7 @@ func TestSyncSourceCheckout_OffBranch(t *testing.T) {
 		})
 		withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "x", nil })
 
-		got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+		got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 		if got != syncDiverged {
 			t.Fatalf("off-branch diverged ref: got %q, want %q", got, syncDiverged)
 		}
@@ -329,7 +356,7 @@ func TestSyncSourceCheckout_OffBranch(t *testing.T) {
 		withGitRefFF(t, func(_ context.Context, _, _ string) (string, error) { return "", nil })
 		withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "same", nil })
 
-		got := syncSourceCheckout(context.Background(), "r", dir, "/clone")
+		got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
 		if got != syncUpToDate {
 			t.Fatalf("off-branch no-op: got %q, want %q", got, syncUpToDate)
 		}
@@ -343,7 +370,7 @@ func TestSyncSourceCheckout_StatusErrorIsError(t *testing.T) {
 	withGitIndexLock(t, func(string) bool { return false })
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return nil, errors.New("boom") })
 
-	got := syncSourceCheckout(context.Background(), "r", "/src", "/clone")
+	got := syncSourceCheckout(context.Background(), "r", "/src", "/clone", "")
 	if got != syncError {
 		t.Fatalf("status error: got %q, want %q", got, syncError)
 	}
@@ -432,4 +459,77 @@ func TestDeploySourceSyncTotal_Registered(t *testing.T) {
 	// The "panic" result string (emitted by the goroutine's recover) must also
 	// be a valid label value.
 	DeploySourceSyncTotal.WithLabelValues("test/repo", "panic").Inc()
+}
+
+// ---------------------------------------------------------------------------
+// Configured-branch honour: syncSourceCheckout must use the per-target
+// `branch` passed by the caller (req.Config.Branch) instead of guessing
+// main/master via detectDefaultBranch. Regression for the oxpulse-chat-dev
+// staging clone, whose source checkout tracks `dev` and has no origin/main nor
+// origin/master — detectDefaultBranch falls back to "master", `git fetch
+// origin master` fails ("couldn't find remote ref master"), and the checkout
+// freezes. The fallback to detectDefaultBranch is preserved for repos with no
+// configured branch (backward-compat).
+// ---------------------------------------------------------------------------
+
+func TestSyncSourceCheckout_ConfigBranchHonouredOverGuess(t *testing.T) {
+	// Real repo whose only remote-tracking ref is origin/dev — no main, no
+	// master. detectDefaultBranch falls back to "master" (the wrong branch).
+	dir := mustGitRepoWithOriginDev(t)
+	withSourceSyncEnabled(t, true)
+	withGitIndexLock(t, func(string) bool { return false })
+	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return nil, nil })
+	withGitCurrentBranch(t, func(_ context.Context, _ string) (string, error) { return "dev", nil })
+
+	// The up-front fetch MUST target the configured "dev" branch. If the old
+	// main/master guess leaks through, this fetcher is called with "master"
+	// and errors → syncError (the RED state).
+	fetchedBranch := ""
+	withGitFetch(t, func(_ context.Context, _, branch string) error {
+		fetchedBranch = branch
+		if branch != "dev" {
+			return errors.New("couldn't find remote ref " + branch)
+		}
+		return nil
+	})
+	// On-branch path with FETCH_HEAD == HEAD → syncUpToDate.
+	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "same", nil })
+
+	got := syncSourceCheckout(context.Background(), "anatolykoptev/oxpulse-chat", dir, "/clone", "dev")
+	if got != syncUpToDate {
+		t.Fatalf("configured branch dev: got %q, want %q (fetch must target dev, not the main/master guess)", got, syncUpToDate)
+	}
+	if fetchedBranch != "dev" {
+		t.Fatalf("fetch targeted %q, want %q — configured branch must override detectDefaultBranch", fetchedBranch, "dev")
+	}
+}
+
+func TestSyncSourceCheckout_EmptyBranchFallsBackToDetectDefault(t *testing.T) {
+	// Regression guard for backward-compat: when the caller passes branch=""
+	// (a repo with no `branch:` config field), syncSourceCheckout must still
+	// call detectDefaultBranch and sync the detected default. A repo with
+	// origin/main → detectDefaultBranch returns "main" → fetch targets "main".
+	dir := mustGitRepoWithOriginMain(t)
+	withSourceSyncEnabled(t, true)
+	withGitIndexLock(t, func(string) bool { return false })
+	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return nil, nil })
+	withGitCurrentBranch(t, func(_ context.Context, _ string) (string, error) { return "main", nil })
+
+	fetchedBranch := ""
+	withGitFetch(t, func(_ context.Context, _, branch string) error {
+		fetchedBranch = branch
+		if branch != "main" {
+			return errors.New("unexpected branch " + branch)
+		}
+		return nil
+	})
+	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "same", nil })
+
+	got := syncSourceCheckout(context.Background(), "r", dir, "/clone", "")
+	if got != syncUpToDate {
+		t.Fatalf("empty branch fallback: got %q, want %q", got, syncUpToDate)
+	}
+	if fetchedBranch != "main" {
+		t.Fatalf("empty branch must fall back to detectDefaultBranch (main), fetched %q", fetchedBranch)
+	}
 }
