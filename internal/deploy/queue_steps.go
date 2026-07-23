@@ -28,6 +28,28 @@ func gitPrepare(ctx context.Context, sourcePath, commitSHA string) (worktreePath
 	var target string
 	if len(commitSHA) >= 7 { //nolint:mnd
 		target = commitSHA
+		// #151: a release event may reference a SHA that the generic refspec
+		// fetch above has not yet brought into the local clone (debounce race
+		// when two releases land close together). Fetch the exact SHA so the
+		// object is present locally; GitHub's uploadpack allows fetch-by-SHA.
+		// If the server rejects fetch-by-SHA, fall through to the resolvability
+		// guard below — it fails fast with a clear error instead of the opaque
+		// "fatal: invalid reference" from git worktree add.
+		if err := runCmd(ctx, sourcePath, "git", "fetch", "origin", commitSHA); err != nil {
+			slog.Warn("deploy: targeted SHA fetch failed; relying on generic fetch + resolvability guard",
+				"sha", commitSHA, "error", err)
+		}
+		// Guard: verify the SHA resolves to a commit before attempting the
+		// worktree add. Fail fast with an actionable message instead of the
+		// raw "invalid reference" git error.
+		if err := runCmd(ctx, sourcePath, "git", "cat-file", "-e", commitSHA+"^{commit}"); err != nil {
+			return "", noop, fmt.Sprintf(
+				"commit %s is not present in the local clone after git fetch origin; "+
+					"the release SHA was not fetched yet (debounce race between close releases?). "+
+					"Verify the SHA exists on the remote and re-trigger the deploy.",
+				commitSHA,
+			)
+		}
 	} else {
 		branch := detectDefaultBranch(ctx, sourcePath)
 		target = "origin/" + branch
