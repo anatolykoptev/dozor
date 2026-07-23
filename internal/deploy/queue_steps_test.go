@@ -307,6 +307,126 @@ func TestMaxUpOutputLen_LargerThanBuild(t *testing.T) {
 	}
 }
 
+// TestGitPrepare_FetchesSHABeforeWorktreeAdd — when a release SHA is given,
+// gitPrepare must fetch the exact SHA and verify it resolves via
+// `git cat-file -e <sha>^{commit}` BEFORE issuing `git worktree add`.
+// This is the fix for #151: on a release event the local clone may not yet
+// hold the release SHA (debounce race when two releases land close together),
+// so the SHA must be fetched and verified before the worktree add or git
+// emits the opaque "fatal: invalid reference: <SHA>".
+//
+// RED-on-revert: remove the targeted SHA fetch + cat-file guard from
+// gitPrepare — catFileSeen stays false and the ordering assertion
+// (cat-file before worktree add) fails.
+func TestGitPrepare_FetchesSHABeforeWorktreeAdd(t *testing.T) {
+	type gitCall struct {
+		sub  string
+		args []string
+	}
+	var calls []gitCall
+	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
+		if name == "git" && len(args) > 0 {
+			calls = append(calls, gitCall{sub: args[0], args: args})
+		}
+		return nil
+	})
+
+	const sha = "263dc3c1aabbcc"
+	_, cleanup, errMsg := gitPrepare(context.Background(), "/fake/source", sha)
+	defer cleanup()
+	if errMsg != "" {
+		t.Fatalf("expected no error, got: %s", errMsg)
+	}
+
+	idxOf := func(sub string) int {
+		for i, c := range calls {
+			if c.sub == sub {
+				return i
+			}
+		}
+		return -1
+	}
+
+	// A targeted fetch carrying the SHA must occur.
+	fetchIdx := idxOf("fetch")
+	if fetchIdx < 0 {
+		t.Fatal("git fetch must be invoked before worktree add")
+	}
+	sawTargetedFetch := false
+	for _, c := range calls {
+		if c.sub == "fetch" {
+			for _, a := range c.args {
+				if a == sha {
+					sawTargetedFetch = true
+				}
+			}
+		}
+	}
+	if !sawTargetedFetch {
+		t.Errorf("expected a targeted `git fetch origin <sha>` call carrying %q; calls=%v", sha, calls)
+	}
+
+	// The cat-file resolvability guard must run before worktree add.
+	catIdx := idxOf("cat-file")
+	worktreeIdx := idxOf("worktree")
+	if catIdx < 0 {
+		t.Fatal("git cat-file guard must be invoked before git worktree add; cat-file not seen")
+	}
+	if worktreeIdx < 0 {
+		t.Fatal("git worktree add must be invoked")
+	}
+	if catIdx >= worktreeIdx {
+		t.Errorf("cat-file guard (idx %d) must run BEFORE worktree add (idx %d); calls=%v", catIdx, worktreeIdx, calls)
+	}
+	if fetchIdx >= catIdx {
+		t.Errorf("fetch (idx %d) must run before cat-file guard (idx %d); calls=%v", fetchIdx, catIdx, calls)
+	}
+}
+
+// TestGitPrepare_MissingSHA_FailsWithClearError — when the release SHA is
+// still unresolvable after the fetch (cat-file -e fails), gitPrepare must
+// fail fast with an actionable error message and must NOT attempt
+// `git worktree add` (which would emit the opaque "fatal: invalid reference").
+//
+// RED-on-revert: remove the cat-file guard — gitPrepare falls through to
+// `git worktree add`, worktreeAddCalled becomes true and the
+// "invalid reference" assertion (error must NOT contain it) fails.
+func TestGitPrepare_MissingSHA_FailsWithClearError(t *testing.T) {
+	worktreeAddCalled := false
+	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
+		if name == "git" && len(args) > 0 {
+			switch args[0] {
+			case "fetch":
+				return nil // fetches "succeed" but the SHA is still absent
+			case "cat-file":
+				return errors.New("exit status 128: fatal: Not a valid commit name 263dc3c1^{commit}")
+			case "worktree":
+				worktreeAddCalled = true
+				return errors.New("fatal: invalid reference: 263dc3c1")
+			}
+		}
+		return nil
+	})
+
+	const sha = "263dc3c1aabbcc"
+	_, _, errMsg := gitPrepare(context.Background(), "/fake/source", sha)
+	if errMsg == "" {
+		t.Fatal("expected error for missing SHA, got none")
+	}
+	if worktreeAddCalled {
+		t.Error("git worktree add must NOT be called when the SHA is unresolvable; the cat-file guard must fail fast first")
+	}
+	if strings.Contains(errMsg, "invalid reference") {
+		t.Errorf("error must be the clear guard message, not the raw git 'invalid reference'; got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "263dc3c1") {
+		t.Errorf("error must mention the missing SHA; got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "fetch") {
+		t.Errorf("error must mention fetch so the operator knows the cause; got: %s", errMsg)
+	}
+}
+
 // TestRunBuildWithFullLog_SuccessReturnsEmpty ensures no dump file is
 // created and no error returned on a successful build.
 func TestRunBuildWithFullLog_SuccessReturnsEmpty(t *testing.T) {
