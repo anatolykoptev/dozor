@@ -595,3 +595,24 @@ func (c *Config) LookupAll(repoFullName, branch string) []*RepoConfig {
 	}
 	return matches
 }
+
+// LookupReleaseTarget returns the entry configured to deploy on GitHub release
+// events (deploy_on: release) for repoFullName. A repo may declare several
+// entries — e.g. a prod target on `main` with deploy_on: release plus a canary
+// target on `dev` that builds on push, keyed "owner/repo#dev". A release must
+// build the release-gated target, NOT a random first-match: LookupBranch(repo,
+// "") returns whichever entry the map iteration happens to yield first, so a
+// release could route to the push-based canary whose source clone lacks the
+// release commit — surfacing as a "git worktree add: invalid reference" build
+// failure (oxpulse-chat v0.13.1 prod deploy, 2026-07-22). Selection is
+// deterministic here because LookupAll sorts the keys. Falls back to first-
+// match when no entry is release-gated (a single-target repo — unchanged
+// behaviour). Returns nil for an unknown repo.
+func (c *Config) LookupReleaseTarget(repoFullName string) *RepoConfig {
+	for _, rc := range c.LookupAll(repoFullName, "") {
+		if rc.DeployOn == "release" {
+			return rc
+		}
+	}
+	return c.LookupBranch(repoFullName, "")
+}

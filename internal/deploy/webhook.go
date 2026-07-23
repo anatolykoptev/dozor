@@ -268,12 +268,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// release event: keep first-match semantics. A tag carries no changed
-		// files to gate per-target fan-out, so building EVERY target of a
-		// multi-target repo on one release would be surprising; multi-target
-		// fan-out is a push-only concept. This collapses to the single-target
-		// path below, identical to the previous behaviour.
-		rc := h.config.LookupBranch(push.Repository.FullName, "")
+		// release event: route to the target CONFIGURED to deploy on releases
+		// (deploy_on: release), not a random first-match. A tag carries no
+		// changed files to gate per-target fan-out, so a release builds a
+		// single target (fan-out is a push-only concept) — but for a repo with
+		// both a release target (prod/main) and a push target (canary/dev,
+		// keyed "owner/repo#dev"), an unordered first-match could route the
+		// release to the canary, whose source clone lacks the release commit
+		// ("git worktree add: invalid reference"). LookupReleaseTarget selects
+		// the deploy_on: release entry deterministically, falling back to
+		// first-match for single-target repos (unchanged behaviour).
+		rc := h.config.LookupReleaseTarget(push.Repository.FullName)
 		if rc == nil {
 			slog.Info("deploy/webhook: unknown repo",
 				"repo", push.Repository.FullName)

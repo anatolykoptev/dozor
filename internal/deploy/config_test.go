@@ -152,6 +152,58 @@ func TestConfig_Lookup(t *testing.T) {
 	}
 }
 
+func TestConfig_LookupReleaseTarget(t *testing.T) {
+	// A repo with BOTH a release-gated prod target (branch main) and a
+	// push-based canary target (branch dev, keyed "owner/repo#dev"). A release
+	// event must route to the prod (deploy_on: release) entry — not a random
+	// first-match, which could pick the canary whose dev clone lacks the
+	// release commit (the #2544 -> v0.13.1 prod-deploy failure, 2026-07-22).
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/svc": {
+				Branch:     "main",
+				DeployOn:   "release",
+				SourcePath: "/src/svc",
+				Services:   []string{"svc"},
+			},
+			"anatolykoptev/svc#dev": {
+				Branch:     "dev",
+				SourcePath: "/src/svc-dev",
+				Services:   []string{"svc-staging"},
+			},
+		},
+	}
+
+	// Deterministic across runs despite Go map iteration order: always the
+	// release-gated entry, never the canary.
+	for i := 0; i < 20; i++ {
+		rc := cfg.LookupReleaseTarget("anatolykoptev/svc")
+		if rc == nil {
+			t.Fatalf("iter %d: expected a release target, got nil", i)
+		}
+		if rc.DeployOn != "release" || rc.SourcePath != "/src/svc" {
+			t.Fatalf("iter %d: release routed to the wrong entry: source=%q deploy_on=%q (want /src/svc, release)",
+				i, rc.SourcePath, rc.DeployOn)
+		}
+	}
+
+	// Single-target repo with no deploy_on: release entry — falls back to
+	// first-match (unchanged behaviour), never nil for a known repo.
+	single := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/only": {Branch: "main", SourcePath: "/src/only", Services: []string{"only"}},
+		},
+	}
+	if rc := single.LookupReleaseTarget("anatolykoptev/only"); rc == nil || rc.SourcePath != "/src/only" {
+		t.Fatalf("single-target fallback failed: %+v", rc)
+	}
+
+	// Unknown repo -> nil.
+	if rc := cfg.LookupReleaseTarget("anatolykoptev/nope"); rc != nil {
+		t.Errorf("unknown repo: expected nil, got %+v", rc)
+	}
+}
+
 func TestLoadConfig_ProfileGoFlat_NoOverrides(t *testing.T) {
 	yaml := `
 repos:
