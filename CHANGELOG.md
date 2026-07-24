@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.2](https://github.com/anatolykoptev/dozor/compare/v1.11.1...v1.11.2) (2026-07-24)
+
+
+### Fixed
+
+* **deploy:** fetch release SHA and verify it before git worktree add ([#152](https://github.com/anatolykoptev/dozor/issues/152)) ([d952bc9](https://github.com/anatolykoptev/dozor/commit/d952bc954fa47a922c7e15cddd8a3934cd5c1bc2)), closes [#151](https://github.com/anatolykoptev/dozor/issues/151)
+* **deploy:** route release events to the deploy_on:release target, not a random entry ([#149](https://github.com/anatolykoptev/dozor/issues/149)) ([4461f40](https://github.com/anatolykoptev/dozor/commit/4461f409bceed8a669d334156b3c362cf98f355e))
+
 ## [1.11.1](https://github.com/anatolykoptev/dozor/compare/v1.11.0...v1.11.1) (2026-07-21)
 
 
