@@ -123,6 +123,7 @@ func TestHandler_Release_PathFilter_SkipsChangelogOnlyRelease(t *testing.T) {
 				SourcePath:  dir,
 				Services:    []string{"memdb-go"},
 				BuildPaths:  []string{"app/**"},
+				DeployOn:    "release",
 			},
 		},
 	}
@@ -161,6 +162,7 @@ func TestHandler_Release_PathFilter_BuildsOnRelevantChange(t *testing.T) {
 				SourcePath:  dir,
 				Services:    []string{"memdb-go"},
 				BuildPaths:  []string{"app/**"},
+				DeployOn:    "release",
 			},
 		},
 	}
@@ -198,6 +200,7 @@ func TestHandler_Release_PathFilter_FallsBackToBuildWhenSHAUnresolvable(t *testi
 				ComposePath: "/tmp", SourcePath: "/tmp",
 				Services:   []string{"memdb-go"},
 				BuildPaths: []string{"app/**"},
+				DeployOn:   "release",
 			},
 		},
 	}
@@ -241,6 +244,7 @@ func TestHandler_Release_PathFilter_FallsBackToBuildWhenTargetCommitishInvalid(t
 				SourcePath:  dir,
 				Services:    []string{"memdb-go"},
 				BuildPaths:  []string{"app/**"},
+				DeployOn:    "release",
 			},
 		},
 	}
@@ -303,6 +307,7 @@ func TestHandler_Release_PathFilter_MultiRepo_DiffsInSourceClone(t *testing.T) {
 				ComposePath:     filepath.Join(deployDir, "docker-compose.yml"),
 				Services:        []string{"vaelor"},
 				BuildPaths:      []string{"app/**"},
+				DeployOn:        "release",
 			},
 		},
 	}
@@ -349,6 +354,7 @@ func TestHandler_Release_PathFilter_UnresolvableSHA_LogsError(t *testing.T) {
 				SourcePath:  dir,
 				Services:    []string{"memdb-go"},
 				BuildPaths:  []string{"app/**"},
+				DeployOn:    "release",
 			},
 		},
 	}

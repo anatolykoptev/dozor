@@ -152,7 +152,7 @@ func TestConfig_Lookup(t *testing.T) {
 	}
 }
 
-func TestConfig_LookupReleaseTarget(t *testing.T) {
+func TestConfig_LookupReleaseTargets(t *testing.T) {
 	// A repo with BOTH a release-gated prod target (branch main) and a
 	// push-based canary target (branch dev, keyed "owner/repo#dev"). A release
 	// event must route to the prod (deploy_on: release) entry — not a random
@@ -175,32 +175,35 @@ func TestConfig_LookupReleaseTarget(t *testing.T) {
 	}
 
 	// Deterministic across runs despite Go map iteration order: always the
-	// release-gated entry, never the canary.
-	for i := 0; i < 20; i++ {
-		rc := cfg.LookupReleaseTarget("anatolykoptev/svc")
-		if rc == nil {
-			t.Fatalf("iter %d: expected a release target, got nil", i)
+	// release-gated entry, never the canary. Loop enough iterations that
+	// map-order randomness would surface against the buggy first-match
+	// fallback (issue #169).
+	for i := 0; i < 50; i++ {
+		targets := cfg.LookupReleaseTargets("anatolykoptev/svc")
+		if len(targets) != 1 {
+			t.Fatalf("iter %d: expected 1 release target, got %d", i, len(targets))
 		}
+		rc := targets[0]
 		if rc.DeployOn != "release" || rc.SourcePath != "/src/svc" {
 			t.Fatalf("iter %d: release routed to the wrong entry: source=%q deploy_on=%q (want /src/svc, release)",
 				i, rc.SourcePath, rc.DeployOn)
 		}
 	}
 
-	// Single-target repo with no deploy_on: release entry — falls back to
-	// first-match (unchanged behaviour), never nil for a known repo.
+	// Single-target repo with no deploy_on: release entry — no release
+	// targets, NOT a fallback to first-match (the bug). Returns nil.
 	single := &Config{
 		Repos: map[string]RepoConfig{
 			"anatolykoptev/only": {Branch: "main", SourcePath: "/src/only", Services: []string{"only"}},
 		},
 	}
-	if rc := single.LookupReleaseTarget("anatolykoptev/only"); rc == nil || rc.SourcePath != "/src/only" {
-		t.Fatalf("single-target fallback failed: %+v", rc)
+	if targets := single.LookupReleaseTargets("anatolykoptev/only"); len(targets) != 0 {
+		t.Fatalf("single-target repo with no deploy_on: release: expected 0 targets, got %d (%+v)", len(targets), targets)
 	}
 
-	// Unknown repo -> nil.
-	if rc := cfg.LookupReleaseTarget("anatolykoptev/nope"); rc != nil {
-		t.Errorf("unknown repo: expected nil, got %+v", rc)
+	// Unknown repo -> nil (no targets).
+	if targets := cfg.LookupReleaseTargets("anatolykoptev/nope"); len(targets) != 0 {
+		t.Errorf("unknown repo: expected 0 targets, got %d", len(targets))
 	}
 }
 

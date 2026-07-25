@@ -216,7 +216,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// each is dispatched separately and gated by its own BuildPaths filter, so a
 	// push that only touches one app's paths deploys only that target. A single-
 	// target repo yields one match, identical to the previous single-lookup path.
-	// For releases, look up by repo only (no branch concept for tags).
+	// For releases, only deploy_on: release entries are selected (no branch
+	// concept for tags — see the release branch below).
 	var matches []*RepoConfig
 	if event == "push" {
 		// Extract short branch name from "refs/heads/<branch>".
@@ -268,33 +269,47 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// release event: route to the target CONFIGURED to deploy on releases
-		// (deploy_on: release), not a random first-match. A tag carries no
-		// changed files to gate per-target fan-out, so a release builds a
-		// single target (fan-out is a push-only concept) — but for a repo with
-		// both a release target (prod/main) and a push target (canary/dev,
-		// keyed "owner/repo#dev"), an unordered first-match could route the
-		// release to the canary, whose source clone lacks the release commit
-		// ("git worktree add: invalid reference"). LookupReleaseTarget selects
-		// the deploy_on: release entry deterministically, falling back to
-		// first-match for single-target repos (unchanged behaviour).
-		rc := h.config.LookupReleaseTarget(push.Repository.FullName)
-		if rc == nil {
-			slog.Info("deploy/webhook: unknown repo",
+		// release event: route ONLY to targets configured with deploy_on:
+		// release. A release must never deploy a target that was not
+		// explicitly configured for releases — the previous first-match
+		// fallback (LookupBranch(repo, "")) picked a random map entry for
+		// multi-entry repos, which could dispatch the staging target instead
+		// of production while the release looked successful (issue #169).
+		//
+		// 0 targets  → ignore (the repo has no release-triggered target);
+		// 1 target   → deploy it (deterministic);
+		// N targets  → a genuine multi-target release: deploy all of them,
+		//              each gated by its own BuildPaths filter via a per-target
+		//              attachReleaseDiff (each target may have a distinct
+		//              SourcePath, so the diff is resolved independently).
+		targets := h.config.LookupReleaseTargets(push.Repository.FullName)
+		if len(targets) == 0 {
+			slog.Info("deploy/webhook: release event for repo with no deploy_on: release target — ignoring",
 				"repo", push.Repository.FullName)
 			respondJSON(w, http.StatusOK, map[string]string{
 				"status": "ignored",
-				"reason": "repo not configured",
+				"reason": "no release-triggered target configured",
+				"repo":   push.Repository.FullName,
 			})
 			return
 		}
-		// A release payload carries no per-commit changed-files list (unlike
-		// push's commits[].added/modified/removed) — resolve a real diff
-		// against the last-deployed SHA so skipByPathFilter's BuildPaths/
-		// SkipPaths gating applies to releases exactly as it does to pushes,
-		// instead of unconditionally building via its "elided diff" fallback.
-		attachReleaseDiff(r.Context(), &push, rc, h.shaResolver)
-		matches = []*RepoConfig{rc}
+		if len(targets) > 1 {
+			slog.Info("deploy/webhook: release event matches multiple deploy_on: release targets — deploying all",
+				"repo", push.Repository.FullName,
+				"targets", len(targets))
+		}
+		if len(targets) == 1 {
+			// A release payload carries no per-commit changed-files list
+			// (unlike push's commits[].added/modified/removed) — resolve a
+			// real diff against the last-deployed SHA so skipByPathFilter's
+			// BuildPaths/SkipPaths gating applies to releases exactly as it
+			// does to pushes, instead of unconditionally building via its
+			// "elided diff" fallback. For N>1 this is called per-target in
+			// the multi-target dispatch loop below (each target may have a
+			// distinct SourcePath, so the diff must be resolved independently).
+			attachReleaseDiff(r.Context(), &push, targets[0], h.shaResolver)
+		}
+		matches = targets
 	}
 
 	// Single-target repo (the overwhelming common case): preserve the original
@@ -337,6 +352,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// are aggregated in deterministic match order.
 	statuses := make([]string, 0, len(matches))
 	for _, rc := range matches {
+		if event == "release" {
+			// Per-target release diff: each target may have a distinct
+			// SourcePath, so the changed-files diff must be resolved
+			// independently for each before its BuildPaths filter runs.
+			// attachReleaseDiff overwrites push.Commits, which is safe
+			// here because skipByPathFilter (the only reader of Commits
+			// in this loop) runs immediately after, before the next
+			// target's diff overwrites it.
+			attachReleaseDiff(r.Context(), &push, rc, h.shaResolver)
+		}
 		if h.skipByPathFilter(push, rc) {
 			slog.Info("deploy skipped: no build-relevant files changed",
 				"repo", push.Repository.FullName,
