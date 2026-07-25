@@ -81,37 +81,109 @@ func imageIDFromNDJSON(trimmed, svc string) string {
 	return ""
 }
 
-// composeImageName returns the image name (repo:tag) for a service.
+// composeImageName returns the image name (repo[:tag]) for a service.
+//
+// It resolves the name from the compose MODEL, never from the project's
+// containers. This is load-bearing: the resolver runs at image-cache push time
+// (right after `compose build`, BEFORE `compose up` recreates the container)
+// and on the pull-before-build path (where no container exists yet). In both
+// positions `docker compose images` is container-oriented — it reports the
+// images of the project's CURRENT containers, which is either empty (no
+// container yet) or the PREVIOUS container's stale image. Pushing that stale
+// image under the new tree-hash tag would publish a wrong artifact under a tag
+// that claims to be the new tree — a silent wrong-artifact bug.
+//
+// Invariant: the returned name is the image the build just produced (or will
+// produce), resolved from compose config — never "whatever the old container
+// happens to run". If no container-independent source can be trusted, return ""
+// and fail loudly; never guess, never fall back to a container-oriented source.
+//
+// Resolution chain (every link is container-independent):
+//  1. `docker compose config --images <svc>` — compose v2 prints the resolved
+//     image ref (the default `<project>-<svc>` for build-only services, or the
+//     explicit `image:` ref) without needing any container.
+//  2. `docker compose config --format json` → services[svc].image — only
+//     non-empty for services with an explicit `image:` field (the default name
+//     for build-only services is computed by compose and is NOT exposed in the
+//     JSON model), so this link only helps explicit-image services on compose
+//     builds that lack the `--images` flag. Still container-independent.
 func composeImageName(ctx context.Context, composePath, svc string) string {
+	if name := composeConfigImagesName(ctx, composePath, svc); name != "" {
+		return name
+	}
+	if name := composeConfigJSONImage(ctx, composePath, svc); name != "" {
+		return name
+	}
+	return ""
+}
+
+// composeConfigImagesName runs `docker compose config --images <svc>` and
+// returns the first line that looks like a valid image reference. Compose v2
+// prints one resolved image ref per line; for a single service, one line.
+func composeConfigImagesName(ctx context.Context, composePath, svc string) string {
+	// svc is a service name from our own deploy-repos.yaml (trusted local
+	// config), passed as an individual argv slot — not interpolated into a shell.
 	out, err := outputRunner(ctx, composePath,
-		"docker", "compose", "images", "--format", "json", svc)
-	if err != nil || len(out) == 0 {
+		"docker", "compose", "config", "--images", svc) //nolint:gosec // trusted local config, not shell
+	if err != nil {
 		return ""
 	}
-	trimmed := strings.TrimSpace(string(out))
-	type imgEntry struct {
-		Repository string `json:"Repository"`
-		Tag        string `json:"Tag"`
-	}
-	if strings.HasPrefix(trimmed, "[") {
-		var arr []imgEntry
-		if json.Unmarshal([]byte(trimmed), &arr) != nil || len(arr) == 0 {
-			return ""
+	for _, line := range strings.Split(string(out), "\n") {
+		if name := strings.TrimSpace(line); looksLikeImageRef(name) {
+			return name
 		}
-		if arr[0].Tag != "" && arr[0].Tag != "<none>" {
-			return arr[0].Repository + ":" + arr[0].Tag
-		}
-		return arr[0].Repository
 	}
-	line := strings.SplitN(trimmed, "\n", 2)[0]
-	var e imgEntry
-	if json.Unmarshal([]byte(line), &e) != nil {
+	return ""
+}
+
+// composeConfigJSONImage parses `docker compose config --format json` and
+// returns the explicit `image:` field for the service. Returns "" for
+// build-only services (no explicit image) — those are handled by the
+// `--images` link above. Container-independent.
+func composeConfigJSONImage(ctx context.Context, composePath, svc string) string {
+	out, err := outputRunner(ctx, composePath,
+		"docker", "compose", "config", "--format", "json")
+	if err != nil {
 		return ""
 	}
-	if e.Tag != "" && e.Tag != "<none>" {
-		return e.Repository + ":" + e.Tag
+	var cfg struct {
+		Services map[string]struct {
+			Image string `json:"image"`
+		} `json:"services"`
 	}
-	return e.Repository
+	if json.Unmarshal(out, &cfg) != nil {
+		return ""
+	}
+	svcCfg, ok := cfg.Services[svc]
+	if !ok {
+		return ""
+	}
+	if name := strings.TrimSpace(svcCfg.Image); looksLikeImageRef(name) {
+		return name
+	}
+	return ""
+}
+
+// looksLikeImageRef is a minimal guard against malformed `config --images`
+// output producing a bogus tag. It rejects empty strings, internal whitespace,
+// and characters not allowed in a Docker image reference. It is intentionally
+// permissive (not a full grammar) — the goal is to catch garbage, not to
+// validate every legal ref.
+func looksLikeImageRef(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.', r == '/', r == ':', r == '-', r == '_', r == '@':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // rollbackImages attempts to restore services to their previous image IDs.
