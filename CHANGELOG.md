@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.13.0](https://github.com/anatolykoptev/dozor/compare/v1.12.1...v1.13.0) (2026-07-25)
+
+
+### Added
+
+* **deploy:** detect config and webhook drift ([#159](https://github.com/anatolykoptev/dozor/issues/159)) ([5f4c9d0](https://github.com/anatolykoptev/dozor/commit/5f4c9d07b37284fd38136707499c4c55aaa0b443))
+
+
+### Fixed
+
+* **deploy:** make the manual deploy path participate in the image cache ([#162](https://github.com/anatolykoptev/dozor/issues/162)) ([0bfc3d7](https://github.com/anatolykoptev/dozor/commit/0bfc3d7eb8bebd1c75b533c1c3d596500e4641f0))
+
 ## [1.12.1](https://github.com/anatolykoptev/dozor/compare/v1.12.0...v1.12.1) (2026-07-25)
 
 
