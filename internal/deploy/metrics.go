@@ -287,4 +287,25 @@ var (
 		Name: "dozor_deploy_source_sync_total",
 		Help: "Best-effort source-checkout (~/src/X) ff-sync attempts after each deploy, by outcome.",
 	}, []string{"repo", "result"})
+
+	// ReleaseDiffResolutionTotal counts release-event build-path diff
+	// resolution outcomes, making "how often are we rebuilding everything for
+	// no reason?" answerable. A sustained tick on any non-"resolved" outcome
+	// for a repo means build_paths is silently never applying for that repo's
+	// releases — every release rebuilds every service.
+	//
+	// outcome label values:
+	//   "resolved"         — the diff was successfully resolved; build_paths applies
+	//   "unresolvable_sha" — the target SHA does not resolve in the source clone
+	//                        (configuration error: the clone is not of the webhook's
+	//                        repo, or the clone is stale and hasn't fetched the release
+	//                        commit). Logged at ERROR naming the clone + SHA.
+	//   "no_dir"           — no source dir available (both SourcePath and
+	//                        DeployClonePath empty — misconfigured repo)
+	//   "no_deployed"      — the deployed SHA could not be resolved (fresh repo,
+	//                        never deployed — safe first-build fallback)
+	ReleaseDiffResolutionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_release_diff_resolution_total",
+		Help: "Release-event build-path diff resolution outcomes by repo. Non-resolved outcomes mean build_paths is not applying — every release rebuilds everything.",
+	}, []string{"repo", "outcome"})
 )

@@ -43,18 +43,32 @@ func defaultGitDiffNameOnlyRunner(ctx context.Context, dir, from, to string) ([]
 // build_paths/skip_paths on every release-please cut.
 //
 // Computes: git diff --name-only <last-deployed-SHA> <targetCommitish>, in
-// the directory dozor would build from (buildDirForConfig — DeployClonePath
-// if set, else SourcePath; see debounce_persist.go), resolving "last-deployed"
-// via resolveSHA — the same shaResolverFunc primitive (resolveGitSHA by
-// default) the debounce-persistence layer already uses to detect a stale
-// rebuild.
+// the repo's OWN source clone (sourceDirForConfig — SourcePath if set, else
+// DeployClonePath; see debounce_persist.go). Both SHAs originate from the
+// webhook's repo, so the diff MUST run in a clone OF that repo — never in a
+// foreign deploy clone that happens to hold the compose file. Using
+// buildDirForConfig (which prefers DeployClonePath) caused the target SHA to
+// be passed into a git operation on a different repo's clone, exiting 128 and
+// silently degrading to a conservative full rebuild every time (issue #160).
+//
+// "last-deployed" is resolved via resolveSHA — the same shaResolverFunc
+// primitive (resolveGitSHA by default) the debounce-persistence layer already
+// uses to detect a stale rebuild.
 //
 // ok=false whenever there is no POSITIVE evidence of the changed files: the
-// build/source dir is unknown, the resolver is nil, the deployed SHA can't be
+// source dir is unknown, the resolver is nil, the deployed SHA can't be
 // resolved (fresh repo, never deployed), or the git diff itself errors (e.g.
-// the deployed SHA isn't a valid revision in this checkout). Callers MUST
-// treat ok=false as "fall back to the original conservative default" — never
-// as "no files changed".
+// the target SHA isn't a valid revision in this checkout — a configuration
+// error). Callers MUST treat ok=false as "fall back to the original
+// conservative default" — never as "no files changed".
+//
+// A git diff failure (target SHA unresolvable in the clone) is a
+// CONFIGURATION ERROR, not a cache miss: it means the clone is not of the
+// webhook's repo, or is stale and hasn't fetched the release commit. It is
+// logged at ERROR naming both the clone dir and the unresolvable SHA, and
+// counted in dozor_release_diff_resolution_total{outcome="unresolvable_sha"}.
+// The conservative full build still proceeds — never skip a build that might
+// be needed — but the error is no longer silent.
 //
 // Note: a resolved-but-empty diff (files=nil, ok=true — e.g. deployed already
 // equals targetCommitish) currently degrades to the SAME "build conservatively"
@@ -62,24 +76,28 @@ func defaultGitDiffNameOnlyRunner(ctx context.Context, dir, from, to string) ([]
 // also fires on a zero-length changed-files list (webhook_dispatch.go). That
 // is safe (never a wasted skip) but not yet a distinct "definitely nothing
 // changed, skip" path — a possible future refinement, out of scope here.
-func releaseChangedFiles(ctx context.Context, rc *RepoConfig, targetCommitish string, resolveSHA shaResolverFunc) (files []string, ok bool) {
+func releaseChangedFiles(ctx context.Context, rc *RepoConfig, repo, targetCommitish string, resolveSHA shaResolverFunc) (files []string, ok bool) {
 	if resolveSHA == nil {
 		return nil, false
 	}
-	dir := buildDirForConfig(*rc)
+	dir := sourceDirForConfig(*rc)
 	if dir == "" {
+		ReleaseDiffResolutionTotal.WithLabelValues(repo, "no_dir").Inc()
 		return nil, false
 	}
 	deployed := resolveSHA(ctx, dir)
 	if deployed == "" || deployed == "unknown" {
+		ReleaseDiffResolutionTotal.WithLabelValues(repo, "no_deployed").Inc()
 		return nil, false
 	}
 	diffed, err := gitDiffNameOnlyRunner(ctx, dir, deployed, targetCommitish)
 	if err != nil {
-		slog.Warn("deploy/webhook: release diff resolution failed, building conservatively",
+		slog.Error("deploy/webhook: release diff target SHA unresolvable in source clone — configuration error, building conservatively",
 			"dir", dir, "deployed", deployed, "target", targetCommitish, "error", err)
+		ReleaseDiffResolutionTotal.WithLabelValues(repo, "unresolvable_sha").Inc()
 		return nil, false
 	}
+	ReleaseDiffResolutionTotal.WithLabelValues(repo, "resolved").Inc()
 	return diffed, true
 }
 
@@ -93,7 +111,7 @@ func attachReleaseDiff(ctx context.Context, push *pushEvent, rc *RepoConfig, res
 	if len(rc.BuildPaths) == 0 {
 		return
 	}
-	files, ok := releaseChangedFiles(ctx, rc, push.HeadCommit.ID, resolveSHA)
+	files, ok := releaseChangedFiles(ctx, rc, push.Repository.FullName, push.HeadCommit.ID, resolveSHA)
 	if !ok {
 		return
 	}

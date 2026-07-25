@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -260,5 +261,124 @@ func TestHandler_Release_PathFilter_FallsBackToBuildWhenTargetCommitishInvalid(t
 		t.Errorf("response status = %q, want queued "+
 			"(target_commitish invalid — git diff errors, must fall back to conservative build, not skip)",
 			resp["status"])
+	}
+}
+
+// TestHandler_Release_PathFilter_MultiRepo_DiffsInSourceClone is the core
+// regression for issue #160: when a repo's DeployClonePath points to a
+// DIFFERENT repo's clone (e.g. vaelor's compose lives in the krolik-server
+// deploy clone) and SourcePath points to the webhook's own source clone,
+// the release diff MUST be resolved in the SourcePath clone — where both
+// the deployed and target SHAs exist — not in the DeployClonePath clone
+// where the target SHA is a foreign revision that git diff cannot resolve.
+//
+// With the bug (diff in DeployClonePath): target SHA unresolvable → exit 128
+// → conservative build → "queued" (CHANGELOG.md never gets evaluated).
+// With the fix   (diff in SourcePath):      both SHAs resolve → diff yields
+// CHANGELOG.md → outside build_paths app/** → "skipped".
+func TestHandler_Release_PathFilter_MultiRepo_DiffsInSourceClone(t *testing.T) {
+	t.Parallel()
+
+	// Source clone: the webhook's own repo (e.g. vaelor). Two commits —
+	// first creates app/main.go, second touches ONLY CHANGELOG.md.
+	sourceDir, deployedSHA, targetSHA := buildTwoCommitFixture(t, "CHANGELOG.md", "# Changelog\n")
+
+	// Deploy clone: a DIFFERENT repo (e.g. krolik-server). Has its own
+	// history; neither of the webhook's SHAs resolves here.
+	deployDir := t.TempDir()
+	mustRun(t, deployDir, "git", "init", "--initial-branch=main")
+	mustRun(t, deployDir, "git", "config", "user.email", "test@test.com")
+	mustRun(t, deployDir, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(deployDir, "docker-compose.yml"), []byte("services:\n  vaelor:\n    build: .\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, deployDir, "git", "add", ".")
+	mustRun(t, deployDir, "git", "commit", "-m", "compose file for vaelor")
+
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/vaelor": {
+				DeployClonePath: deployDir,
+				SourcePath:      sourceDir,
+				ComposePath:     filepath.Join(deployDir, "docker-compose.yml"),
+				Services:        []string{"vaelor"},
+				BuildPaths:      []string{"app/**"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+	h.shaResolver = func(context.Context, string) string { return deployedSHA }
+
+	body := releasePayload("anatolykoptev/vaelor", "v1.0.0", targetSHA)
+	w := postRelease(h, body)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "skipped" || resp["reason"] != "no_relevant_paths" {
+		t.Errorf("response = %+v, want status=skipped reason=no_relevant_paths "+
+			"(diff must resolve in source clone where both SHAs exist; "+
+			"CHANGELOG.md is outside build_paths app/**)", resp)
+	}
+}
+
+// TestHandler_Release_PathFilter_UnresolvableSHA_LogsError verifies that a
+// target SHA absent from the clone being diffed is reported as a
+// CONFIGURATION ERROR at slog.Error (not silently downgraded to WARN), with
+// the log message naming both the clone dir and the unresolvable SHA. The
+// build still proceeds conservatively (never skip a build that might be
+// needed), but the error is no longer silent.
+func TestHandler_Release_PathFilter_UnresolvableSHA_LogsError(t *testing.T) {
+	t.Parallel()
+
+	dir, deployedSHA, _ := buildTwoCommitFixture(t, "CHANGELOG.md", "# Changelog\n")
+
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	defer slog.SetDefault(prev)
+
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/memdb": {
+				ComposePath: dir,
+				SourcePath:  dir,
+				Services:    []string{"memdb-go"},
+				BuildPaths:  []string{"app/**"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+	h.shaResolver = func(context.Context, string) string { return deployedSHA }
+
+	foreignSHA := "dd8d0d9eb825f48d0de27008d6d7ef5ad04e4497"
+	body := releasePayload("anatolykoptev/memdb", "v1.0.0", foreignSHA)
+	w := postRelease(h, body)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "queued" {
+		t.Errorf("response status = %q, want queued "+
+			"(unresolvable SHA must still trigger conservative build, not skip)", resp["status"])
+	}
+
+	logOut := buf.String()
+	if !strings.Contains(logOut, "level=ERROR") {
+		t.Errorf("log must contain level=ERROR for unresolvable SHA, got:\n%s", logOut)
+	}
+	if !strings.Contains(logOut, foreignSHA) {
+		t.Errorf("log must name the unresolvable SHA %q, got:\n%s", foreignSHA, logOut)
+	}
+	if !strings.Contains(logOut, dir) {
+		t.Errorf("log must name the clone dir %q, got:\n%s", dir, logOut)
 	}
 }

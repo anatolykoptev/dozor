@@ -266,3 +266,23 @@ func buildDirForConfig(rc RepoConfig) string {
 	}
 	return rc.SourcePath
 }
+
+// sourceDirForConfig returns the directory of the repo's OWN source clone —
+// the clone whose history contains the webhook's commit SHAs. This is
+// SourcePath when set (the repo's own checkout), falling back to
+// DeployClonePath when SourcePath is empty (a compose repo whose deploy
+// clone IS its source — the common single-clone case).
+//
+// Unlike buildDirForConfig (which prefers DeployClonePath for the
+// stale-skip check), this prefers SourcePath because the release diff
+// (releaseChangedFiles) compares two SHAs from the webhook's repo, which
+// must both resolve in a clone OF that repo — not in a foreign deploy
+// clone that happens to hold the compose file. Passing a webhook-repo SHA
+// into a git diff on a different repo's clone exits 128 and silently
+// degrades to a conservative full rebuild every time (issue #160).
+func sourceDirForConfig(rc RepoConfig) string {
+	if rc.SourcePath != "" {
+		return rc.SourcePath
+	}
+	return rc.DeployClonePath
+}
