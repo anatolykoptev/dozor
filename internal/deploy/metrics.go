@@ -201,19 +201,18 @@ var (
 	//   "auth_error"       — pre-push authentication failed (token command error or docker login
 	//                        rejected the token); the push was NOT attempted. The classic
 	//                        silent-expiry class: the ambient/short-lived credential expired.
-	//   "push_auth_error"  — docker push itself returned an auth error (unauthorized/denied),
-	//                        e.g. the token expired mid-session or lacks write:packages.
-	//                        Distinct from push_error (network/registry/quota) so an auth
-	//                        failure is distinguishable from a network or resolution failure.
 	//   "tag_error"        — docker tag (local retag before push) failed
-	//   "push_error"       — docker push itself failed for a non-auth reason (registry down, quota, network)
+	//   "push_error"       — docker push itself failed (registry down, quota, network, or a
+	//                        "denied"-flavoured message after a successful login — which is a
+	//                        push-side failure, NOT an auth failure, since login succeeded)
 	//   "image_name_error" — the compose-expected image name could not be resolved
 	//
 	// A non-zero rate on any non-"pushed" outcome means the cache is silently
 	// not populating — the pull path will keep falling back to building from
 	// source, and the optimisation looks healthy but does nothing. Alert on
-	// any non-"pushed" outcome; alert specifically on auth_error/push_auth_error
-	// for the silent-credential-expiry class.
+	// any non-"pushed" outcome; alert specifically on auth_error for the
+	// silent-credential-expiry class (a push_error after a successful login is
+	// NOT a credential failure).
 	ImageCachePushTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_image_cache_push_total",
 		Help: "Image-cache (build-once-promote) push outcomes by repo and outcome.",
@@ -222,12 +221,13 @@ var (
 	// ImageCachePullTotal counts image-cache pull outcomes (build-once-promote).
 	// outcome label values:
 	//   "reused"     — the image was pulled and retagged; the build was skipped
-	//   "miss"       — the image was not in the registry (resolution failure); fell back to building from source
-	//   "auth_error" — authentication failed (token command error, docker login rejected,
-	//                  or pull returned an auth error); fell back to building from source.
-	//                  Distinct from "error" so an auth failure is distinguishable from a
-	//                  network or resolution failure — the silent-expiry class.
-	//   "error"      — the pull or retag failed for a non-auth reason (network, retag); fell back to building from source
+	//   "miss"       — the image was not in the registry (including a "denied"/"unauthorized"
+	//                  message after a successful login — a private registry returns that for
+	//                  a non-existent image rather than 404); fell back to building from source
+	//   "auth_error" — authentication failed (token command error or docker login rejected
+	//                  the token); the pull was NOT attempted. Distinct from "miss" so a
+	//                  credential failure is distinguishable from a cold-start cache miss.
+	//   "error"      — the retag failed (after a successful pull); fell back to building from source
 	//
 	// A high "miss" rate with a low "reused" rate means pushes are not landing
 	// (cross-reference with ImageCachePushTotal). A "reused" rate near 1.0
@@ -248,8 +248,6 @@ var (
 	//   phase  — "push" or "pull" (which path attempted auth)
 	//   reason — "token_error"  — the token command failed or returned empty
 	//            "login_error"  — docker login rejected the token
-	//            "push_auth"    — docker push returned an auth error (unauthorized/denied)
-	//            "pull_auth"    — docker pull returned an auth error (unauthorized/denied)
 	//
 	// A non-zero rate on ANY reason means the registry credential is expiring
 	// or wrong — the image cache is silently not working. This is the metric

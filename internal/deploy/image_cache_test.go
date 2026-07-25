@@ -900,11 +900,21 @@ func TestTryPullCachedImage_NoTokenCommand_AmbientPath(t *testing.T) {
 	}
 }
 
-// TestTryPullCachedImage_PullAuthError_ClassifiedAsAuthError verifies that a
-// pull error that looks like an auth failure (unauthorized) is classified as
-// auth_error, NOT as a generic miss/error — so an auth failure is
-// distinguishable from a network or resolution failure.
-func TestTryPullCachedImage_PullAuthError_ClassifiedAsAuthError(t *testing.T) {
+// TestTryPullCachedImage_DeniedAfterLoginIsCacheMissNotAuth is the REGRESSION
+// TEST for the substring-classification bug. A private registry answers a pull
+// for a NON-EXISTENT image with "denied"/"unauthorized" rather than 404 —
+// deliberately, to avoid leaking whether a private repository exists. So the
+// first-ever pull for a repo (the normal cold-start cache miss) returns a
+// "denied"-flavoured message.
+//
+// This test simulates exactly that: docker login SUCCEEDS (the credential is
+// valid), then the pull returns "Error: unauthorized: authentication required".
+// The outcome must be classified as a cache MISS, NOT an auth failure — the
+// structural signal (login succeeded) is the truth, not the error wording.
+//
+// This test FAILS against the pre-fix code (which substring-matched
+// "unauthorized" and labelled it auth_error) and PASSES after the fix.
+func TestTryPullCachedImage_DeniedAfterLoginIsCacheMissNotAuth(t *testing.T) {
 	const treeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
 	t.Setenv("DOZOR_IMAGE_CACHE_TOKEN_CMD", "fake-token-cmd")
 
@@ -912,17 +922,18 @@ func TestTryPullCachedImage_PullAuthError_ClassifiedAsAuthError(t *testing.T) {
 		return "fake-token", nil
 	})
 	withDockerLoginRunner(t, func(_ context.Context, _, _, _ string) error {
-		return nil
+		return nil // login SUCCEEDS — the credential is valid
 	})
 	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
 		if name == "docker" && len(args) > 0 && args[0] == "pull" {
+			// A private registry returns "unauthorized" for a missing image.
 			return errors.New("Error: unauthorized: authentication required")
 		}
 		return nil
 	})
 
 	req := BuildRequest{
-		Repo: "anatolykoptev/oxpulse-chat",
+		Repo: "anatolykoptev/oxpulse-chat-regression",
 		Config: RepoConfig{
 			ComposePath: "/fake/compose",
 			Services:    []string{"oxpulse-chat"},
@@ -933,12 +944,17 @@ func TestTryPullCachedImage_PullAuthError_ClassifiedAsAuthError(t *testing.T) {
 	}
 
 	if tryPullCachedImage(context.Background(), req, treeHash) {
-		t.Fatal("expected tryPullCachedImage to return false (fall back to build) on pull auth error")
+		t.Fatal("expected tryPullCachedImage to return false (fall back to build) on pull miss")
 	}
-	// The auth_error outcome must fire (not miss/error). Verify via the metric.
-	got := testutil.ToFloat64(ImageCachePullTotal.WithLabelValues(req.Repo, "auth_error"))
-	if got <= 0 {
-		t.Errorf("ImageCachePullTotal{outcome=auth_error} must fire on a pull auth error; got %.0f", got)
+	// The miss outcome must fire — NOT auth_error. A "denied" message after a
+	// successful login is a cache miss, not a credential failure.
+	missCount := testutil.ToFloat64(ImageCachePullTotal.WithLabelValues(req.Repo, "miss"))
+	if missCount < 1 {
+		t.Errorf("ImageCachePullTotal{outcome=miss} must fire on a denied-message pull after successful login; got %.0f", missCount)
+	}
+	authCount := testutil.ToFloat64(ImageCachePullTotal.WithLabelValues(req.Repo, "auth_error"))
+	if authCount > 0 {
+		t.Errorf("ImageCachePullTotal{outcome=auth_error} must NOT fire when login succeeded — a denied message after login is a cache miss, not an auth failure; got %.0f", authCount)
 	}
 }
 
@@ -1025,8 +1041,9 @@ func TestImageCache_TokenNeverInLogs(t *testing.T) {
 		pushCachedImages(context.Background(), baseReq, treeHash)
 	})
 
-	// Sub-test 5: push auth error — the push itself returns unauthorized.
-	t.Run("push_auth_error", func(t *testing.T) {
+	// Sub-test 5: push denied after login — the push returns "denied" but
+	// login succeeded, so this is a push_error, not an auth failure.
+	t.Run("push_denied_after_login", func(t *testing.T) {
 		withTokenCommandRunner(t, func(_ context.Context, _ string) (string, error) {
 			return secretToken, nil
 		})
@@ -1113,29 +1130,91 @@ func TestResolveTokenUsername_DefaultAndOverride(t *testing.T) {
 	}
 }
 
-func TestAuthErrorIndicator(t *testing.T) {
-	authErrs := []string{
-		"unauthorized: authentication required",
-		"denied: permission_denied",
-		"no basic auth credentials",
-		"Error: not authorized",
-	}
-	for _, s := range authErrs {
-		if !authErrorIndicator(errors.New(s)) {
-			t.Errorf("authErrorIndicator(%q) = false, want true", s)
+// TestTryPullCachedImage_LoginFails_ClassifiedAsAuthErrorNotMiss verifies
+// that when docker login itself fails on the pull path, the outcome is
+// classified as auth_error (the credential is genuinely bad), NOT as a miss.
+func TestTryPullCachedImage_LoginFails_ClassifiedAsAuthErrorNotMiss(t *testing.T) {
+	const treeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
+	t.Setenv("DOZOR_IMAGE_CACHE_TOKEN_CMD", "fake-token-cmd")
+
+	withTokenCommandRunner(t, func(_ context.Context, _ string) (string, error) {
+		return "fake-token", nil
+	})
+	withDockerLoginRunner(t, func(_ context.Context, _, _, _ string) error {
+		return errors.New("docker login ghcr.io: unauthorized") // login FAILS
+	})
+	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
+		if name == "docker" && len(args) > 0 && args[0] == "pull" {
+			t.Error("docker pull must NOT be attempted when login fails")
 		}
+		return nil
+	})
+
+	req := BuildRequest{
+		Repo: "anatolykoptev/oxpulse-chat-loginfail",
+		Config: RepoConfig{
+			ComposePath: "/fake/compose",
+			Services:    []string{"oxpulse-chat"},
+			ImageCache: ImageCacheConfig{
+				Registry: "ghcr.io/anatolykoptev/oxpulse-chat",
+			},
+		},
 	}
-	nonAuthErrs := []string{
-		"manifest unknown",
-		"network timeout: connection refused",
-		"docker tag: No such image",
+
+	if tryPullCachedImage(context.Background(), req, treeHash) {
+		t.Fatal("expected tryPullCachedImage to return false (fall back to build) on login failure")
 	}
-	for _, s := range nonAuthErrs {
-		if authErrorIndicator(errors.New(s)) {
-			t.Errorf("authErrorIndicator(%q) = true, want false", s)
+	authCount := testutil.ToFloat64(ImageCachePullTotal.WithLabelValues(req.Repo, "auth_error"))
+	if authCount < 1 {
+		t.Errorf("ImageCachePullTotal{outcome=auth_error} must fire when login fails; got %.0f", authCount)
+	}
+	missCount := testutil.ToFloat64(ImageCachePullTotal.WithLabelValues(req.Repo, "miss"))
+	if missCount > 0 {
+		t.Errorf("ImageCachePullTotal{outcome=miss} must NOT fire when login fails — a login failure is an auth error, not a cache miss; got %.0f", missCount)
+	}
+}
+
+// TestPushCachedImages_DeniedAfterLoginIsPushErrorNotAuth verifies that when
+// docker login SUCCEEDS and then the push returns a "denied"-flavoured message,
+// the outcome is classified as push_error (not push_auth_error) — login
+// succeeded, so the credential is valid; the push failure is not an auth failure.
+func TestPushCachedImages_DeniedAfterLoginIsPushErrorNotAuth(t *testing.T) {
+	const treeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
+	t.Setenv("DOZOR_IMAGE_CACHE_TOKEN_CMD", "fake-token-cmd")
+
+	withTokenCommandRunner(t, func(_ context.Context, _ string) (string, error) {
+		return "fake-token", nil
+	})
+	withDockerLoginRunner(t, func(_ context.Context, _, _, _ string) error {
+		return nil // login SUCCEEDS
+	})
+	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
+		if name == "docker" && len(args) > 0 && args[0] == "push" {
+			return errors.New("denied: permission_denied")
 		}
+		return nil
+	})
+	withOutputRunner(t, composeImagesOutputRunner("oxpulse-chat", "/fake/source"))
+
+	req := BuildRequest{
+		Repo: "anatolykoptev/oxpulse-chat-pushdenied",
+		Config: RepoConfig{
+			ComposePath: "/fake/compose",
+			Services:    []string{"oxpulse-chat"},
+			ImageCache: ImageCacheConfig{
+				Registry: "ghcr.io/anatolykoptev/oxpulse-chat",
+			},
+		},
 	}
-	if authErrorIndicator(nil) {
-		t.Error("authErrorIndicator(nil) = true, want false")
+
+	pushCachedImages(context.Background(), req, treeHash)
+
+	pushErrCount := testutil.ToFloat64(ImageCachePushTotal.WithLabelValues(req.Repo, "push_error"))
+	if pushErrCount < 1 {
+		t.Errorf("ImageCachePushTotal{outcome=push_error} must fire on a denied-message push after successful login; got %.0f", pushErrCount)
+	}
+	pushAuthCount := testutil.ToFloat64(ImageCachePushTotal.WithLabelValues(req.Repo, "push_auth_error"))
+	if pushAuthCount > 0 {
+		t.Errorf("ImageCachePushTotal{outcome=push_auth_error} must NOT fire when login succeeded — a denied message after login is a push failure, not an auth failure; got %.0f", pushAuthCount)
 	}
 }

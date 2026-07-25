@@ -110,22 +110,6 @@ func resolveTokenUsername(rc RepoConfig) string {
 	return defaultTokenUsername
 }
 
-// authErrorIndicator reports whether a docker push/pull error string looks
-// like a registry authentication failure (as opposed to a network or
-// image-resolution failure). Used to classify the outcome metric so an auth
-// failure is distinguishable from a generic "failed".
-func authErrorIndicator(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "unauthorized") ||
-		strings.Contains(s, "denied") ||
-		strings.Contains(s, "authentication") ||
-		strings.Contains(s, "no basic auth credentials") ||
-		strings.Contains(s, "not authorized")
-}
-
 // authenticateRegistry obtains a fresh registry token (if a token command is
 // configured) and runs `docker login <host> -u <user> --password-stdin`
 // immediately before a push or a pull. Returns true when the caller may
@@ -221,16 +205,18 @@ func tryPullCachedImage(ctx context.Context, req BuildRequest, treeHash string) 
 	}
 
 	if err := runCmd(ctx, req.Config.ComposePath, "docker", "pull", ref); err != nil {
-		if authErrorIndicator(err) {
-			slog.Error("deploy: image reuse pull auth failure — falling back to build",
-				"tree_hash", treeHash, "tag", ref, "error", err)
-			ImageCachePullTotal.WithLabelValues(req.Repo, "auth_error").Inc()
-			ImageCacheAuthTotal.WithLabelValues(req.Repo, "pull", "pull_auth").Inc()
-		} else {
-			slog.Info("deploy: image reuse miss — tree-"+treeHash+" not in registry, building from source",
-				"tree_hash", treeHash, "tag", ref, "error", err)
-			ImageCachePullTotal.WithLabelValues(req.Repo, "miss").Inc()
-		}
+		// Login succeeded (authenticateRegistry returned true above), so this
+		// pull failure is NOT an authentication failure. A private registry
+		// answers a pull for a non-existent image with "denied"/"unauthorized"
+		// rather than 404 — deliberately, to avoid leaking whether a private
+		// repository exists. So a "denied"-flavoured message after a successful
+		// login is a cache miss (the overwhelmingly common cold-start case),
+		// not a credential failure. The login result is the structural signal;
+		// we do NOT substring-match the error wording (output wording is not an
+		// API).
+		slog.Info("deploy: image reuse miss — tree-"+treeHash+" not in registry, building from source",
+			"tree_hash", treeHash, "tag", ref, "error", err)
+		ImageCachePullTotal.WithLabelValues(req.Repo, "miss").Inc()
 		return false
 	}
 
@@ -315,16 +301,13 @@ func pushCachedImages(ctx context.Context, req BuildRequest, treeHash string) {
 			continue
 		}
 		if err := runCmd(ctx, req.Config.ComposePath, "docker", "push", ref); err != nil {
-			if authErrorIndicator(err) {
-				slog.Error("deploy: image cache push failed — registry auth rejected push (best-effort, deploy continues)",
-					"tag", ref, "service", svc, "error", err)
-				ImageCachePushTotal.WithLabelValues(req.Repo, "push_auth_error").Inc()
-				ImageCacheAuthTotal.WithLabelValues(req.Repo, "push", "push_auth").Inc()
-			} else {
-				slog.Error("deploy: image cache push failed — docker push rejected (best-effort, deploy continues)",
-					"tag", ref, "service", svc, "error", err)
-				ImageCachePushTotal.WithLabelValues(req.Repo, "push_error").Inc()
-			}
+			// Login succeeded (authenticateRegistry returned true above), so
+			// this push failure is NOT an authentication failure — label it as
+			// a push error, not auth. See tryPullCachedImage for the rationale
+			// on why substring-matching the error would misclassify.
+			slog.Error("deploy: image cache push failed — docker push rejected (best-effort, deploy continues)",
+				"tag", ref, "service", svc, "error", err)
+			ImageCachePushTotal.WithLabelValues(req.Repo, "push_error").Inc()
 			continue
 		}
 		slog.Info("deploy: image cache pushed",
