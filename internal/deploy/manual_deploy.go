@@ -112,7 +112,7 @@ func ExecuteManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 			CommitSHA: "", // resolveGitSHA reads HEAD of sourcePath at build time
 			Config:    req.Config,
 		}
-		if errMsg := composeBuild(ctx, buildReq, ""); errMsg != "" {
+		if errMsg := composeBuild(ctx, buildReq, "", ""); errMsg != "" {
 			ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "failure").Inc()
 			result.Error = errMsg
 			return result
@@ -340,7 +340,7 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 		"sha", result.BuiltSHA,
 	)
 
-	if errMsg := composeBuild(ctx, buildReq, worktreePath); errMsg != "" {
+	if errMsg := composeBuild(ctx, buildReq, worktreePath, ""); errMsg != "" {
 		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
 		result.Error = errMsg
 		return result

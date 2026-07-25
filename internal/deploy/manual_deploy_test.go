@@ -88,7 +88,7 @@ func collectCounterSum(cv *prometheus.CounterVec) float64 {
 // clone checked out on "dev" but configured branch is "main". The deploy must
 // build a worktree at origin/main, not from on-disk HEAD.
 //
-// RED-on-revert: replace gitPrepareBranch with composeBuild(ctx, req, "") —
+// RED-on-revert: replace gitPrepareBranch with composeBuild(ctx, req, "", "") —
 // worktreeTarget stays "" (no worktree add issued) and the assertion fails.
 func TestManualDeploy_DriftedClone_BuildsOriginMain(t *testing.T) {
 	withManualFetch(t, func(_ context.Context, _, branch string) error {

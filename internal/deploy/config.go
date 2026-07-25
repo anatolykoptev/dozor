@@ -204,6 +204,73 @@ type RepoConfig struct {
 	// Example (krolik-server deploy clone):
 	//   deploy_clone_path: /home/krolik/deploy/krolik-server
 	DeployClonePath string `yaml:"deploy_clone_path,omitempty"`
+
+	// ImageCache enables build-once-promote: the production image is built
+	// once, tagged by git tree hash, pushed to a registry, and pulled
+	// (instead of rebuilt) by the next deploy of the same tree. Opt-in per
+	// repo; absent (zero value) on all other repos — default OFF.
+	//
+	// The tree hash (git rev-parse <commit>^{tree}) is the same for two
+	// commits that produce identical source trees (e.g. a dev→main merge
+	// whose merge commit has a new SHA but the same tree as dev's HEAD).
+	// Tagging by tree hash lets prod reuse the artifact stagingprod already
+	// validated, eliminating the duplicate build and the canary-ships-a-
+	// different-artifact class proven by the v0.15.0 incident.
+	//
+	// Pull failure (image not found, registry down, auth failure, timeout)
+	// ALWAYS falls through to the existing build path — the change is never
+	// worse than the status quo. Push failure is best-effort (never fails
+	// the deploy) but logs at ERROR level so a silently-failing push is
+	// observable.
+	ImageCache ImageCacheConfig `yaml:"image_cache,omitempty"`
+}
+
+// ImageCacheConfig configures per-repo image caching (build-once-promote).
+// When Registry is empty the feature is disabled (the default for every repo
+// that does not opt in).
+type ImageCacheConfig struct {
+	// Registry is the fully-qualified image reference WITHOUT a tag, e.g.
+	// "ghcr.io/anatolykoptev/oxpulse-chat". The tree-hash tag is appended
+	// as ":tree-<40-char-hex>". When non-empty, image caching is enabled
+	// for this repo.
+	Registry string `yaml:"registry,omitempty"`
+
+	// Services restricts caching to a subset of the repo's services. When
+	// empty, ALL services in the repo entry are cacheable. Use this when a
+	// repo builds multiple services from one tree but only some share an
+	// identical artifact (e.g. oxpulse-chat-stagingprod is production-mode
+	// and cacheable, while oxpulse-chat-staging is test-mode and is not).
+	//
+	// The pull-before-build path only fires when EVERY service in the repo
+	// entry is cacheable — otherwise the non-cacheable services still need
+	// a build, so there is no saving from skipping. The push-after-build
+	// path fires for each cacheable service individually.
+	Services []string `yaml:"services,omitempty"`
+}
+
+// cacheableServices returns the subset of the repo's services that are
+// eligible for image caching. Returns nil when the feature is off
+// (ImageCache.Registry == ""), meaning no push or pull attempt is made.
+// When ImageCache.Services is empty, all of the repo's Services are
+// cacheable; otherwise only the intersection is returned.
+func (rc RepoConfig) cacheableServices() []string {
+	if rc.ImageCache.Registry == "" {
+		return nil
+	}
+	if len(rc.ImageCache.Services) == 0 {
+		return rc.Services
+	}
+	cached := make(map[string]struct{}, len(rc.ImageCache.Services))
+	for _, s := range rc.ImageCache.Services {
+		cached[s] = struct{}{}
+	}
+	var out []string
+	for _, svc := range rc.Services {
+		if _, ok := cached[svc]; ok {
+			out = append(out, svc)
+		}
+	}
+	return out
 }
 
 var defaultDebounceWindow = func() time.Duration {

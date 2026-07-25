@@ -13,15 +13,23 @@ import (
 )
 
 // gitPrepare fetches the target commit and creates a temporary git worktree for building.
-// Returns the worktree path (which must be cleaned up after build) and a cleanup function.
+// Returns the worktree path, the git tree hash of the target commit (used for
+// image-cache tagging), a cleanup function, and an error message (empty on success).
 // The developer's working directory is never modified.
-func gitPrepare(ctx context.Context, sourcePath, commitSHA string) (worktreePath string, cleanup func(), errMsg string) {
+//
+// The tree hash (git rev-parse <target>^{tree}) is the content-address of the
+// source tree — two commits with identical trees (e.g. a dev→main merge) share
+// the same tree hash. It is the registry tag key for build-once-promote. When
+// the tree hash cannot be resolved (rare git error), it is returned empty and
+// image caching is silently disabled for this deploy (the build proceeds as
+// today, push/pull are skipped).
+func gitPrepare(ctx context.Context, sourcePath, commitSHA string) (worktreePath, treeHash string, cleanup func(), errMsg string) {
 	noop := func() {}
 	if sourcePath == "" {
-		return "", noop, ""
+		return "", "", noop, ""
 	}
 	if err := runCmd(ctx, sourcePath, "git", "fetch", "origin"); err != nil {
-		return "", noop, fmt.Sprintf("git fetch: %v", err)
+		return "", "", noop, fmt.Sprintf("git fetch: %v", err)
 	}
 
 	// Determine target ref: exact SHA if provided, otherwise latest from default branch.
@@ -43,7 +51,7 @@ func gitPrepare(ctx context.Context, sourcePath, commitSHA string) (worktreePath
 		// worktree add. Fail fast with an actionable message instead of the
 		// raw "invalid reference" git error.
 		if err := runCmd(ctx, sourcePath, "git", "cat-file", "-e", commitSHA+"^{commit}"); err != nil {
-			return "", noop, fmt.Sprintf(
+			return "", "", noop, fmt.Sprintf(
 				"commit %s is not present in the local clone after git fetch origin; "+
 					"the release SHA was not fetched yet (debounce race between close releases?). "+
 					"Verify the SHA exists on the remote and re-trigger the deploy.",
@@ -66,7 +74,18 @@ func gitPrepare(ctx context.Context, sourcePath, commitSHA string) (worktreePath
 	wtPath := fmt.Sprintf("/tmp/deploy-%s-%d", shortSHA, time.Now().UnixMilli())
 
 	if err := runCmd(ctx, sourcePath, "git", "worktree", "add", "--detach", wtPath, target); err != nil {
-		return "", noop, fmt.Sprintf("git worktree add: %v", err)
+		return "", "", noop, fmt.Sprintf("git worktree add: %v", err)
+	}
+
+	// Resolve the tree hash of the target commit for image-cache tagging.
+	// The worktree is detached at `target`, so HEAD^{tree} is the tree hash.
+	// On failure, return empty — image caching is silently disabled for this
+	// deploy (build proceeds as today, push/pull are skipped).
+	resolvedTreeHash, treeErr := gitTreeHashRunner(ctx, wtPath)
+	if treeErr != nil {
+		slog.Warn("deploy: cannot resolve tree hash for image cache; feature disabled for this deploy",
+			"path", wtPath, "target", target, "error", treeErr)
+		resolvedTreeHash = ""
 	}
 
 	cleanupFn := func() {
@@ -76,8 +95,8 @@ func gitPrepare(ctx context.Context, sourcePath, commitSHA string) (worktreePath
 		}
 	}
 
-	slog.Info("deploy: worktree created", "path", wtPath, "target", target)
-	return wtPath, cleanupFn, ""
+	slog.Info("deploy: worktree created", "path", wtPath, "target", target, "tree_hash", resolvedTreeHash)
+	return wtPath, resolvedTreeHash, cleanupFn, ""
 }
 
 // detectDefaultBranch returns "main" or "master" based on which remote branch exists.
@@ -99,7 +118,7 @@ func detectDefaultBranch(ctx context.Context, sourcePath string) string { //noli
 //     origin/<branch> so the compose config is never stale.
 //  2. OXPULSE_GIT_SHA and BUILD_TIMESTAMP build-args are injected so
 //     Dockerfiles that declare these ARGs get the correct values baked in.
-func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) string {
+func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash string) string {
 	// Part A: auto-pull the deploy clone before reading its compose config.
 	branch := req.Config.Branch
 	if branch == "" {
@@ -110,6 +129,19 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath string) st
 	// Invalidate BuildKit exec cache mounts when requested (Rust services with
 	// --mount=type=cache,target=target/ — see RepoConfig.PruneBuildkitCache).
 	pruneBuildkitCacheMount(ctx, req)
+
+	// Image-cache pull-before-build: if the repo opts in (image_cache.registry
+	// set) and every service being built is cacheable, try to pull the
+	// tree-hash-tagged image from the registry. On a hit, retag to each
+	// service's compose-expected image name and skip the build entirely.
+	// On ANY failure (not found, registry down, auth error, timeout, retag
+	// error), fall through to the existing build path — never worse than the
+	// status quo.
+	if treeHash != "" && allServicesCacheable(req) {
+		if tryPullCachedImage(ctx, req, treeHash) {
+			return ""
+		}
+	}
 
 	imagesBefore := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
 
