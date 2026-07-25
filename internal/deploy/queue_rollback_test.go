@@ -22,8 +22,8 @@ func TestRollback_HealthCheckFail_RollbackSucceeds(t *testing.T) {
 		if len(args) >= 2 && args[1] == "ps" {
 			return []byte(`[{"State":"exited","Status":"Exited (1)","Publishers":[]}]`), nil
 		}
-		if len(args) >= 2 && args[1] == "images" {
-			return []byte(`[{"ID":"aabbcc1234567","ContainerName":"svc","Repository":"myrepo","Tag":"latest"}]`), nil
+		if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
+			return []byte("myrepo:latest\n"), nil
 		}
 		return []byte("{}"), nil
 	}
@@ -54,8 +54,8 @@ func TestRollback_RollbackAlsoFails(t *testing.T) {
 
 	// composeImageName (via outputRunner) returns empty → "cannot determine image name"
 	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[1] == "images" {
-			return []byte(`[]`), nil
+		if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
+			return []byte("\n"), nil // empty → composeImageName returns ""
 		}
 		return []byte("{}"), nil
 	}
@@ -89,8 +89,8 @@ func TestRollback_ComposeUpFail_RollbackAttempted(t *testing.T) {
 	defer func() { outputRunner = origOut }()
 
 	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[1] == "images" {
-			return []byte(`[{"ID":"prev1234567890","ContainerName":"svc","Repository":"myrepo","Tag":"latest"}]`), nil
+		if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
+			return []byte("myrepo:latest\n"), nil
 		}
 		return []byte("{}"), nil
 	}
@@ -123,11 +123,11 @@ func TestRollback_AllSucceeds_NoRollback(t *testing.T) {
 		if len(args) >= 2 && args[1] == "ps" {
 			return []byte(psRunning), nil
 		}
-		if len(args) >= 2 && args[1] == "config" {
+		if len(args) >= 3 && args[1] == "config" && args[2] == "--format" {
 			return []byte(`{"services":{}}`), nil
 		}
-		if len(args) >= 2 && args[1] == "images" {
-			return []byte(`[{"ID":"img1234567890","ContainerName":"svc","Repository":"myrepo","Tag":"latest"}]`), nil
+		if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
+			return []byte("myrepo:latest\n"), nil
 		}
 		return []byte("{}"), nil
 	}
