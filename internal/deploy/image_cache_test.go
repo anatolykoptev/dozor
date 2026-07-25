@@ -212,9 +212,15 @@ func TestGitPrepare_TreeHashError_ReturnsEmpty(t *testing.T) {
 func TestTryPullCachedImage_PullHitSkipsBuild(t *testing.T) {
 	const treeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
 
-	var cmdCalls []struct{ name string; args []string }
+	var cmdCalls []struct {
+		name string
+		args []string
+	}
 	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
-		cmdCalls = append(cmdCalls, struct{ name string; args []string }{name, args})
+		cmdCalls = append(cmdCalls, struct {
+			name string
+			args []string
+		}{name, args})
 		return nil // pull + tag succeed
 	})
 	// composeImageName uses outputRunner, not cmdRunner.
@@ -345,7 +351,7 @@ func TestComposeBuild_PullHitSkipsBuild(t *testing.T) {
 	withOutputRunner(t, composeImagesOutputRunner("oxpulse-chat", "/fake/source"))
 
 	req := BuildRequest{
-		Repo: "anatolykoptev/oxpulse-chat",
+		Repo:      "anatolykoptev/oxpulse-chat",
 		CommitSHA: "a25379b3",
 		Config: RepoConfig{
 			ComposePath: "/fake/compose",
@@ -388,7 +394,7 @@ func TestComposeBuild_PullMissBuilds(t *testing.T) {
 	withOutputRunner(t, composeImagesOutputRunner("oxpulse-chat", "/fake/source"))
 
 	req := BuildRequest{
-		Repo: "anatolykoptev/oxpulse-chat",
+		Repo:      "anatolykoptev/oxpulse-chat",
 		CommitSHA: "a25379b3",
 		Config: RepoConfig{
 			ComposePath: "/fake/compose",
@@ -553,9 +559,15 @@ func TestPushCachedImages_SuccessPushes(t *testing.T) {
 		return nil
 	})
 
-	var cmdCalls []struct{ name string; args []string }
+	var cmdCalls []struct {
+		name string
+		args []string
+	}
 	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
-		cmdCalls = append(cmdCalls, struct{ name string; args []string }{name, args})
+		cmdCalls = append(cmdCalls, struct {
+			name string
+			args []string
+		}{name, args})
 		return nil
 	})
 	withOutputRunner(t, composeImagesOutputRunner("oxpulse-chat", "/fake/source"))
