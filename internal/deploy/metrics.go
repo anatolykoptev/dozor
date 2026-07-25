@@ -195,6 +195,38 @@ var (
 		Help: "Manual deploy: source clone branch ≠ configured deploy branch (build still uses origin/<configured>).",
 	}, []string{"repo", "configured", "actual"})
 
+	// ImageCachePushTotal counts image-cache push outcomes (build-once-promote).
+	// outcome label values:
+	//   "pushed"       — the image was tagged and pushed to the registry successfully
+	//   "token_error"  — the GH App token could not be minted (script missing, expired creds, etc.)
+	//   "login_error"  — docker login rejected the token
+	//   "tag_error"    — docker tag (local retag before push) failed
+	//   "push_error"   — docker push itself failed (registry down, auth, quota, network)
+	//   "image_name_error" — the compose-expected image name could not be resolved
+	//
+	// A non-zero rate on any non-"pushed" outcome means the cache is silently
+	// not populating — the pull path will keep falling back to building from
+	// source, and the optimisation looks healthy but does nothing. Alert on
+	// any non-"pushed" outcome.
+	ImageCachePushTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_image_cache_push_total",
+		Help: "Image-cache (build-once-promote) push outcomes by repo and outcome.",
+	}, []string{"repo", "outcome"})
+
+	// ImageCachePullTotal counts image-cache pull outcomes (build-once-promote).
+	// outcome label values:
+	//   "reused"   — the image was pulled and retagged; the build was skipped
+	//   "miss"     — the image was not in the registry; fell back to building from source
+	//   "error"    — the pull or retag failed unexpectedly; fell back to building from source
+	//
+	// A high "miss" rate with a low "reused" rate means pushes are not landing
+	// (cross-reference with ImageCachePushTotal). A "reused" rate near 1.0
+	// means the cache is working.
+	ImageCachePullTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_image_cache_pull_total",
+		Help: "Image-cache (build-once-promote) pull outcomes by repo and outcome.",
+	}, []string{"repo", "outcome"})
+
 	// DeploySourceSyncTotal counts best-effort source-checkout sync attempts run
 	// off the deploy hot path after each build (success or failure). It advances
 	// each repo's ~/src/X default-branch ref to origin so go-code indexes fresh

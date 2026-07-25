@@ -332,7 +332,7 @@ func TestGitPrepare_FetchesSHABeforeWorktreeAdd(t *testing.T) {
 	})
 
 	const sha = "263dc3c1aabbcc"
-	_, cleanup, errMsg := gitPrepare(context.Background(), "/fake/source", sha)
+	_, _, cleanup, errMsg := gitPrepare(context.Background(), "/fake/source", sha)
 	defer cleanup()
 	if errMsg != "" {
 		t.Fatalf("expected no error, got: %s", errMsg)
@@ -409,7 +409,7 @@ func TestGitPrepare_MissingSHA_FailsWithClearError(t *testing.T) {
 	})
 
 	const sha = "263dc3c1aabbcc"
-	_, _, errMsg := gitPrepare(context.Background(), "/fake/source", sha)
+	_, _, _, errMsg := gitPrepare(context.Background(), "/fake/source", sha)
 	if errMsg == "" {
 		t.Fatal("expected error for missing SHA, got none")
 	}

@@ -71,16 +71,25 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 		return result
 	}
 
-	worktreePath, worktreeCleanup, errMsg := gitPrepare(ctx, req.Config.SourcePath, req.CommitSHA)
+	worktreePath, treeHash, worktreeCleanup, errMsg := gitPrepare(ctx, req.Config.SourcePath, req.CommitSHA)
 	if errMsg != "" {
 		result.Error = errMsg
 		return result
 	}
 	defer worktreeCleanup()
 
-	if errMsg := composeBuild(ctx, req, worktreePath); errMsg != "" {
+	if errMsg := composeBuild(ctx, req, worktreePath, treeHash); errMsg != "" {
 		result.Error = errMsg
 		return result
+	}
+
+	// Image-cache push-after-build: tag and push the freshly-built image to
+	// the registry under the tree-hash tag. Best-effort — push failure NEVER
+	// fails the deploy (the image is already built and will be brought up),
+	// but it MUST emit an ERROR-level log naming the tag and error so a
+	// silently-failing push is observable.
+	if treeHash != "" {
+		pushCachedImages(ctx, req, treeHash)
 	}
 
 	result.PreviousImages = snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
