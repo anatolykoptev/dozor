@@ -246,6 +246,32 @@ type ImageCacheConfig struct {
 	// a build, so there is no saving from skipping. The push-after-build
 	// path fires for each cacheable service individually.
 	Services []string `yaml:"services,omitempty"`
+
+	// TokenCommand is a shell command whose STDOUT is a fresh registry
+	// token, run immediately before each push and each pull. It lets dozor
+	// obtain a short-lived credential (e.g. a GitHub App installation token
+	// that expires hourly) instead of relying on an ambient `docker login`
+	// that silently expires. The token is piped to `docker login` via stdin
+	// and is NEVER logged.
+	//
+	// Empty (the default) falls back to the DOZOR_IMAGE_CACHE_TOKEN_CMD env
+	// var; if that is also empty, dozor uses the ambient ~/.docker/config.json
+	// credential (the previous behaviour) and logs that fact at INFO so
+	// "relying on ambient credentials" is a stated fact, not an accident.
+	//
+	// The command is run via `sh -c`, so it may include arguments, pipes,
+	// and env expansion. Example: "~/bin/gh-app-token.sh".
+	TokenCommand string `yaml:"token_command,omitempty"`
+
+	// TokenUsername is the username passed to `docker login <host> -u
+	// <username> --password-stdin`. Registry-specific: GHCR App installation
+	// tokens use "x-access-token"; other registries differ.
+	//
+	// Empty (the default) falls back to the DOZOR_IMAGE_CACHE_TOKEN_USERNAME
+	// env var; if that is also empty, defaults to "x-access-token" (the
+	// GHCR App-token convention used on this host). Override for registries
+	// with a different username convention.
+	TokenUsername string `yaml:"token_username,omitempty"`
 }
 
 // cacheableServices returns the subset of the repo's services that are

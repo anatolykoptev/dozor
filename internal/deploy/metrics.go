@@ -197,17 +197,22 @@ var (
 
 	// ImageCachePushTotal counts image-cache push outcomes (build-once-promote).
 	// outcome label values:
-	//   "pushed"       — the image was tagged and pushed to the registry successfully
-	//   "token_error"  — the GH App token could not be minted (script missing, expired creds, etc.)
-	//   "login_error"  — docker login rejected the token
-	//   "tag_error"    — docker tag (local retag before push) failed
-	//   "push_error"   — docker push itself failed (registry down, auth, quota, network)
+	//   "pushed"           — the image was tagged and pushed to the registry successfully
+	//   "auth_error"       — pre-push authentication failed (token command error or docker login
+	//                        rejected the token); the push was NOT attempted. The classic
+	//                        silent-expiry class: the ambient/short-lived credential expired.
+	//   "tag_error"        — docker tag (local retag before push) failed
+	//   "push_error"       — docker push itself failed (registry down, quota, network, or a
+	//                        "denied"-flavoured message after a successful login — which is a
+	//                        push-side failure, NOT an auth failure, since login succeeded)
 	//   "image_name_error" — the compose-expected image name could not be resolved
 	//
 	// A non-zero rate on any non-"pushed" outcome means the cache is silently
 	// not populating — the pull path will keep falling back to building from
 	// source, and the optimisation looks healthy but does nothing. Alert on
-	// any non-"pushed" outcome.
+	// any non-"pushed" outcome; alert specifically on auth_error for the
+	// silent-credential-expiry class (a push_error after a successful login is
+	// NOT a credential failure).
 	ImageCachePushTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_image_cache_push_total",
 		Help: "Image-cache (build-once-promote) push outcomes by repo and outcome.",
@@ -215,17 +220,44 @@ var (
 
 	// ImageCachePullTotal counts image-cache pull outcomes (build-once-promote).
 	// outcome label values:
-	//   "reused"   — the image was pulled and retagged; the build was skipped
-	//   "miss"     — the image was not in the registry; fell back to building from source
-	//   "error"    — the pull or retag failed unexpectedly; fell back to building from source
+	//   "reused"     — the image was pulled and retagged; the build was skipped
+	//   "miss"       — the image was not in the registry (including a "denied"/"unauthorized"
+	//                  message after a successful login — a private registry returns that for
+	//                  a non-existent image rather than 404); fell back to building from source
+	//   "auth_error" — authentication failed (token command error or docker login rejected
+	//                  the token); the pull was NOT attempted. Distinct from "miss" so a
+	//                  credential failure is distinguishable from a cold-start cache miss.
+	//   "error"      — the retag failed (after a successful pull); fell back to building from source
 	//
 	// A high "miss" rate with a low "reused" rate means pushes are not landing
 	// (cross-reference with ImageCachePushTotal). A "reused" rate near 1.0
-	// means the cache is working.
+	// means the cache is working. A non-zero "auth_error" rate means the
+	// registry credential is expiring or wrong — cross-reference with
+	// ImageCacheAuthTotal.
 	ImageCachePullTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_image_cache_pull_total",
 		Help: "Image-cache (build-once-promote) pull outcomes by repo and outcome.",
 	}, []string{"repo", "outcome"})
+
+	// ImageCacheAuthTotal counts image-cache registry authentication failures
+	// across both the push and the pull path, so a single alertable metric covers
+	// the silent-credential-expiry class regardless of which path tripped first.
+	//
+	// Labels:
+	//   repo   — full GitHub repo name
+	//   phase  — "push" or "pull" (which path attempted auth)
+	//   reason — "token_error"  — the token command failed or returned empty
+	//            "login_error"  — docker login rejected the token
+	//
+	// A non-zero rate on ANY reason means the registry credential is expiring
+	// or wrong — the image cache is silently not working. This is the metric
+	// that makes the auth_expiry silent-failure class LOUD: a cache that works
+	// for one hour after a manual login and then quietly stops is worse than
+	// no cache, because nothing said it stopped — this counter says it.
+	ImageCacheAuthTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_image_cache_auth_total",
+		Help: "Image-cache registry authentication failures by repo, phase (push|pull), and reason. A non-zero rate means the registry credential is expiring or wrong — the cache is silently not working.",
+	}, []string{"repo", "phase", "reason"})
 
 	// ConfigDrift is a state-enum gauge (kube_pod_status_phase style: 1 for
 	// the CURRENT outcome, 0 for the others) that makes two classes of silent

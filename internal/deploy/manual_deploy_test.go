@@ -605,6 +605,7 @@ func TestManualDeploy_ManualCounterFires_Success(t *testing.T) {
 // pushCachedImages is never called (sawPush stays false).
 func TestManualDeploy_ComposeKind_ParticipatesInImageCache(t *testing.T) {
 	const fakeTreeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
+	t.Setenv("DOZOR_IMAGE_CACHE_TOKEN_CMD", "fake-token-cmd")
 
 	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
@@ -616,7 +617,7 @@ func TestManualDeploy_ComposeKind_ParticipatesInImageCache(t *testing.T) {
 	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
 		return "abc1234", nil
 	})
-	withGHAppTokenRunner(t, func(_ context.Context) (string, error) { return "fake-token", nil })
+	withTokenCommandRunner(t, func(_ context.Context, _ string) (string, error) { return "fake-token", nil })
 	withDockerLoginRunner(t, func(_ context.Context, _, _, _ string) error { return nil })
 	// composeImageName uses outputRunner; resolveBuildOverrides also uses it.
 	withOutputRunner(t, composeImagesOutputRunner("oxpulse-chat", "/fake/source"))
@@ -735,6 +736,7 @@ func TestManualDeploy_FromDisk_SkipsImageCacheWithReason(t *testing.T) {
 // propagates — result.Success becomes false and the assertion fails.
 func TestManualDeploy_PushFailureDoesNotFailDeploy(t *testing.T) {
 	const fakeTreeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
+	t.Setenv("DOZOR_IMAGE_CACHE_TOKEN_CMD", "fake-token-cmd")
 
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -751,7 +753,7 @@ func TestManualDeploy_PushFailureDoesNotFailDeploy(t *testing.T) {
 	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
 		return "abc1234", nil
 	})
-	withGHAppTokenRunner(t, func(_ context.Context) (string, error) { return "fake-token", nil })
+	withTokenCommandRunner(t, func(_ context.Context, _ string) (string, error) { return "fake-token", nil })
 	withDockerLoginRunner(t, func(_ context.Context, _, _, _ string) error { return nil })
 	withOutputRunner(t, composeImagesOutputRunner("oxpulse-chat", "/fake/source"))
 	defer zeroDelays(t)()
