@@ -2,12 +2,10 @@ package deploy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -28,25 +26,27 @@ func defaultGitTreeHashRunner(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// ghAppTokenRunner mints a GitHub App installation token by running
-// ~/bin/gh-app-token.sh. The token has ~1h TTL. Replaceable in tests.
-var ghAppTokenRunner = defaultGHAppTokenRunner
+// tokenCommandRunner runs a shell command whose STDOUT is a fresh registry
+// token. The command is resolved per-deploy from ImageCacheConfig.TokenCommand
+// (or the DOZOR_IMAGE_CACHE_TOKEN_CMD env fallback) — dozor does NOT hardcode
+// any one token-minting script. The token is piped to docker login via stdin
+// and is NEVER logged: on error only the command's exit status is reported,
+// never its stdout (which IS the token). Replaceable in tests.
+var tokenCommandRunner = defaultTokenCommandRunner
 
-//nolint:unused // DI default seam — assigned to var ghAppTokenRunner, swapped in tests
-func defaultGHAppTokenRunner(ctx context.Context) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve $HOME for gh-app-token.sh: %w", err)
-	}
-	scriptPath := filepath.Join(home, "bin", "gh-app-token.sh")
-	cmd := exec.CommandContext(ctx, scriptPath) //nolint:gosec // trusted local script
+//nolint:unused // DI default seam — assigned to var tokenCommandRunner, swapped in tests
+func defaultTokenCommandRunner(ctx context.Context, command string) (string, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", command) //nolint:gosec // command is trusted operator config from deploy-repos.yaml / env
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("gh-app-token.sh: %w", err)
+		// Deliberately do NOT include `out` in the error: the command's
+		// stdout is the token itself, and a token leaked into an error
+		// string is a credential incident. Report only the exit error.
+		return "", fmt.Errorf("token command %q: %w", command, err)
 	}
 	token := strings.TrimSpace(string(out))
 	if token == "" {
-		return "", errors.New("gh-app-token.sh produced an empty token")
+		return "", fmt.Errorf("token command %q produced an empty token", command)
 	}
 	return token, nil
 }
@@ -65,6 +65,120 @@ func defaultDockerLoginRunner(ctx context.Context, registry, username, token str
 		return fmt.Errorf("docker login %s: %w: %s", registry, err, truncate(string(out), maxOutputLen))
 	}
 	return nil
+}
+
+// defaultTokenUsername is the default `docker login` username when neither
+// per-repo token_username nor the DOZOR_IMAGE_CACHE_TOKEN_USERNAME env var is
+// set. "x-access-token" is the GHCR convention for GitHub App installation
+// tokens (the credential model used on this host); override for other registries.
+const defaultTokenUsername = "x-access-token"
+
+// registryHost extracts the registry host (the `docker login` target) from a
+// fully-qualified image reference like "ghcr.io/anatolykoptev/oxpulse-chat".
+// The host is everything before the first '/'. For a reference with no slash
+// (e.g. "ubuntu") the whole string is returned (Docker treats it as a
+// default-registry image, and `docker login ubuntu` is harmless/no-op for the
+// ambient path which is the only path that reaches this with no slash).
+func registryHost(ref string) string {
+	if i := strings.IndexByte(ref, '/'); i >= 0 {
+		return ref[:i]
+	}
+	return ref
+}
+
+// resolveTokenCommand returns the configured token-minting command for a repo:
+// per-repo ImageCacheConfig.TokenCommand wins, then the
+// DOZOR_IMAGE_CACHE_TOKEN_CMD env fallback, then "" (ambient-credential path).
+func resolveTokenCommand(rc RepoConfig) string {
+	if rc.ImageCache.TokenCommand != "" {
+		return rc.ImageCache.TokenCommand
+	}
+	return os.Getenv("DOZOR_IMAGE_CACHE_TOKEN_CMD")
+}
+
+// resolveTokenUsername returns the username for `docker login`: per-repo
+// ImageCacheConfig.TokenUsername wins, then the DOZOR_IMAGE_CACHE_TOKEN_USERNAME
+// env fallback, then the default "x-access-token" (the GHCR App-token
+// convention used on this host — overridable for other registries).
+func resolveTokenUsername(rc RepoConfig) string {
+	if rc.ImageCache.TokenUsername != "" {
+		return rc.ImageCache.TokenUsername
+	}
+	if v := os.Getenv("DOZOR_IMAGE_CACHE_TOKEN_USERNAME"); v != "" {
+		return v
+	}
+	return defaultTokenUsername
+}
+
+// authErrorIndicator reports whether a docker push/pull error string looks
+// like a registry authentication failure (as opposed to a network or
+// image-resolution failure). Used to classify the outcome metric so an auth
+// failure is distinguishable from a generic "failed".
+func authErrorIndicator(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "unauthorized") ||
+		strings.Contains(s, "denied") ||
+		strings.Contains(s, "authentication") ||
+		strings.Contains(s, "no basic auth credentials") ||
+		strings.Contains(s, "not authorized")
+}
+
+// authenticateRegistry obtains a fresh registry token (if a token command is
+// configured) and runs `docker login <host> -u <user> --password-stdin`
+// immediately before a push or a pull. Returns true when the caller may
+// proceed with the push/pull; false when authentication failed and the caller
+// must skip the push/pull (best-effort — a registry-auth failure never fails
+// a deploy).
+//
+// When NO token command is configured (per-repo nor env), the function does
+// NOT attempt a login and returns true, logging at INFO that the push/pull is
+// relying on the ambient ~/.docker/config.json credential — so "we are relying
+// on ambient credentials" is a stated fact rather than an accident. This
+// preserves the previous behaviour for hosts that log in by other means.
+//
+// phase is "push" or "pull" — used in log lines and the auth-failure metric.
+// The token is NEVER logged: not at any level, not in an error string, not in
+// a command echo. The token command's stdout (which IS the token) is also
+// never included in any error.
+func authenticateRegistry(ctx context.Context, req BuildRequest, phase string) bool {
+	tokenCmd := resolveTokenCommand(req.Config)
+	if tokenCmd == "" {
+		slog.Info("deploy: image cache "+phase+" relying on ambient docker config credential (no token_command configured)",
+			"repo", req.Repo, "phase", phase)
+		return true
+	}
+
+	token, err := tokenCommandRunner(ctx, tokenCmd)
+	if err != nil {
+		slog.Error("deploy: image cache "+phase+" authentication failed — token command error (best-effort, deploy continues)",
+			"repo", req.Repo, "phase", phase, "error", err)
+		ImageCacheAuthTotal.WithLabelValues(req.Repo, phase, "token_error").Inc()
+		return false
+	}
+	// Defence in depth: trim and reject an empty token here (the choke point)
+	// so a custom runner that returns whitespace-only is caught regardless of
+	// whether the runner itself trims. The token command's stdout IS the
+	// credential — never log it.
+	token = strings.TrimSpace(token)
+	if token == "" {
+		slog.Error("deploy: image cache "+phase+" authentication failed — token command produced an empty token (best-effort, deploy continues)",
+			"repo", req.Repo, "phase", phase, "token_command", tokenCmd)
+		ImageCacheAuthTotal.WithLabelValues(req.Repo, phase, "token_error").Inc()
+		return false
+	}
+
+	host := registryHost(req.Config.ImageCache.Registry)
+	username := resolveTokenUsername(req.Config)
+	if err := dockerLoginRunner(ctx, host, username, token); err != nil {
+		slog.Error("deploy: image cache "+phase+" authentication failed — docker login rejected token (best-effort, deploy continues)",
+			"repo", req.Repo, "phase", phase, "error", err)
+		ImageCacheAuthTotal.WithLabelValues(req.Repo, phase, "login_error").Inc()
+		return false
+	}
+	return true
 }
 
 // -- Tag format --
@@ -95,10 +209,28 @@ func tryPullCachedImage(ctx context.Context, req BuildRequest, treeHash string) 
 	}
 
 	ref := cachedImageRef(req.Config.ImageCache.Registry, treeHash)
+
+	// Authenticate against the registry immediately before the pull. A
+	// registry-auth failure must never fail a deploy — on failure we fall
+	// through to the build path (return false) with an auth_error metric so
+	// the silent-expiry class is distinguishable from a network or
+	// image-resolution failure.
+	if !authenticateRegistry(ctx, req, "pull") {
+		ImageCachePullTotal.WithLabelValues(req.Repo, "auth_error").Inc()
+		return false
+	}
+
 	if err := runCmd(ctx, req.Config.ComposePath, "docker", "pull", ref); err != nil {
-		slog.Info("deploy: image reuse miss — tree-"+treeHash+" not in registry, building from source",
-			"tree_hash", treeHash, "tag", ref, "error", err)
-		ImageCachePullTotal.WithLabelValues(req.Repo, "miss").Inc()
+		if authErrorIndicator(err) {
+			slog.Error("deploy: image reuse pull auth failure — falling back to build",
+				"tree_hash", treeHash, "tag", ref, "error", err)
+			ImageCachePullTotal.WithLabelValues(req.Repo, "auth_error").Inc()
+			ImageCacheAuthTotal.WithLabelValues(req.Repo, "pull", "pull_auth").Inc()
+		} else {
+			slog.Info("deploy: image reuse miss — tree-"+treeHash+" not in registry, building from source",
+				"tree_hash", treeHash, "tag", ref, "error", err)
+			ImageCachePullTotal.WithLabelValues(req.Repo, "miss").Inc()
+		}
 		return false
 	}
 
@@ -146,9 +278,11 @@ func allServicesCacheable(req BuildRequest) bool {
 // whole optimisation quietly does nothing while looking healthy — the exact
 // "green but doing nothing" class this fleet eliminated.
 //
-// The GH App token is minted fresh immediately before the push (it expires
-// hourly; never rely on a persistent docker login). The token is piped via
-// stdin to docker login — never written to a file, never logged.
+// A fresh registry token is obtained immediately before the push (the token
+// may expire hourly; never rely on a persistent docker login). The token is
+// piped via stdin to docker login — never written to a file, never logged.
+// When no token command is configured, the push relies on the ambient
+// ~/.docker/config.json credential (logged at INFO so it is a stated fact).
 func pushCachedImages(ctx context.Context, req BuildRequest, treeHash string) {
 	cacheable := req.Config.cacheableServices()
 	if len(cacheable) == 0 {
@@ -157,19 +291,12 @@ func pushCachedImages(ctx context.Context, req BuildRequest, treeHash string) {
 
 	ref := cachedImageRef(req.Config.ImageCache.Registry, treeHash)
 
-	// Mint a fresh GH App token and authenticate immediately before pushing.
-	// The token expires hourly; do NOT rely on a persistent docker login.
-	token, err := ghAppTokenRunner(ctx)
-	if err != nil {
-		slog.Error("deploy: image cache push failed — cannot mint GH App token (best-effort, deploy continues)",
-			"tag", ref, "error", err)
-		ImageCachePushTotal.WithLabelValues(req.Repo, "token_error").Inc()
-		return
-	}
-	if err := dockerLoginRunner(ctx, "ghcr.io", "x-access-token", token); err != nil {
-		slog.Error("deploy: image cache push failed — docker login rejected token (best-effort, deploy continues)",
-			"tag", ref, "error", err)
-		ImageCachePushTotal.WithLabelValues(req.Repo, "login_error").Inc()
+	// Obtain a fresh registry token and authenticate immediately before
+	// pushing. On auth failure, skip the push entirely (best-effort) — the
+	// image is already built and will be brought up; a registry-auth failure
+	// must never fail a deploy.
+	if !authenticateRegistry(ctx, req, "push") {
+		ImageCachePushTotal.WithLabelValues(req.Repo, "auth_error").Inc()
 		return
 	}
 
@@ -188,9 +315,16 @@ func pushCachedImages(ctx context.Context, req BuildRequest, treeHash string) {
 			continue
 		}
 		if err := runCmd(ctx, req.Config.ComposePath, "docker", "push", ref); err != nil {
-			slog.Error("deploy: image cache push failed — docker push rejected (best-effort, deploy continues)",
-				"tag", ref, "service", svc, "error", err)
-			ImageCachePushTotal.WithLabelValues(req.Repo, "push_error").Inc()
+			if authErrorIndicator(err) {
+				slog.Error("deploy: image cache push failed — registry auth rejected push (best-effort, deploy continues)",
+					"tag", ref, "service", svc, "error", err)
+				ImageCachePushTotal.WithLabelValues(req.Repo, "push_auth_error").Inc()
+				ImageCacheAuthTotal.WithLabelValues(req.Repo, "push", "push_auth").Inc()
+			} else {
+				slog.Error("deploy: image cache push failed — docker push rejected (best-effort, deploy continues)",
+					"tag", ref, "service", svc, "error", err)
+				ImageCachePushTotal.WithLabelValues(req.Repo, "push_error").Inc()
+			}
 			continue
 		}
 		slog.Info("deploy: image cache pushed",
