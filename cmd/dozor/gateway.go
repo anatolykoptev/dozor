@@ -344,6 +344,13 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 		slog.String("path", "/deploy/github"),
 		slog.Int("repos", len(cfg.Repos)),
 	)
+
+	// Drift detection: startup + periodic. Observes only — never blocks or
+	// fails a deploy. Detects (1) live config vs git-mirror divergence and
+	// (2) deploy_on vs webhook event subscription mismatch (go-hully never
+	// deployed for months because its webhook lacked the release event).
+	// Runs in its own goroutine; a panic inside is recovered by DriftChecker.
+	go deploy.StartDriftCheckLoop(ctx, deploy.NewDriftChecker(cfg, cfgPath))
 }
 
 // makeDeployLog returns a deploy lifecycle callback that logs every event to

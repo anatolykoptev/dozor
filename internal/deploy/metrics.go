@@ -227,6 +227,40 @@ var (
 		Help: "Image-cache (build-once-promote) pull outcomes by repo and outcome.",
 	}, []string{"repo", "outcome"})
 
+	// ConfigDrift is a state-enum gauge (kube_pod_status_phase style: 1 for
+	// the CURRENT outcome, 0 for the others) that makes two classes of silent
+	// config drift LOUD without parsing logs:
+	//
+	//   check="config_mirror" — the live config file (~/.dozor/deploy-repos.yaml)
+	//     diverges from its version-controlled mirror (DOZOR_CONFIG_GIT_MIRROR).
+	//     Two copies are kept in sync by hand; nothing detects when they diverge.
+	//     repo label is empty (a single file comparison). outcome values:
+	//       "disabled"          — DOZOR_CONFIG_GIT_MIRROR unset; check skipped (NOT drift)
+	//       "mirror_unreadable" — env set but the mirror file is absent/unreadable (NOT drift)
+	//       "ok"                — live and mirror are byte-identical
+	//       "drift"             — live and mirror differ
+	//
+	//   check="webhook_events" — a repo's deploy_on requires a GitHub webhook
+	//     event that the repo's dozor webhook is not subscribed to. go-hully had
+	//     deploy_on: release but its webhook was subscribed to [push] only —
+	//     release events never arrived and the repo never deployed, with no
+	//     error anywhere, for months. repo label is the repoKey (owner/repo).
+	//     outcome values:
+	//       "ok"          — webhook events cover what deploy_on needs
+	//       "drift"       — webhook exists but is missing a required event
+	//       "no_token"    — DOZOR_GITHUB_TOKEN unset; cannot call the API (NOT drift)
+	//       "api_error"   — GitHub API call failed (network, non-200, decode) (NOT drift)
+	//       "no_webhook"  — no hook on the repo points at dozor's /deploy/github
+	//
+	// Dashboard "is any repo currently drifted?":
+	//   max(dozor_config_drift{outcome="drift"}) > 0
+	//
+	// The check observes only — it never blocks or fails a deploy.
+	ConfigDrift = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dozor_config_drift",
+		Help: "Config drift check state by repo and check (1 = current outcome). Dashboard: max(dozor_config_drift{outcome=\"drift\"}) > 0 means a repo is currently drifted.",
+	}, []string{"repo", "check", "outcome"})
+
 	// DeploySourceSyncTotal counts best-effort source-checkout sync attempts run
 	// off the deploy hot path after each build (success or failure). It advances
 	// each repo's ~/src/X default-branch ref to origin so go-code indexes fresh
