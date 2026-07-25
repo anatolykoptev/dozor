@@ -352,30 +352,40 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// are aggregated in deterministic match order.
 	statuses := make([]string, 0, len(matches))
 	for _, rc := range matches {
+		// Per-target push copy: attachReleaseDiff writes the resolved
+		// changed-files list into push.Commits. Without a per-target
+		// copy, a target whose own diff fails to resolve (attachReleaseDiff
+		// is a no-op for it, leaving Commits untouched) would inherit the
+		// PREVIOUS target's Commits list and be path-filtered against that
+		// target's files — silently skipping a build that should have been
+		// conservative ("no build-relevant files changed" reported when the
+		// truth is "we could not determine what changed"). Each target must
+		// be gated against its OWN diff, or fall back to a conservative
+		// build — never inherit a neighbour's list. A shallow copy is
+		// sufficient: attachReleaseDiff reassigns Commits wholesale rather
+		// than mutating it in place, and no other field is modified in this
+		// loop. Do NOT "optimise" this back into shared state.
+		targetPush := push
 		if event == "release" {
 			// Per-target release diff: each target may have a distinct
 			// SourcePath, so the changed-files diff must be resolved
 			// independently for each before its BuildPaths filter runs.
-			// attachReleaseDiff overwrites push.Commits, which is safe
-			// here because skipByPathFilter (the only reader of Commits
-			// in this loop) runs immediately after, before the next
-			// target's diff overwrites it.
-			attachReleaseDiff(r.Context(), &push, rc, h.shaResolver)
+			attachReleaseDiff(r.Context(), &targetPush, rc, h.shaResolver)
 		}
-		if h.skipByPathFilter(push, rc) {
+		if h.skipByPathFilter(targetPush, rc) {
 			slog.Info("deploy skipped: no build-relevant files changed",
-				"repo", push.Repository.FullName,
-				"commit", short(push.HeadCommit.ID),
+				"repo", targetPush.Repository.FullName,
+				"commit", short(targetPush.HeadCommit.ID),
 				"build_paths", rc.BuildPaths,
 			)
 			statuses = append(statuses, "skipped")
 			continue
 		}
 
-		status := h.dispatchPush(push, rc)
+		status := h.dispatchPush(targetPush, rc)
 		slog.Info("deploy/webhook: processed",
-			"repo", push.Repository.FullName,
-			"commit", short(push.HeadCommit.ID),
+			"repo", targetPush.Repository.FullName,
+			"commit", short(targetPush.HeadCommit.ID),
 			"status", status,
 		)
 		statuses = append(statuses, status)

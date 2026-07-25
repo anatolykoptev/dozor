@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -223,5 +225,109 @@ func TestHandler_ReleaseTarget_SingleEntry_DeploysUnchanged(t *testing.T) {
 	}
 	if !q.queuedHas(serviceKey([]string{"solo"})) {
 		t.Error("solo must be enqueued")
+	}
+}
+
+// TestHandler_ReleaseTarget_MultiTarget_DiffDoesNotLeakBetweenTargets is the
+// regression for the per-target diff isolation bug in the multi-target release
+// loop. attachReleaseDiff writes the resolved changed-files list into the
+// SHARED push value's Commits field. When target A resolves a list and target
+// B's own diff cannot be resolved (attachReleaseDiff is a no-op for B, leaving
+// Commits untouched), B used to inherit A's Commits and be path-filtered
+// against A's files — silently skipping a build that should have been
+// conservative ("no build-relevant files changed" reported when the truth is
+// "we could not determine what changed").
+//
+// Setup: two deploy_on: release targets, key-sorted so A ("owner/leak") is
+// processed before B ("owner/leak#b").
+//   - A's SourcePath is a real git fixture; its diff resolves to [CHANGELOG.md]
+//     (outside A's BuildPaths app/**) → A is correctly skipped.
+//   - B's SourcePath is a different dir whose deployed SHA resolves to
+//     "unknown" (shaResolver returns "unknown" for B's dir) → B's diff cannot
+//     be resolved → attachReleaseDiff is a no-op for B.
+//
+// With the bug: B inherits A's [CHANGELOG.md], which is outside B's BuildPaths
+// app/** → B is skipped → status "skipped,skipped", B not enqueued.
+// With the fix: B gets its own push copy with empty Commits → skipByPathFilter's
+// "elided diff — build conservatively" fallback fires → B is queued → status
+// "skipped,queued", B enqueued. B being queued (not skipped) is itself the
+// proof that B's gating did not see A's file list: had it seen [CHANGELOG.md],
+// it would have been skipped.
+func TestHandler_ReleaseTarget_MultiTarget_DiffDoesNotLeakBetweenTargets(t *testing.T) {
+	t.Parallel()
+
+	// A's source clone: two commits. First creates app/main.go (the
+	// "currently deployed" state), second touches ONLY CHANGELOG.md (the
+	// release-please commit at target_commitish).
+	sourceA, deployedSHA, targetSHA := buildTwoCommitFixture(t, "CHANGELOG.md", "# Changelog\n")
+
+	// B's source clone: a real git repo, but the shaResolver below returns
+	// "unknown" for this dir so releaseChangedFiles short-circuits before
+	// any git diff — mirroring a fresh/never-deployed target whose diff
+	// cannot be resolved.
+	sourceB := t.TempDir()
+	mustRun(t, sourceB, "git", "init", "--initial-branch=main")
+	mustRun(t, sourceB, "git", "config", "user.email", "test@test.com")
+	mustRun(t, sourceB, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(sourceB, "README.md"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, sourceB, "git", "add", ".")
+	mustRun(t, sourceB, "git", "commit", "-m", "init")
+
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/leak": {
+				ComposePath: sourceA,
+				SourcePath:  sourceA,
+				Services:    []string{"leak-a"},
+				BuildPaths:  []string{"app/**"},
+				DeployOn:    "release",
+			},
+			"anatolykoptev/leak#b": {
+				ComposePath: sourceB,
+				SourcePath:  sourceB,
+				Services:    []string{"leak-b"},
+				BuildPaths:  []string{"app/**"},
+				DeployOn:    "release",
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+	// Resolve a real deployed SHA for A's clone; "unknown" for B's clone so
+	// B's diff cannot be resolved (attachReleaseDiff no-op for B).
+	h.shaResolver = func(_ context.Context, dir string) string {
+		if dir == sourceA {
+			return deployedSHA
+		}
+		return "unknown"
+	}
+
+	body := releasePayload("anatolykoptev/leak", "v1.0.0", targetSHA)
+	w := postRelease(h, body)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	// A: diff [CHANGELOG.md] outside app/** → skipped.
+	// B: diff unresolvable → conservative build → queued (NOT skipped on
+	// A's leaked [CHANGELOG.md]).
+	if resp["status"] != "skipped,queued" {
+		t.Fatalf("status = %q, want %q "+
+			"(A correctly skipped on its own diff; B must build conservatively "+
+			"because its diff is unresolvable — a skip here means B inherited "+
+			"A's changed-files list, the per-target diff leak bug)",
+			resp["status"], "skipped,queued")
+	}
+	if q.queuedHas(serviceKey([]string{"leak-a"})) {
+		t.Error("leak-a must NOT be enqueued (CHANGELOG.md is outside its build_paths app/**)")
+	}
+	if !q.queuedHas(serviceKey([]string{"leak-b"})) {
+		t.Error("leak-b must be enqueued — its diff is unresolvable so it must " +
+			"build conservatively, not be skipped against leak-a's file list")
 	}
 }
