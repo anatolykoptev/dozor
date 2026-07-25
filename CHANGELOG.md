@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.1](https://github.com/anatolykoptev/dozor/compare/v1.12.0...v1.12.1) (2026-07-25)
+
+
+### Fixed
+
+* **deploy:** resolve the compose image name without depending on containers ([#157](https://github.com/anatolykoptev/dozor/issues/157)) ([0ba37f4](https://github.com/anatolykoptev/dozor/commit/0ba37f45a4c69f4e3c763e3d353b14fa2c5ff1b6))
+
 ## [1.12.0](https://github.com/anatolykoptev/dozor/compare/v1.11.1...v1.12.0) (2026-07-25)
 
 
