@@ -88,6 +88,9 @@ func defaultGitManualOriginSHARunner(ctx context.Context, dir, branch string) (s
 //
 //	Skips steps 1-3 and passes an empty worktreePath to composeBuild,
 //	which falls back to the on-disk tree. Log a WARN so it is visible.
+//	Image caching is explicitly skipped (with a logged reason) because the
+//	on-disk working tree may have uncommitted changes — the tree hash of HEAD
+//	is not a trustworthy content-address for what the build actually produced.
 //	Only valid for KindCompose repos.
 //
 // The caller is expected to run this in a goroutine and write the log to a
@@ -106,6 +109,16 @@ func ExecuteManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 			"repo", req.Repo,
 			"source_path", sourcePath,
 		)
+		// from_disk builds the on-disk working tree, which may have uncommitted
+		// changes. The tree hash of HEAD would NOT reliably be the build's
+		// content-address, so publishing under a tree-hash tag would violate
+		// the invariant: an image is only published under a tree-hash tag if
+		// it is the image THAT build produced. Log the skip explicitly so it
+		// is never mistaken for a cache miss.
+		if req.Config.ImageCache.Registry != "" {
+			slog.Info("deploy/manual: image cache skipped — from_disk builds the on-disk working tree which may have uncommitted changes; tree hash is not a trustworthy content-address for the built image",
+				"repo", req.Repo)
+		}
 		ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "started").Inc()
 		buildReq := BuildRequest{
 			Repo:      req.Repo,
@@ -316,8 +329,10 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 	// Step 3: create a detached worktree at origin/<branch>.
 	// gitPrepareBranch always builds "origin/<branch>" as the target ref,
 	// so the manual path is pinned to exactly what origin holds — never to
-	// whatever the local clone happens to have checked out.
-	worktreePath, cleanup, errMsg := gitPrepareBranch(ctx, sourcePath, branch)
+	// whatever the local clone happens to have checked out. It also resolves
+	// the tree hash (HEAD^{tree} of the worktree) for image-cache tagging —
+	// the same content-address the webhook path's gitPrepare uses.
+	worktreePath, treeHash, cleanup, errMsg := gitPrepareBranch(ctx, sourcePath, branch)
 	if errMsg != "" {
 		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
 		result.Error = errMsg
@@ -326,6 +341,8 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 	defer cleanup()
 
 	// Step 4: build via the same composeBuild path (injects OXPULSE_GIT_SHA).
+	// treeHash enables the image-cache pull-before-build path (same as the
+	// webhook path's executeBuild → composeBuild).
 	buildReq := BuildRequest{
 		Repo:      req.Repo,
 		CommitSHA: resolveGitSHA(ctx, worktreePath), // short SHA at worktree HEAD
@@ -338,12 +355,22 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 		"branch", branch,
 		"worktree", worktreePath,
 		"sha", result.BuiltSHA,
+		"tree_hash", treeHash,
 	)
 
-	if errMsg := composeBuild(ctx, buildReq, worktreePath, ""); errMsg != "" {
+	if errMsg := composeBuild(ctx, buildReq, worktreePath, treeHash); errMsg != "" {
 		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
 		result.Error = errMsg
 		return result
+	}
+
+	// Image-cache push-after-build: tag and push the freshly-built image to
+	// the registry under the tree-hash tag. Best-effort — push failure NEVER
+	// fails the deploy (the image is already built and will be brought up),
+	// but it MUST emit an ERROR-level log so a silently-failing push is
+	// observable. Mirrors the webhook path's executeBuild push step.
+	if treeHash != "" {
+		pushCachedImages(ctx, buildReq, treeHash)
 	}
 
 	// Step 5: bring containers up.
@@ -362,17 +389,35 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 // source clone. Unlike gitPrepare (which resolves a SHA), this always targets
 // the remote tracking ref — ensuring the manual path builds exactly what
 // origin holds regardless of the local clone's checkout state.
-func gitPrepareBranch(ctx context.Context, sourcePath, branch string) (worktreePath string, cleanup func(), errMsg string) {
+//
+// Returns the worktree path, the git tree hash of the worktree HEAD (used for
+// image-cache tagging — same content-address as the webhook path's gitPrepare),
+// a cleanup function, and an error message (empty on success). When the tree
+// hash cannot be resolved (rare git error), it is returned empty and image
+// caching is silently disabled for this deploy (the build proceeds, push/pull
+// are skipped) — mirroring gitPrepare's behaviour exactly.
+func gitPrepareBranch(ctx context.Context, sourcePath, branch string) (worktreePath, treeHash string, cleanup func(), errMsg string) {
 	noop := func() {}
 	if sourcePath == "" {
-		return "", noop, "source_path is empty — cannot create worktree"
+		return "", "", noop, "source_path is empty — cannot create worktree"
 	}
 
 	target := "origin/" + branch
 	wtPath := fmt.Sprintf("/tmp/deploy-manual-%s-%d", branch, time.Now().UnixMilli())
 
 	if err := runCmd(ctx, sourcePath, "git", "worktree", "add", "--detach", wtPath, target); err != nil {
-		return "", noop, fmt.Sprintf("git worktree add (manual, origin/%s): %v", branch, err)
+		return "", "", noop, fmt.Sprintf("git worktree add (manual, origin/%s): %v", branch, err)
+	}
+
+	// Resolve the tree hash of the worktree HEAD for image-cache tagging.
+	// The worktree is detached at origin/<branch>, so HEAD^{tree} is the tree
+	// hash — the same content-address the webhook path uses. On failure,
+	// return empty — image caching is silently disabled for this deploy.
+	resolvedTreeHash, treeErr := gitTreeHashRunner(ctx, wtPath)
+	if treeErr != nil {
+		slog.Warn("deploy/manual: cannot resolve tree hash for image cache; feature disabled for this deploy",
+			"path", wtPath, "target", target, "error", treeErr)
+		resolvedTreeHash = ""
 	}
 
 	cleanupFn := func() {
@@ -383,6 +428,6 @@ func gitPrepareBranch(ctx context.Context, sourcePath, branch string) (worktreeP
 		}
 	}
 
-	slog.Info("deploy/manual: worktree created", "path", wtPath, "target", target)
-	return wtPath, cleanupFn, ""
+	slog.Info("deploy/manual: worktree created", "path", wtPath, "target", target, "tree_hash", resolvedTreeHash)
+	return wtPath, resolvedTreeHash, cleanupFn, ""
 }

@@ -1,8 +1,10 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -590,5 +592,203 @@ func TestManualDeploy_ManualCounterFires_Success(t *testing.T) {
 	after := collectCounterSum(ManualDeployTotal)
 	if after <= before {
 		t.Errorf("ManualDeployTotal should fire on success; before=%.0f after=%.0f", before, after)
+	}
+}
+
+// TestManualDeploy_ComposeKind_ParticipatesInImageCache — a repo-configured
+// KindCompose manual deploy with image_cache enabled must compute a tree hash
+// from the worktree HEAD and attempt both the pull-before-build and the
+// push-after-build, exactly like the webhook path.
+//
+// RED-on-revert: pass "" as treeHash to composeBuild in
+// executeManualComposeDeploy — pull is skipped (sawPull stays false) and
+// pushCachedImages is never called (sawPush stays false).
+func TestManualDeploy_ComposeKind_ParticipatesInImageCache(t *testing.T) {
+	const fakeTreeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
+
+	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
+		return "main", nil
+	})
+	withGitTreeHashRunner(t, func(_ context.Context, _ string) (string, error) {
+		return fakeTreeHash, nil
+	})
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return "abc1234", nil
+	})
+	withGHAppTokenRunner(t, func(_ context.Context) (string, error) { return "fake-token", nil })
+	withDockerLoginRunner(t, func(_ context.Context, _, _, _ string) error { return nil })
+	// composeImageName uses outputRunner; resolveBuildOverrides also uses it.
+	withOutputRunner(t, composeImagesOutputRunner("oxpulse-chat", "/fake/source"))
+	defer zeroDelays(t)()
+
+	wantRef := cachedImageRef("ghcr.io/anatolykoptev/oxpulse-chat", fakeTreeHash)
+	var sawPull, sawPush bool
+	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
+		if name == "docker" && len(args) > 0 && args[0] == "pull" {
+			sawPull = true
+			// Cache miss — fall through to build.
+			return errors.New("manifest unknown")
+		}
+		if name == "docker" && len(args) > 0 && args[0] == "push" {
+			sawPush = true
+			if len(args) < 2 || args[1] != wantRef {
+				t.Errorf("push ref: got %v, want %s", args, wantRef)
+			}
+		}
+		return nil // tag, git worktree add, etc. succeed
+	})
+
+	req := ManualDeployRequest{
+		Repo: "anatolykoptev/oxpulse-chat",
+		Config: RepoConfig{
+			Branch:      "main",
+			SourcePath:  "/fake/source",
+			ComposePath: "/fake/compose",
+			Services:    []string{"oxpulse-chat"},
+			ImageCache: ImageCacheConfig{
+				Registry: "ghcr.io/anatolykoptev/oxpulse-chat",
+			},
+		},
+	}
+
+	result := ExecuteManualDeploy(context.Background(), req)
+	if !result.Success {
+		t.Errorf("expected success, got error: %s", result.Error)
+	}
+	if !sawPull {
+		t.Error("manual deploy must attempt docker pull (pull-before-build) when image_cache is configured")
+	}
+	if !sawPush {
+		t.Error("manual deploy must attempt docker push (push-after-build) when image_cache is configured")
+	}
+}
+
+// TestManualDeploy_FromDisk_SkipsImageCacheWithReason — from_disk=true with
+// image_cache configured must log an explicit, identifiable skip reason (not
+// just "something was logged") and must NOT attempt pull or push.
+//
+// RED-on-revert: remove the from_disk skip log block — the reason string is
+// absent from the captured logs and the assertion fails.
+func TestManualDeploy_FromDisk_SkipsImageCacheWithReason(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(prev)
+
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return "abc1234", nil
+	})
+	defer zeroDelays(t)()
+
+	var sawPull, sawPush bool
+	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
+		if name == "docker" && len(args) > 0 && args[0] == "pull" {
+			sawPull = true
+		}
+		if name == "docker" && len(args) > 0 && args[0] == "push" {
+			sawPush = true
+		}
+		return nil
+	})
+
+	req := ManualDeployRequest{
+		Repo:     "anatolykoptev/oxpulse-chat",
+		FromDisk: true,
+		Config: RepoConfig{
+			Branch:      "main",
+			SourcePath:  "/fake/source",
+			ComposePath: "/fake/compose",
+			Services:    []string{"oxpulse-chat"},
+			ImageCache: ImageCacheConfig{
+				Registry: "ghcr.io/anatolykoptev/oxpulse-chat",
+			},
+		},
+	}
+
+	result := ExecuteManualDeploy(context.Background(), req)
+	if !result.Success {
+		t.Errorf("from_disk deploy should succeed: %s", result.Error)
+	}
+
+	logOutput := buf.String()
+	// Assert the specific reason — not just that something was logged.
+	if !strings.Contains(logOutput, "image cache skipped") {
+		t.Errorf("log must contain 'image cache skipped' reason; got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "from_disk builds the on-disk working tree") {
+		t.Errorf("log must explain WHY caching is skipped (from_disk + uncommitted changes); got:\n%s", logOutput)
+	}
+	if sawPull {
+		t.Error("from_disk must NOT attempt docker pull — caching is skipped")
+	}
+	if sawPush {
+		t.Error("from_disk must NOT attempt docker push — caching is skipped")
+	}
+}
+
+// TestManualDeploy_PushFailureDoesNotFailDeploy — a push failure on the manual
+// path must NOT fail the deploy (best-effort), and must be logged at ERROR
+// level so a silently-failing push is observable.
+//
+// RED-on-revert: make pushCachedImages return an error that the caller
+// propagates — result.Success becomes false and the assertion fails.
+func TestManualDeploy_PushFailureDoesNotFailDeploy(t *testing.T) {
+	const fakeTreeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	defer slog.SetDefault(prev)
+
+	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
+		return "main", nil
+	})
+	withGitTreeHashRunner(t, func(_ context.Context, _ string) (string, error) {
+		return fakeTreeHash, nil
+	})
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return "abc1234", nil
+	})
+	withGHAppTokenRunner(t, func(_ context.Context) (string, error) { return "fake-token", nil })
+	withDockerLoginRunner(t, func(_ context.Context, _, _, _ string) error { return nil })
+	withOutputRunner(t, composeImagesOutputRunner("oxpulse-chat", "/fake/source"))
+	defer zeroDelays(t)()
+
+	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
+		if name == "docker" && len(args) > 0 && args[0] == "pull" {
+			return errors.New("manifest unknown") // cache miss → build runs
+		}
+		if name == "docker" && len(args) > 0 && args[0] == "push" {
+			return errors.New("denied: permission_denied") // push fails
+		}
+		return nil // tag, git, etc. succeed
+	})
+
+	req := ManualDeployRequest{
+		Repo: "anatolykoptev/oxpulse-chat",
+		Config: RepoConfig{
+			Branch:      "main",
+			SourcePath:  "/fake/source",
+			ComposePath: "/fake/compose",
+			Services:    []string{"oxpulse-chat"},
+			ImageCache: ImageCacheConfig{
+				Registry: "ghcr.io/anatolykoptev/oxpulse-chat",
+			},
+		},
+	}
+
+	result := ExecuteManualDeploy(context.Background(), req)
+	if !result.Success {
+		t.Errorf("push failure must NOT fail the deploy; got error: %s", result.Error)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "image cache push failed") {
+		t.Errorf("push failure must be logged at ERROR with 'image cache push failed'; got:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "permission_denied") {
+		t.Errorf("ERROR log must include the underlying push error; got:\n%s", logOutput)
 	}
 }
