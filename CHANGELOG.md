@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.13.1](https://github.com/anatolykoptev/dozor/compare/v1.13.0...v1.13.1) (2026-07-25)
+
+
+### Fixed
+
+* **deploy:** obtain the image-cache registry token fresh before each push ([#167](https://github.com/anatolykoptev/dozor/issues/167)) ([a75c3e2](https://github.com/anatolykoptev/dozor/commit/a75c3e2937f590e069e8bed5806b5215d6731efa))
+* **deploy:** resolve the build-path diff against the correct repository ([#163](https://github.com/anatolykoptev/dozor/issues/163)) ([fdfda9d](https://github.com/anatolykoptev/dozor/commit/fdfda9debf4130e5f2b5f49db7663c9e43a71144))
+
 ## [1.13.0](https://github.com/anatolykoptev/dozor/compare/v1.12.1...v1.13.0) (2026-07-25)
 
 
