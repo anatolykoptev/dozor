@@ -349,3 +349,16 @@ func TestCiLockEnv_EmptyBuildIDGetsPlaceholder(t *testing.T) {
 		t.Fatalf("non-empty buildID should pass through unchanged, got %q", got)
 	}
 }
+
+// TestCiLockEnv_SlotStartIs2 locks the lane-separation guard: dozor heavy
+// builds MUST target slot 2 (CI_LOCK_SLOT_START=2) so they never block Go CI
+// runners on slot 1.
+func TestCiLockEnv_SlotStartIs2(t *testing.T) {
+	env := ciLockEnv("owner/rust-svc", "abc123")
+	for _, kv := range env {
+		if kv == "CI_LOCK_SLOT_START=2" {
+			return
+		}
+	}
+	t.Fatal("CI_LOCK_SLOT_START=2 not found in lock env — dozor heavy builds would share slot 1 with Go CI")
+}

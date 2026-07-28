@@ -21,3 +21,4 @@ CLAUDE.md
 
 # Subagent worktrees (claude-code-isolation runs)
 .claude/
+.env.bak-*

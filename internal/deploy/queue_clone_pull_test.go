@@ -366,6 +366,58 @@ func TestComposeBuild_InjectsBuildArgs_NoWorktree(t *testing.T) {
 	}
 }
 
+// TestComposeBuild_ExtraBuildArgs_SHAPlaceholder verifies that per-repo
+// BuildArgs are injected with ${SHA} substituted to the 12-char short SHA.
+func TestComposeBuild_ExtraBuildArgs_SHAPlaceholder(t *testing.T) {
+	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
+	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "samesha", nil })
+	withGitShortSHA(t, func(_ context.Context, _ string) (string, error) { return "abc1234", nil })
+
+	origOutput := outputRunner
+	defer func() { outputRunner = origOutput }()
+	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+		return []byte(`{"services":{"svc":{"build":{"context":"/fake/source"}}}}`), nil
+	}
+
+	var capturedArgs []string
+	origBuild := buildRunner
+	defer func() { buildRunner = origBuild }()
+	buildRunner = func(_ context.Context, _ string, args []string) ([]byte, error) {
+		capturedArgs = args
+		return nil, nil
+	}
+
+	req := BuildRequest{
+		Repo:      "test/repo",
+		CommitSHA: "abc1234567890abcdef", // 18 chars → ${SHA} = "abc123456789"
+		Config: RepoConfig{
+			ComposePath: "/fake/compose",
+			SourcePath:  "/fake/source",
+			Services:    []string{"svc"},
+			BuildArgs: []string{
+				"WEB_ARTIFACT_IMAGE=oxpulse-chat-web:prod-${SHA}",
+			},
+		},
+	}
+
+	errMsg := composeBuild(context.Background(), req, "/fake/worktree", "")
+	if errMsg != "" {
+		t.Fatalf("composeBuild: unexpected error: %s", errMsg)
+	}
+
+	args := strings.Join(capturedArgs, " ")
+	// ${SHA} must be substituted with the 12-char short SHA.
+	want := "--build-arg WEB_ARTIFACT_IMAGE=oxpulse-chat-web:prod-abc123456789"
+	if !strings.Contains(args, want) {
+		t.Errorf("missing substituted build-arg; want %q in args: %s", want, args)
+	}
+	// The literal ${SHA} must NOT appear (unsubstituted placeholder = bug).
+	if strings.Contains(args, "${SHA}") {
+		t.Errorf("unsubstituted ${SHA} placeholder found in args: %s", args)
+	}
+}
+
 // TestPullDeployClone_Integration tests the full pull lifecycle against a real
 // local git repo, exercising the default runner implementations end-to-end.
 func TestPullDeployClone_Integration(t *testing.T) {

@@ -318,15 +318,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// path below.
 	if len(matches) == 1 {
 		rc := matches[0]
-		if h.skipByPathFilter(push, rc) {
+		skip, reason := h.skipByPathFilter(push, rc)
+		if skip {
 			slog.Info("deploy skipped: no build-relevant files changed",
 				"repo", push.Repository.FullName,
 				"commit", short(push.HeadCommit.ID),
 				"build_paths", rc.BuildPaths,
+				"reason", reason,
 			)
 			respondJSON(w, http.StatusOK, map[string]string{
 				"status": "skipped",
-				"reason": "no_relevant_paths",
+				"reason": reason,
 				"repo":   push.Repository.FullName,
 				"commit": short(push.HeadCommit.ID),
 			})
@@ -372,11 +374,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// independently for each before its BuildPaths filter runs.
 			attachReleaseDiff(r.Context(), &targetPush, rc, h.shaResolver)
 		}
-		if h.skipByPathFilter(targetPush, rc) {
+		skip, reason := h.skipByPathFilter(targetPush, rc)
+		if skip {
 			slog.Info("deploy skipped: no build-relevant files changed",
 				"repo", targetPush.Repository.FullName,
 				"commit", short(targetPush.HeadCommit.ID),
 				"build_paths", rc.BuildPaths,
+				"reason", reason,
 			)
 			statuses = append(statuses, "skipped")
 			continue

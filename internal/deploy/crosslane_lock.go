@@ -32,6 +32,12 @@ import (
 // shared dir (e.g. set XDG_RUNTIME_DIR on the acquire/release env) if it ever
 // runs that way.
 //
+// Lane separation (2026-07-19): dozor heavy builds target slot 2
+// (CI_LOCK_SLOT_START=2) while Go CI runners stay on slot 1 (default). This
+// prevents a 45m Rust cargo build from blocking 3m Go preflights on the
+// shared 4-core box. The two lanes are fully independent — slot 1 holders
+// never wait on slot 2 and vice versa.
+//
 // Contract (correctness is paramount — a lock bug stalls ALL fleet deploys):
 //   - Heavy builds ONLY. A non-Heavy build never touches the lock.
 //   - Acquire before the build; RELEASE on EVERY exit path via defer (success,
@@ -133,6 +139,10 @@ func ciLockEnv(repo, buildID string) []string {
 		"GITHUB_RUN_ID=" + runID,
 		"GITHUB_JOB=" + ciLockJob,
 		"CI_LOCK_WAIT_SECS=" + strconv.Itoa(ciLockWaitSecs),
+		// Lane separation: dozor heavy builds use slot 2, Go CI runners use
+		// slot 1 (their default CI_LOCK_SLOT_START=1). This way a 45m Rust
+		// cargo build never blocks a 3m Go preflight on the single shared box.
+		"CI_LOCK_SLOT_START=2",
 	}
 }
 

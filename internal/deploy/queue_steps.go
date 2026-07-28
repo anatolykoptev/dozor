@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -126,6 +127,25 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	}
 	pullDeployClone(ctx, req.Repo, req.Config.DeployClonePath, branch)
 
+	// Run pre-build script if configured. Used for building web OCI artifacts
+	// that the main Dockerfile consumes via WEB_ARTIFACT_IMAGE build-arg.
+	// The script runs in SourcePath with DEPLOY_REPO_PATH and DEPLOY_SHA env
+	// vars. A non-zero exit aborts the build.
+	if req.Config.PreBuildScript != "" {
+		shaDir := worktreePath
+		if shaDir == "" {
+			shaDir = req.Config.SourcePath
+		}
+		slog.Info("deploy: running pre-build script",
+			"script", req.Config.PreBuildScript,
+			"repo", req.Repo,
+			"commit", short(req.CommitSHA),
+		)
+		if errMsg := runPreBuildScript(ctx, req.Config.PreBuildScript, shaDir, req.CommitSHA); errMsg != "" {
+			return errMsg
+		}
+	}
+
 	// Invalidate BuildKit exec cache mounts when requested (Rust services with
 	// --mount=type=cache,target=target/ — see RepoConfig.PruneBuildkitCache).
 	pruneBuildkitCacheMount(ctx, req)
@@ -192,6 +212,20 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 		"--build-arg", "OXPULSE_GIT_SHA="+gitSHA,
 		"--build-arg", "BUILD_TIMESTAMP="+buildTimestamp,
 	)
+
+	// Inject per-repo extra build args with ${SHA} placeholder substitution.
+	// ${SHA} resolves to the 12-char short commit SHA, matching the image
+	// tag format used by deploy-web-only.sh (SHORT_SHA="${SHA:0:12}").
+	// Used for passing pre-built artifact image tags
+	// (e.g. WEB_ARTIFACT_IMAGE=oxpulse-chat-web:prod-${SHA}).
+	shortSHA12 := req.CommitSHA
+	if len(shortSHA12) > 12 { //nolint:mnd // 12-char short SHA for image tags
+		shortSHA12 = shortSHA12[:12]
+	}
+	for _, arg := range req.Config.BuildArgs {
+		expanded := strings.ReplaceAll(arg, "${SHA}", shortSHA12)
+		buildArgs = append(buildArgs, "--build-arg", expanded)
+	}
 
 	buildArgs = append(buildArgs, req.Config.Services...)
 
@@ -425,4 +459,40 @@ func pruneOldImages(ctx context.Context, composePath string) {
 	if err := runCmd(ctx, composePath, "docker", "builder", "prune", "-f", "--filter", "until=24h"); err != nil {
 		slog.Warn("deploy: builder prune failed", "error", err)
 	}
+}
+
+// runPreBuildScript executes a pre-build bash script with DEPLOY_REPO_PATH
+// and DEPLOY_SHA env vars set. The script runs in sourceDir. A non-zero exit
+// code returns an error message string (not a Go error) to match the
+// composeBuild return convention.
+func runPreBuildScript(ctx context.Context, scriptPath, sourceDir, commitSHA string) string {
+	cmd := exec.CommandContext(ctx, "bash", scriptPath)
+	cmd.Dir = sourceDir
+	cmd.Env = append(os.Environ(),
+		"DEPLOY_REPO_PATH="+sourceDir,
+		"DEPLOY_SHA="+commitSHA,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Error("deploy: pre-build script failed",
+			"script", scriptPath,
+			"error", err,
+			"output", string(out),
+		)
+		return fmt.Sprintf("pre-build script %s failed: %v\n%s", scriptPath, err, out)
+	}
+	slog.Info("deploy: pre-build script completed",
+		"script", scriptPath,
+		"output_tail", lastLines(string(out), 5), //nolint:mnd // last 5 lines for context
+	)
+	return ""
+}
+
+// lastLines returns the last n lines of s (for log truncation).
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[len(lines)-n:], "\n")
 }
