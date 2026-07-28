@@ -37,13 +37,20 @@ func (p pushEvent) changedFiles() []string {
 }
 
 // skipByPathFilter reports whether this push should be skipped due to the
-// BuildPaths whitelist or SkipPaths deny-list. Returns false (i.e. proceed
-// to build) when:
-//   - BuildPaths is empty (feature disabled — SkipPaths also ignored)
+// BuildPaths whitelist, SkipPaths deny-list, or SkipIfAny hard veto. Returns
+// (true, reason) when the push should be skipped, or (false, "") when it
+// should proceed to build. Skip reasons:
+//   - "skip_if_any":     a changed file matched SkipIfAny (hard veto).
+//   - "only_skip_paths": all changed files matched SkipPaths.
+//   - "no_relevant_paths": no remaining file matched BuildPaths.
+//
+// Returns (false, "") (proceed to build) when:
+//   - BuildPaths and SkipIfAny are both empty (feature disabled)
 //   - the push has no per-commit file list (force push / oversize)
 //   - at least one non-skip changed file matches the whitelist
 //
-// Filter order (when BuildPaths non-empty):
+// Filter order:
+//  0. SkipIfAny hard veto — if ANY changed file matches, skip immediately.
 //  1. Subtract changed files that match SkipPaths — these are treated as
 //     "not deploy-worthy" regardless of whether they also match BuildPaths
 //     (skip-list wins on overlap). Operator intent: "even if Cargo.toml
@@ -52,14 +59,32 @@ func (p pushEvent) changedFiles() []string {
 //  3. Else if remaining files don't match BuildPaths → skip{reason="no_relevant_paths"}.
 //
 // On skip, increments dozor_deploy_skipped_total{reason=<above>}.
-func (h *Handler) skipByPathFilter(push pushEvent, rc *RepoConfig) bool {
-	if len(rc.BuildPaths) == 0 {
-		return false
+func (h *Handler) skipByPathFilter(push pushEvent, rc *RepoConfig) (bool, string) {
+	if len(rc.BuildPaths) == 0 && len(rc.SkipIfAny) == 0 {
+		return false, ""
 	}
 	changed := push.changedFiles()
 	if len(changed) == 0 {
 		// GitHub elided the diff — be conservative and build.
-		return false
+		return false, ""
+	}
+
+	// SkipIfAny: hard veto — if ANY changed file matches, skip the entire
+	// build for this entry. Checked before BuildPaths/SkipPaths so a
+	// web-only lane with SkipIfAny=[crates/**] aborts immediately when a
+	// push touches both web/** and crates/**, falling through to the full
+	// lane instead.
+	if len(rc.SkipIfAny) > 0 {
+		if MatchAny(changed, rc.SkipIfAny) {
+			for _, svc := range rc.Services {
+				SkippedTotal.WithLabelValues(push.Repository.FullName, svc, "skip_if_any").Inc()
+			}
+			return true, "skip_if_any"
+		}
+	}
+
+	if len(rc.BuildPaths) == 0 {
+		return false, ""
 	}
 
 	relevant := changed
@@ -74,17 +99,17 @@ func (h *Handler) skipByPathFilter(push pushEvent, rc *RepoConfig) bool {
 			for _, svc := range rc.Services {
 				SkippedTotal.WithLabelValues(push.Repository.FullName, svc, "only_skip_paths").Inc()
 			}
-			return true
+			return true, "only_skip_paths"
 		}
 	}
 
 	if MatchAny(relevant, rc.BuildPaths) {
-		return false
+		return false, ""
 	}
 	for _, svc := range rc.Services {
 		SkippedTotal.WithLabelValues(push.Repository.FullName, svc, "no_relevant_paths").Inc()
 	}
-	return true
+	return true, "no_relevant_paths"
 }
 
 // dispatchPush hands the (filtered) push event off to either the debouncer or

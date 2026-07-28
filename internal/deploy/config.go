@@ -109,6 +109,22 @@ type RepoConfig struct {
 	// skipped with reason="only_skip_paths".
 	SkipPaths []string `yaml:"skip_paths,omitempty"`
 
+	// SkipIfAny is a list of glob patterns that, if ANY changed file matches,
+	// causes the entire build to be skipped for this repo entry. Unlike
+	// SkipPaths (which subtracts individual files from the changed set before
+	// the BuildPaths check), SkipIfAny is a hard veto: a single matching file
+	// aborts the build regardless of other matching files.
+	//
+	// Use case: a web-only deploy lane that should fire only when the diff is
+	// purely web/frontend files. Set SkipIfAny to full-lane trigger paths
+	// (crates/**, Cargo.toml, Dockerfile, …) so a push that touches both
+	// web/** and crates/** skips the web-only lane and falls through to the
+	// full lane instead.
+	//
+	// Skip reason: "skip_if_any". Checked before BuildPaths/SkipPaths.
+	// Empty (the default) preserves backward-compat: no hard veto.
+	SkipIfAny []string `yaml:"skip_if_any,omitempty"`
+
 	// DeployOn gates which GitHub event triggers a build for this repo.
 	//   - "" (default): every push to the configured branch builds — the
 	//     original push-based behaviour, unchanged.

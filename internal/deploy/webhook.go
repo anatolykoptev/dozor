@@ -298,15 +298,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// path below.
 	if len(matches) == 1 {
 		rc := matches[0]
-		if h.skipByPathFilter(push, rc) {
+		skip, reason := h.skipByPathFilter(push, rc)
+		if skip {
 			slog.Info("deploy skipped: no build-relevant files changed",
 				"repo", push.Repository.FullName,
 				"commit", short(push.HeadCommit.ID),
 				"build_paths", rc.BuildPaths,
+				"reason", reason,
 			)
 			respondJSON(w, http.StatusOK, map[string]string{
 				"status": "skipped",
-				"reason": "no_relevant_paths",
+				"reason": reason,
 				"repo":   push.Repository.FullName,
 				"commit": short(push.HeadCommit.ID),
 			})
@@ -332,11 +334,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// are aggregated in deterministic match order.
 	statuses := make([]string, 0, len(matches))
 	for _, rc := range matches {
-		if h.skipByPathFilter(push, rc) {
+		skip, reason := h.skipByPathFilter(push, rc)
+		if skip {
 			slog.Info("deploy skipped: no build-relevant files changed",
 				"repo", push.Repository.FullName,
 				"commit", short(push.HeadCommit.ID),
 				"build_paths", rc.BuildPaths,
+				"reason", reason,
 			)
 			statuses = append(statuses, "skipped")
 			continue

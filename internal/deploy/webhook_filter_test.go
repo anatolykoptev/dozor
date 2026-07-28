@@ -105,6 +105,102 @@ func TestHandler_PathFilter_BuildsOnRelevantChange(t *testing.T) {
 	}
 }
 
+func TestHandler_PathFilter_SkipIfAny_VetoOnFullLanePath(t *testing.T) {
+	t.Parallel()
+	// Web-only lane: BuildPaths=web/**, SkipIfAny=crates/**.
+	// Push touches both web/** and crates/** → skip_if_any veto.
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/oxpulse-chat#web": {
+				ComposePath: "/tmp", SourcePath: "/tmp",
+				Services:   []string{"oxpulse-chat-web"},
+				BuildPaths: []string{"web/**", "packages/url-contract/**"},
+				SkipIfAny:  []string{"crates/**", "Cargo.toml", "Cargo.lock", "Dockerfile"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/oxpulse-chat", "refs/heads/main", "abc1234567890",
+		[]string{"web/src/lib/foo.ts", "crates/server/src/main.rs"})
+
+	w := postPush(h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "skipped" || resp["reason"] != "skip_if_any" {
+		t.Errorf("response = %+v, want status=skipped reason=skip_if_any", resp)
+	}
+}
+
+func TestHandler_PathFilter_SkipIfAny_BuildsOnWebOnlyPush(t *testing.T) {
+	t.Parallel()
+	// Web-only lane: push touches ONLY web/** → no veto, builds.
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/oxpulse-chat#web": {
+				ComposePath: "/tmp", SourcePath: "/tmp",
+				Services:   []string{"oxpulse-chat-web"},
+				BuildPaths: []string{"web/**", "packages/url-contract/**"},
+				SkipIfAny:  []string{"crates/**", "Cargo.toml", "Cargo.lock", "Dockerfile"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/oxpulse-chat", "refs/heads/main", "abc1234567890",
+		[]string{"web/src/lib/foo.ts", "web/static/sw.js"})
+
+	w := postPush(h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "queued" {
+		t.Errorf("response status = %q, want queued", resp["status"])
+	}
+}
+
+func TestHandler_PathFilter_SkipIfAny_SkipsOnCargoLockOnly(t *testing.T) {
+	t.Parallel()
+	// Push touches ONLY Cargo.lock → veto (SkipIfAny match), even though
+	// Cargo.lock is not in BuildPaths. The hard veto fires before the
+	// BuildPaths check.
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/oxpulse-chat#web": {
+				ComposePath: "/tmp", SourcePath: "/tmp",
+				Services:   []string{"oxpulse-chat-web"},
+				BuildPaths: []string{"web/**"},
+				SkipIfAny:  []string{"Cargo.lock"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/oxpulse-chat", "refs/heads/main", "abc1234567890",
+		[]string{"Cargo.lock"})
+
+	w := postPush(h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "skipped" || resp["reason"] != "skip_if_any" {
+		t.Errorf("response = %+v, want status=skipped reason=skip_if_any", resp)
+	}
+}
+
 func TestHandler_PathFilter_NoCommitsBypassesFilter(t *testing.T) {
 	t.Parallel()
 	// Force push or oversize push: GitHub omits commits[]. We must not skip.
