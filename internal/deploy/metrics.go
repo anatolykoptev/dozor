@@ -68,7 +68,8 @@ var (
 	}, []string{"repo", "service", "op"})
 
 	// SkippedTotal counts deploys that were skipped before queueing.
-	// `reason` is one of: "no_relevant_paths", "explicit_skip".
+	// `reason` is one of: "skip_if_any", "only_skip_paths",
+	// "no_relevant_paths", "no_auto_deploy".
 	SkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_deploy_skipped_total",
 		Help: "Deploys skipped before reaching the build queue.",

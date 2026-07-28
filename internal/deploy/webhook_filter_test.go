@@ -201,6 +201,39 @@ func TestHandler_PathFilter_SkipIfAny_SkipsOnCargoLockOnly(t *testing.T) {
 	}
 }
 
+// SkipIfAny veto fires even when BuildPaths is empty — the hard veto
+// is independent of the allowlist. This covers the edge case where a
+// repo config has SkipIfAny but no BuildPaths (unusual but valid).
+func TestHandler_PathFilter_SkipIfAny_VetoWithEmptyBuildPaths(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/memdb": {
+				ComposePath: "/tmp", SourcePath: "/tmp",
+				Services:    []string{"memdb-go"},
+				BuildPaths:  nil, // empty allowlist
+				SkipIfAny:   []string{"crates/**"},
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",
+		[]string{"crates/server/src/main.rs"})
+
+	w := postPush(h, body)
+	if w.Code != 200 {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "skipped" || resp["reason"] != "skip_if_any" {
+		t.Errorf("response = %+v, want status=skipped reason=skip_if_any", resp)
+	}
+}
+
 func TestHandler_PathFilter_NoCommitsBypassesFilter(t *testing.T) {
 	t.Parallel()
 	// Force push or oversize push: GitHub omits commits[]. We must not skip.
