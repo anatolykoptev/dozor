@@ -220,6 +220,39 @@ type RepoConfig struct {
 	// Example (krolik-server deploy clone):
 	//   deploy_clone_path: /home/krolik/deploy/krolik-server
 	DeployClonePath string `yaml:"deploy_clone_path,omitempty"`
+
+	// BuildArgs is a list of extra --build-arg values passed to
+	// `docker compose build` for this repo. Each entry is a "KEY=VALUE"
+	// string. The placeholder ${SHA} is substituted with the 12-char
+	// short commit SHA (matching the image tag format used by
+	// deploy-web-only.sh: SHORT_SHA="${SHA:0:12}").
+	//
+	// Use case: passing a pre-built web OCI artifact image tag to a
+	// multi-stage Dockerfile that supports consuming it via
+	// `ARG WEB_ARTIFACT_IMAGE` + `FROM ${WEB_ARTIFACT_IMAGE} AS web-source`,
+	// so the runtime image reuses the exact web bundle the web-only lane
+	// already published (eliminating SPA template mismatches between
+	// independent inline builds).
+	//
+	// Example:
+	//   build_args:
+	//     - "WEB_ARTIFACT_IMAGE=oxpulse-chat-web:prod-${SHA}"
+	BuildArgs []string `yaml:"build_args,omitempty"`
+
+	// PreBuildScript is an absolute path to a bash script that runs BEFORE
+	// `docker compose build` for this repo. The script receives two env vars:
+	//   DEPLOY_REPO_PATH — SourcePath (the local git checkout)
+	//   DEPLOY_SHA       — full commit SHA being built
+	// A non-zero exit code aborts the build with the script's stderr.
+	//
+	// Use case: building a web OCI artifact (Dockerfile.web) that the main
+	// Dockerfile consumes via WEB_ARTIFACT_IMAGE build-arg. The pre-build
+	// script builds the artifact image so it exists in the local Docker
+	// daemon before compose build references it.
+	//
+	// Example:
+	//   pre_build_script: /home/krolik/deploy/krolik-server/scripts/build-web-artifact.sh
+	PreBuildScript string `yaml:"pre_build_script,omitempty"`
 }
 
 var defaultDebounceWindow = func() time.Duration {
