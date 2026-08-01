@@ -23,15 +23,15 @@ func TestHandler_PathFilter_SkipIfAll(t *testing.T) {
 	const sha = "abc1234567890"
 
 	type shape struct {
-		name      string
-		skipIfAll []string
+		name       string
+		skipIfAll  []string
 		buildPaths []string
 		skipPaths  []string
 		skipIfAny  []string
-		files     []string
+		files      []string
 		// noCommits true → elided diff (force push / oversize).
-		noCommits bool
-		wantSkip  bool
+		noCommits  bool
+		wantSkip   bool
 		wantReason string
 		// wantSkipIfAllMetric: expected delta on SkippedTotal{reason="skip_if_all"}.
 		wantSkipIfAllMetric float64
@@ -39,12 +39,12 @@ func TestHandler_PathFilter_SkipIfAll(t *testing.T) {
 
 	shapes := []shape{
 		{
-			name:        "all_files_under_web_skips",
-			skipIfAll:   []string{"web/**"},
-			buildPaths:  []string{"web/**", "crates/**", "Cargo.toml"},
-			files:       []string{"web/src/lib/foo.ts", "web/static/sw.js"},
-			wantSkip:    true,
-			wantReason:  "skip_if_all",
+			name:                "all_files_under_web_skips",
+			skipIfAll:           []string{"web/**"},
+			buildPaths:          []string{"web/**", "crates/**", "Cargo.toml"},
+			files:               []string{"web/src/lib/foo.ts", "web/static/sw.js"},
+			wantSkip:            true,
+			wantReason:          "skip_if_all",
 			wantSkipIfAllMetric: 1,
 		},
 		{
@@ -59,13 +59,13 @@ func TestHandler_PathFilter_SkipIfAll(t *testing.T) {
 			// relevant = [web/src/foo.ts] — a pure-web push → skip_if_all.
 			// Evaluating over the raw set would see README.md not matching
 			// web/** and wrongly fire the heavy lane.
-			name:       "web_plus_readme_with_md_skip_path_skips",
-			skipIfAll:  []string{"web/**"},
-			buildPaths: []string{"web/**", "crates/**", "Cargo.toml"},
-			skipPaths:  []string{"*.md"},
-			files:      []string{"web/src/foo.ts", "README.md"},
-			wantSkip:   true,
-			wantReason: "skip_if_all",
+			name:                "web_plus_readme_with_md_skip_path_skips",
+			skipIfAll:           []string{"web/**"},
+			buildPaths:          []string{"web/**", "crates/**", "Cargo.toml"},
+			skipPaths:           []string{"*.md"},
+			files:               []string{"web/src/foo.ts", "README.md"},
+			wantSkip:            true,
+			wantReason:          "skip_if_all",
 			wantSkipIfAllMetric: 1,
 		},
 		{
@@ -78,13 +78,13 @@ func TestHandler_PathFilter_SkipIfAll(t *testing.T) {
 		{
 			// All files consumed by skip_paths → only_skip_paths wins over
 			// skip_if_all (precedence: step 2 before step 3).
-			name:       "only_skip_paths_files_yield_only_skip_paths_not_skip_if_all",
-			skipIfAll:  []string{"web/**"},
-			buildPaths: []string{"web/**", "crates/**"},
-			skipPaths:  []string{"*.md"},
-			files:      []string{"README.md", "CHANGELOG.md"},
-			wantSkip:   true,
-			wantReason: "only_skip_paths",
+			name:                "only_skip_paths_files_yield_only_skip_paths_not_skip_if_all",
+			skipIfAll:           []string{"web/**"},
+			buildPaths:          []string{"web/**", "crates/**"},
+			skipPaths:           []string{"*.md"},
+			files:               []string{"README.md", "CHANGELOG.md"},
+			wantSkip:            true,
+			wantReason:          "only_skip_paths",
 			wantSkipIfAllMetric: 0,
 		},
 		{
@@ -98,13 +98,13 @@ func TestHandler_PathFilter_SkipIfAll(t *testing.T) {
 		{
 			// skip_if_any precedence: both filters would match, skip_if_any
 			// fires first (hard veto, step 1 before step 3).
-			name:       "skip_if_any_precedence_over_skip_if_all",
-			skipIfAll:  []string{"web/**"},
-			skipIfAny:  []string{"web/**"},
-			buildPaths: []string{"web/**", "crates/**"},
-			files:      []string{"web/src/lib/foo.ts"},
-			wantSkip:   true,
-			wantReason: "skip_if_any",
+			name:                "skip_if_any_precedence_over_skip_if_all",
+			skipIfAll:           []string{"web/**"},
+			skipIfAny:           []string{"web/**"},
+			buildPaths:          []string{"web/**", "crates/**"},
+			files:               []string{"web/src/lib/foo.ts"},
+			wantSkip:            true,
+			wantReason:          "skip_if_any",
 			wantSkipIfAllMetric: 0,
 		},
 		{
@@ -118,11 +118,11 @@ func TestHandler_PathFilter_SkipIfAll(t *testing.T) {
 		},
 		{
 			// skip_if_all only (no build_paths), all files match → skip.
-			name:      "skip_if_all_only_no_build_paths_all_match_skips",
-			skipIfAll: []string{"web/**"},
-			files:     []string{"web/src/lib/foo.ts", "web/static/sw.js"},
-			wantSkip:  true,
-			wantReason: "skip_if_all",
+			name:                "skip_if_all_only_no_build_paths_all_match_skips",
+			skipIfAll:           []string{"web/**"},
+			files:               []string{"web/src/lib/foo.ts", "web/static/sw.js"},
+			wantSkip:            true,
+			wantReason:          "skip_if_all",
 			wantSkipIfAllMetric: 1,
 		},
 	}
