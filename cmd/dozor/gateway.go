@@ -296,7 +296,7 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 	// were actually pending, so a withheld release survives a restart instead
 	// of silently reading "nothing pending".
 	deploy.ConfigurePendingDeployPersistence(deploy.DefaultPendingDeployPersistPath())
-	deploy.RestorePendingDeployGauge()
+	deploy.RestorePendingDeployGauge(cfg)
 
 	// Log all deploy lifecycle events to journalctl.
 	//

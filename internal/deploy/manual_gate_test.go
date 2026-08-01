@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -402,7 +403,11 @@ func TestPendingDeployGauge_SurvivesRestart(t *testing.T) {
 	}
 
 	// Phase 3: restore reads the persisted file and sets gauge back to 1.
-	RestorePendingDeployGauge()
+	RestorePendingDeployGauge(&Config{
+		Repos: map[string]RepoConfig{
+			repo + "#prod": {Services: []string{svc}, DeployOn: "manual"},
+		},
+	})
 	line := findPendingLine(t, repo, svc)
 	if !regexp.MustCompile(`^dozor_pending_deploy\{repo="test/survives-restart",service="survive-svc"\} 1$`).MatchString(line) {
 		t.Fatalf("phase 3 (post-restore) line = %q, want anchored 1 (withheld state must survive restart)", line)
@@ -435,9 +440,64 @@ func TestPendingDeployGauge_DeployClearsPersistedState(t *testing.T) {
 			repo + "#prod": {Services: []string{svc}, DeployOn: "manual"},
 		},
 	})
-	RestorePendingDeployGauge()
+	RestorePendingDeployGauge(&Config{
+		Repos: map[string]RepoConfig{
+			repo + "#prod": {Services: []string{svc}, DeployOn: "manual"},
+		},
+	})
 	line := findPendingLine(t, repo, svc)
 	if !regexp.MustCompile(`^dozor_pending_deploy\{repo="test/stale-clear",service="stale-svc"\} 0$`).MatchString(line) {
 		t.Fatalf("post-restore line = %q, want anchored 0 (deploy cleared persisted state)", line)
+	}
+}
+
+// TestRestorePendingDeployGauge_DropsEntriesNoLongerManual — restore must
+// reconcile the persisted state against the live config.
+//
+// The clearing path (ExecuteManualDeploy) is itself gated on the repo being
+// deploy_on: manual, so an entry for a repo that was removed, flipped off
+// manual, or whose service was renamed can never be cleared once restored. It
+// would read 1 forever. A permanently stuck alarm is not a lesser failure than
+// a stuck 0 — both end with operators ignoring the series.
+func TestRestorePendingDeployGauge_DropsEntriesNoLongerManual(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deploy-pending.json")
+	ConfigurePendingDeployPersistence(path)
+	t.Cleanup(func() { ConfigurePendingDeployPersistence("") })
+
+	// State from before the restart: one repo still manual, one no longer.
+	doc := pendingDeployFile{Pending: map[string][]string{
+		"test/still-manual": {"live-svc"},
+		"test/gone-manual":  {"stale-svc"},
+	}}
+	if err := writeJSONAtomic(path, doc); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+
+	cfg := &Config{Repos: map[string]RepoConfig{
+		"test/still-manual": {DeployOn: "manual", Services: []string{"live-svc"}},
+		// test/gone-manual is deliberately absent — removed from config.
+	}}
+
+	RestorePendingDeployGauge(cfg)
+
+	if line := findPendingLine(t, "test/still-manual", "live-svc"); !regexp.MustCompile(
+		`^dozor_pending_deploy\{repo="test/still-manual",service="live-svc"\} 1$`).MatchString(line) {
+		t.Fatalf("still-manual line = %q, want anchored 1", line)
+	}
+	if line := findPendingLine(t, "test/gone-manual", "stale-svc"); line != "" {
+		t.Fatalf("gone-manual must NOT be restored (nothing could ever clear it), got %q", line)
+	}
+
+	// The file must be rewritten, or the next boot trips over the same entry.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if strings.Contains(string(raw), "gone-manual") {
+		t.Fatalf("stale entry still on disk after reconciliation: %s", raw)
+	}
+	if !strings.Contains(string(raw), "still-manual") {
+		t.Fatalf("live entry lost during reconciliation: %s", raw)
 	}
 }

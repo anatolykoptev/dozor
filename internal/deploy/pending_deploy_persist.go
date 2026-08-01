@@ -140,6 +140,59 @@ func readPendingDeployFile() pendingDeployFile {
 	return doc
 }
 
+// manualServiceSet indexes the repos the RUNNING config declares
+// deploy_on: manual, as repo → service → true. Mirrors
+// PreinitPendingDeployGauge's key handling (stripBranchSuffix) so the two agree
+// on what "this repo" means; if they diverged, restore would resurrect series
+// preinit never seeded.
+func manualServiceSet(cfg *Config) map[string]map[string]bool {
+	allowed := make(map[string]map[string]bool)
+	if cfg == nil {
+		return allowed
+	}
+	for key, rc := range cfg.Repos {
+		if rc.DeployOn != deployOnManual {
+			continue
+		}
+		repo := stripBranchSuffix(key)
+		if allowed[repo] == nil {
+			allowed[repo] = make(map[string]bool)
+		}
+		for _, svc := range rc.Services {
+			allowed[repo][svc] = true
+		}
+	}
+	return allowed
+}
+
+// reconcilePendingState splits persisted pending state into what the live
+// config still recognises and what it does not. Pure — no gauge, no I/O — so
+// the rule can be tested directly.
+//
+// Why dropping matters: the only path that clears the gauge
+// (ExecuteManualDeploy) is itself gated on the repo being deploy_on: manual. An
+// entry whose repo was removed, flipped off manual, or whose service was
+// renamed therefore has no clearer left. Restoring it would pin the series at 1
+// forever, and a permanently stuck alarm destroys the signal exactly as the
+// stuck 0 this file exists to prevent does — just from the other side.
+func reconcilePendingState(doc pendingDeployFile, allowed map[string]map[string]bool) (kept map[string][]string, dropped []string) {
+	kept = make(map[string][]string, len(doc.Pending))
+	for repo, services := range doc.Pending {
+		var live []string
+		for _, svc := range services {
+			if allowed[repo][svc] {
+				live = append(live, svc)
+				continue
+			}
+			dropped = append(dropped, repo+"/"+svc)
+		}
+		if len(live) > 0 {
+			kept[repo] = live
+		}
+	}
+	return kept, dropped
+}
+
 // RestorePendingDeployGauge reads the persisted pending-deploy state and
 // restores the gauge to 1 for every (repo, service) that was pending at the
 // time of the last shutdown. Call once at startup, AFTER
@@ -148,32 +201,33 @@ func readPendingDeployFile() pendingDeployFile {
 //
 // Tolerant of a missing or corrupt state file (logs + continues): dozor is
 // the deploy orchestrator and must boot even with a damaged state file.
-func RestorePendingDeployGauge() {
+func RestorePendingDeployGauge(cfg *Config) {
 	pendingDeployMu.Lock()
-	path := pendingDeployPersistPath
-	pendingDeployMu.Unlock()
-	if path == "" {
+	defer pendingDeployMu.Unlock()
+	if pendingDeployPersistPath == "" {
 		return
 	}
-	data, err := os.ReadFile(path) //nolint:gosec // trusted workspace path
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			slog.Warn("deploy: cannot read persisted pending-deploy state, starting clean",
-				"path", path, "error", err)
-		}
+	doc := readPendingDeployFile()
+	if len(doc.Pending) == 0 {
 		return
 	}
-	var doc pendingDeployFile
-	if err := json.Unmarshal(data, &doc); err != nil {
-		slog.Warn("deploy: persisted pending-deploy state is corrupt, discarding",
-			"path", path, "error", err)
-		return
-	}
-	for repo, services := range doc.Pending {
+
+	kept, dropped := reconcilePendingState(doc, manualServiceSet(cfg))
+	for repo, services := range kept {
 		for _, svc := range services {
 			PendingDeployGauge.WithLabelValues(repo, svc).Set(1)
 		}
 		slog.Info("deploy: restored pending-deploy gauge after restart",
 			"repo", repo, "services", services)
+	}
+	if len(dropped) == 0 {
+		return
+	}
+	// Rewrite so the stale entries do not linger for the next boot to trip over.
+	slog.Warn("deploy: dropped pending-deploy state for entries no longer configured as deploy_on: manual",
+		"dropped", dropped, "path", pendingDeployPersistPath)
+	if err := writeJSONAtomic(pendingDeployPersistPath, pendingDeployFile{Pending: kept}); err != nil {
+		slog.Warn("deploy: failed to rewrite pending-deploy state after reconciliation",
+			"path", pendingDeployPersistPath, "error", err)
 	}
 }
