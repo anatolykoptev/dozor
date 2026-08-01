@@ -1,13 +1,24 @@
 name: release-please
-
 # Conventional-commit-driven versioning (tag + GitHub release + changelog) AND
 # deploy-on-release. The release-please job is lightweight (free tier). When it
 # cuts a release, the gated `deploy` job (below) builds the tagged binary and
 # ships it to krolik — this is the ONLY path that auto-deploys dozor now
-# (deploy.yml is manual-only). Deploy is folded in HERE rather than a separate
-# `on: release` workflow because a GITHUB_TOKEN-created release does NOT trigger
-# other workflows (GitHub's recursion guard) — an `on: release` deploy would
-# silently never fire. `release_created` gating keeps it in this one job graph.
+# (deploy.yml is manual-only).
+#
+# The release runs as the krolik-release-bot GitHub App, not the default
+# GITHUB_TOKEN. The reason is CI on the release PR: a GITHUB_TOKEN-opened PR
+# receives NO workflow runs at all (it lands as `action_required`), so the
+# release PR is unreviewable by CI and a release gets cut on the strength of
+# main's run alone. An App-opened PR gets the normal checks.
+#
+# Deploy stays folded into THIS job graph, gated on `release_created`. With
+# GITHUB_TOKEN that was forced — a token-created release does not trigger other
+# workflows (GitHub's recursion guard), so a separate `on: release` deploy would
+# silently never fire. Under the App token that constraint is lifted and a
+# separate workflow WOULD fire; keeping it here is now a deliberate choice,
+# because one job graph means the deploy cannot drift away from the release that
+# produced it. No workflow in this repo listens on `push: tags`, so moving to
+# the App token newly triggers nothing (verified 2026-08-01).
 #
 # Release BINARIES (downloadable cross-arch assets) are still built LOCALLY on
 # krolik by ~/bin/goreleaser-release-local.sh (heavy GoReleaser cross-compile
@@ -17,11 +28,9 @@ on:
     branches:
       - main
   workflow_dispatch: {}
-
 permissions:
   contents: write
   pull-requests: write
-
 jobs:
   release-please:
     runs-on: ubuntu-latest
@@ -29,15 +38,22 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      # Short-lived installation token for krolik-release-bot. The action masks
+      # and revokes it automatically. Fleet convention stores both the App id
+      # and the private key as repo secrets (matches memdb, go-kit).
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
       - uses: googleapis/release-please-action@v5.0.0
         id: release
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-  # Auto-deploy ONLY when a release was just cut (recursion-guard-safe, see header).
+  # Auto-deploy ONLY when a release was just cut (see header).
   deploy:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
