@@ -14,7 +14,14 @@ import (
 // fetchLockTimeout bounds how long a fetch waits for another concurrent fetch
 // on the same clone to finish. A fetch that blocks forever is a worse failure
 // than the ref race being fixed (issue #182).
-const fetchLockTimeout = 60 * time.Second
+//
+// The ceiling is deliberately generous. Waiting costs latency; giving up costs
+// the deploy, which is the very outcome this lock exists to prevent, so the two
+// sides of the trade are not symmetric. A cold fetch of a large clone on a
+// loaded box can legitimately outrun a tight bound. This is only an upper
+// bound: the caller's context deadline still applies and wins when it is
+// shorter.
+const fetchLockTimeout = 5 * time.Minute
 
 // withFetchLock serialises git fetch operations per target directory across
 // processes. An in-process mutex is NOT sufficient — devin-run and operators
