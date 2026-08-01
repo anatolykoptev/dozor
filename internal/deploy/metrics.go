@@ -341,4 +341,30 @@ var (
 		Name: "dozor_release_diff_resolution_total",
 		Help: "Release-event build-path diff resolution outcomes by repo. Non-resolved outcomes mean build_paths is not applying — every release rebuilds everything.",
 	}, []string{"repo", "outcome"})
+
+	// FetchLockFailOpenTotal counts cases where the per-directory fetch lock
+	// (issue #182) could not be set up and the fetch proceeded UNLOCKED —
+	// silently degrading back to the exact race the lock exists to prevent.
+	// A persistent cause (read-only FS, wrong ownership, full disk) shows up
+	// as a sustained tick here with nothing but a WARN log line otherwise.
+	// reason label values:
+	//   "resolve_failure" — resolveGitCommonDir failed (no .git, broken symlink, etc.)
+	//   "open_failure"     — the lock file could not be opened/created (permissions, read-only FS, full disk)
+	FetchLockFailOpenTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_fetch_lock_fail_open_total",
+		Help: "Fetch-lock infrastructure failures that proceeded unlocked (silent degradation to the #182 race), by reason.",
+	}, []string{"reason"})
+
+	// FetchLockTimeoutTotal counts fetch-lock acquisition timeouts — another
+	// fetcher held the lock past the wait ceiling, or the caller's context
+	// expired before a slot freed. After the FIX 1 sentinel (ErrFetchLock) a
+	// timeout is a real error at the call site, not a mislabelled benign skip;
+	// this counter is the dedicated contention signal (distinct from a
+	// fail-open, which is an infrastructure failure). reason label values:
+	//   "deadline" — the lock's own wait deadline fired (another fetcher held it too long)
+	//   "context"  — the caller's context expired (ctx.Done, or already-expired on entry)
+	FetchLockTimeoutTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_fetch_lock_timeout_total",
+		Help: "Fetch-lock acquisition timeouts (contention), by reason. Distinct from fail-open (dozor_fetch_lock_fail_open_total).",
+	}, []string{"reason"})
 )

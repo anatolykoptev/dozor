@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,6 +11,16 @@ import (
 	"syscall"
 	"time"
 )
+
+// ErrFetchLock is returned when the per-directory fetch lock could not be
+// acquired — another fetcher held it past the wait ceiling, or the caller's
+// context expired before a slot freed. It is distinct from a fetch/git command
+// failure: the guarded operation never ran. Callers that classify outcomes
+// (syncOffBranch) test errors.Is(err, ErrFetchLock) so lock contention is
+// surfaced as a real error rather than misfiled as a benign skip (e.g.
+// syncDiverged, which means "the operator has local commits we must not
+// clobber" — contention means nothing of the sort).
+var ErrFetchLock = errors.New("fetch lock acquisition failed")
 
 // fetchLockTimeout bounds how long a fetch waits for another concurrent fetch
 // on the same clone to finish. A fetch that blocks forever is a worse failure
@@ -21,7 +32,16 @@ import (
 // loaded box can legitimately outrun a tight bound. This is only an upper
 // bound: the caller's context deadline still applies and wins when it is
 // shorter.
-const fetchLockTimeout = 5 * time.Minute
+//
+// It is a var (not a const) so the own-deadline branch of acquireFetchLockInternal
+// can be exercised in tests without a 5-minute wait; production code never
+// mutates it. Note: source_sync's two call sites (defaultGitRefFFRunner and
+// the up-front gitFetchRunner) run under a 60s sourceSyncTimeout, so this
+// 5-minute ceiling never applies there — the caller's deadline always wins.
+// The 5-minute ceiling is real for the other three sites (gitPrepare's two
+// fetches and gitManualFetchRunner), which run without a shorter caller
+// deadline.
+var fetchLockTimeout = 5 * time.Minute
 
 // withFetchLock serialises git fetch operations per target directory across
 // processes. An in-process mutex is NOT sufficient — devin-run and operators
@@ -42,6 +62,13 @@ const fetchLockTimeout = 5 * time.Minute
 // race, not a correctness precondition, and failing the fetch because of a lock
 // file problem would be a regression. A timeout (another fetcher holds the lock
 // too long) returns an error — a stuck fetch is a real problem worth surfacing.
+//
+// Cross-user limit: the lock file is created 0o600 (owner read/write only), so
+// an operator running `git fetch` as a DIFFERENT user than the one dozor runs
+// as cannot open it — acquireFetchLockInternal fail-opens and the two do not
+// serialise. The lock serialises same-user fetchers only; cross-user fetching
+// remains racy by design (widening the mode is a security tradeoff not asked
+// for here).
 func withFetchLock(ctx context.Context, dir string, fn func() error) error {
 	f, err := acquireFetchLockInternal(ctx, dir)
 	if err != nil {
@@ -65,6 +92,16 @@ func resolveGitCommonDir(dir string) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolve absolute path: %w", err)
+	}
+	// Resolve symlinks BEFORE computing the lock path: filepath.Abs does not
+	// follow them, so two symlink paths to one clone would produce two
+	// different lock-file paths and silently not contend — a failure of the
+	// whole mechanism. On resolution failure, return an error; the caller
+	// (acquireFetchLockInternal) fail-opens, preserving the existing behaviour.
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	} else {
+		return "", fmt.Errorf("resolve symlinks in %s: %w", abs, err)
 	}
 	gitPath := filepath.Join(abs, ".git")
 	info, err := os.Stat(gitPath)
@@ -111,6 +148,7 @@ func acquireFetchLockInternal(ctx context.Context, dir string) (*os.File, error)
 	if err != nil {
 		slog.Warn("deploy: fetch lock — cannot resolve git common dir; proceeding unlocked",
 			"dir", dir, "error", err)
+		FetchLockFailOpenTotal.WithLabelValues("resolve_failure").Inc()
 		return nil, nil
 	}
 	lockPath := filepath.Join(gitDir, "dozor-fetch.lock")
@@ -118,6 +156,7 @@ func acquireFetchLockInternal(ctx context.Context, dir string) (*os.File, error)
 	if err != nil {
 		slog.Warn("deploy: fetch lock — cannot open lock file; proceeding unlocked",
 			"path", lockPath, "error", err)
+		FetchLockFailOpenTotal.WithLabelValues("open_failure").Inc()
 		return nil, nil
 	}
 	timeout := fetchLockTimeout
@@ -128,7 +167,8 @@ func acquireFetchLockInternal(ctx context.Context, dir string) (*os.File, error)
 	}
 	if timeout <= 0 {
 		_ = f.Close()
-		return nil, fmt.Errorf("fetch lock %s: context deadline already exceeded", lockPath)
+		FetchLockTimeoutTotal.WithLabelValues("context").Inc()
+		return nil, fmt.Errorf("%w: %s: context deadline already exceeded", ErrFetchLock, lockPath)
 	}
 	deadline := time.Now().Add(timeout)
 	backoff := 50 * time.Millisecond
@@ -138,12 +178,14 @@ func acquireFetchLockInternal(ctx context.Context, dir string) (*os.File, error)
 		}
 		if time.Now().After(deadline) {
 			_ = f.Close()
-			return nil, fmt.Errorf("fetch lock %s: timed out after %s waiting for another fetch", lockPath, timeout)
+			FetchLockTimeoutTotal.WithLabelValues("deadline").Inc()
+			return nil, fmt.Errorf("%w: %s: timed out after %s waiting for another fetch", ErrFetchLock, lockPath, timeout)
 		}
 		select {
 		case <-ctx.Done():
 			_ = f.Close()
-			return nil, fmt.Errorf("fetch lock %s: %w", lockPath, ctx.Err())
+			FetchLockTimeoutTotal.WithLabelValues("context").Inc()
+			return nil, fmt.Errorf("%w: %s: %w", ErrFetchLock, lockPath, ctx.Err())
 		case <-time.After(backoff):
 		}
 		if backoff < 500*time.Millisecond {

@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -86,7 +87,13 @@ func defaultGitRefFFRunner(ctx context.Context, sourcePath, branch string) (stri
 		return err
 	})
 	if err != nil {
-		return string(out), fmt.Errorf("%w: %s", err, truncate(string(out), maxOutputLen))
+		// On a lock-acquisition failure the closure never ran, so out is empty.
+		// Avoid the trailing ": " from "%w: %s" with an empty string — append
+		// git's output only when there is some.
+		if outStr := truncate(string(out), maxOutputLen); outStr != "" {
+			return string(out), fmt.Errorf("%w: %s", err, outStr)
+		}
+		return string(out), err
 	}
 	return string(out), nil
 }
@@ -609,6 +616,22 @@ func syncOffBranch(ctx context.Context, repo, sourcePath, branch, cur string) so
 	}
 	out, ffErr := gitRefFFRunner(ctx, sourcePath, branch)
 	if ffErr != nil {
+		// A lock-acquisition failure (contention/timeout) is a REAL error, not
+		// a benign skip: the ref-ff never ran, so classifying it by inspecting
+		// `out` (which is empty — the closure never executed) would fall through
+		// to the divergence branch below and file contention as syncDiverged.
+		// syncDiverged means "the operator has local commits we must not clobber"
+		// — contention means nothing of the sort, and misfiling it there both
+		// hides a real problem and inflates the divergence signal operators
+		// read. Surface as syncError; the dedicated contention signal lives on
+		// dozor_fetch_lock_timeout_total. This matches the up-front fetch path
+		// (syncSourceCheckout returns syncError on a gitFetchRunner lock timeout
+		// too), so both source_sync call sites agree.
+		if errors.Is(ffErr, ErrFetchLock) {
+			slog.Warn("deploy: source sync — fetch lock contention; ref-ff did not run; left as-is",
+				"repo", repo, "source", sourcePath, "branch", branch, "current", cur, "error", ffErr)
+			return syncError
+		}
 		// git refuses to update a ref that is checked out in another worktree —
 		// this is the intended outcome when the operator has <branch> open in a
 		// separate worktree; it is benign, not a failure.
