@@ -98,6 +98,15 @@ func TestCheckWebhookEvents_EventsCoverDeployOn_OK(t *testing.T) {
 			rc:      rc("release", "svc"),
 			hooks:   []githubHook{hook("https://dozor.example.com/deploy/github", "push", "release")},
 		},
+		{
+			// manual keeps the release trigger (it gates the deploy, not the
+			// event), so a manual repo needs the "release" webhook subscription
+			// exactly like a release repo — issue #183.
+			name:    "manual_repo_with_release_event",
+			repoKey: "test/ok-manual",
+			rc:      rc("manual", "svc"),
+			hooks:   []githubHook{hook("https://dozor.example.com/deploy/github", "release")},
+		},
 	}
 
 	for _, tc := range tests {

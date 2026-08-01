@@ -52,6 +52,52 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 	ctx, cancel := context.WithTimeout(ctx, req.Config.BuildTimeout.OrDefault(buildTimeout))
 	defer cancel()
 
+	// deploy_on: manual gate — production must never deploy automatically
+	// (issue #183). The gate sits in executeBuild, the single chokepoint ALL
+	// automatic deploy entry points funnel through (webhook release, webhook
+	// push, debounce/requeue recovery → queue.Submit → processBuild → here).
+	// The explicit human path (ExecuteManualDeploy / server_deploy) does NOT
+	// call executeBuild, so it is never gated — that is the whole point.
+	//
+	// For compose: the build/pull + image-cache publish still run (build-once-
+	// promote lets a manual prod entry reuse the canary's published tree-hash
+	// image), then composeUp is withheld and the pending-deploy gauge is set
+	// so a released-but-never-deployed fix is visible. For binary/static the
+	// build IS the deploy (restart / deploy script) and is inseparable, so the
+	// whole automatic build is skipped — server_deploy does the full build+
+	// restart on demand.
+	//
+	// BOTH kinds must set the pending gauge. PreinitPendingDeployGauge seeds
+	// every manual repo at 0 regardless of kind, so a binary/static gate that
+	// returned without setting it would leave the series reading 0 — not
+	// "unknown" but an affirmative "nothing is waiting", while a release sat
+	// undeployed. That is the quiet failure this gate's second half exists to
+	// prevent, so it would defeat the feature exactly where nobody is looking.
+	if req.Config.DeployOn == deployOnManual {
+		slog.Info("deploy/manual-gate: automatic deploy withheld (deploy_on=manual); use server_deploy to deploy",
+			"repo", req.Repo,
+			"services", req.Config.Services,
+			"kind", req.Config.resolvedKind(),
+		)
+		if req.Config.resolvedKind() == KindCompose {
+			// Fall through to the compose build+publish path below, then gate
+			// composeUp. Binary/static kinds have no separable artifact, so
+			// they stop here.
+		} else {
+			// No artifact is built for these kinds, but the user-visible state
+			// is identical to compose: a release happened and production did
+			// not get it. server_deploy performs the full build+restart and
+			// clears this.
+			setPendingDeploy(req.Repo, req.Config.Services, 1)
+			return BuildResult{
+				Repo:        req.Repo,
+				Services:    req.Config.Services,
+				Success:     true,
+				ManualGated: true,
+			}
+		}
+	}
+
 	// Non-compose kinds bypass the Docker Compose pipeline entirely.
 	switch req.Config.resolvedKind() {
 	case KindBinary:
@@ -90,6 +136,24 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 	// silently-failing push is observable.
 	if treeHash != "" {
 		pushCachedImages(ctx, req, treeHash)
+	}
+
+	// deploy_on: manual gate (compose) — the image is built/pulled and
+	// published; withhold composeUp and record that a deployable artifact is
+	// ready. The pending-deploy gauge makes a released-but-never-deployed fix
+	// LOUD instead of silent (issue #183 half 2). composeUp + health + smoke
+	// + rollback are all skipped — none of them can bypass this gate because
+	// they live below it on the only automatic path.
+	if req.Config.DeployOn == deployOnManual {
+		setPendingDeploy(req.Repo, req.Config.Services, 1)
+		slog.Info("deploy/manual-gate: artifact ready, deploy withheld (deploy_on=manual); use server_deploy to deploy",
+			"repo", req.Repo,
+			"services", req.Config.Services,
+			"tree_hash", treeHash,
+		)
+		result.Success = true
+		result.ManualGated = true
+		return result
 	}
 
 	result.PreviousImages = snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)

@@ -244,15 +244,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		// Filter out deploy_on=release targets: those build ONLY on a
-		// GitHub release event, not on every push. Per-match (not
-		// all-or-nothing) so a monorepo with mixed targets still builds
-		// the push-based ones. If every matched target is release-only,
+		// Filter out deploy_on=release and deploy_on=manual targets: both
+		// build ONLY on a GitHub release event, not on every push (manual
+		// keeps the release trigger but gates the deploy). Per-match (not
+		// all-or-nothing) so a monorepo with mixed targets still builds the
+		// push-based ones. If every matched target is release/manual-only,
 		// respond ignored — the release event will ship them.
 		filtered := matches[:0]
 		for _, rc := range matches {
-			if rc.DeployOn == "release" {
-				slog.Info("deploy/webhook: deploy_on=release, skipping push, waiting for release event",
+			if rc.DeployOn == deployOnRelease || rc.DeployOn == deployOnManual {
+				slog.Info("deploy/webhook: deploy_on=release|manual, skipping push, waiting for release event",
 					"repo", push.Repository.FullName,
 					"branch", branch,
 				)
@@ -264,17 +265,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if len(matches) == 0 {
 			respondJSON(w, http.StatusOK, map[string]string{
 				"status": "ignored",
-				"reason": "all matched targets are deploy_on: release",
+				"reason": "all matched targets are deploy_on: release|manual",
 			})
 			return
 		}
 	} else {
 		// release event: route ONLY to targets configured with deploy_on:
-		// release. A release must never deploy a target that was not
-		// explicitly configured for releases — the previous first-match
-		// fallback (LookupBranch(repo, "")) picked a random map entry for
-		// multi-entry repos, which could dispatch the staging target instead
-		// of production while the release looked successful (issue #169).
+		// release OR deploy_on: manual (LookupReleaseTargets). A release must
+		// never deploy a target that was not explicitly configured for
+		// releases — the previous first-match fallback (LookupBranch(repo,
+		// "")) picked a random map entry for multi-entry repos, which could
+		// dispatch the staging target instead of production while the release
+		// looked successful (issue #169). A manual target is routed here too
+		// so its image is built/pulled, but the actual deploy is gated inside
+		// executeBuild (deploy_on=manual skips composeUp) — issue #183.
 		//
 		// 0 targets  → ignore (the repo has no release-triggered target);
 		// 1 target   → deploy it (deterministic);
@@ -284,7 +288,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		//              SourcePath, so the diff is resolved independently).
 		targets := h.config.LookupReleaseTargets(push.Repository.FullName)
 		if len(targets) == 0 {
-			slog.Info("deploy/webhook: release event for repo with no deploy_on: release target — ignoring",
+			slog.Info("deploy/webhook: release event for repo with no deploy_on: release|manual target — ignoring",
 				"repo", push.Repository.FullName)
 			respondJSON(w, http.StatusOK, map[string]string{
 				"status": "ignored",

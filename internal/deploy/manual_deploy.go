@@ -95,9 +95,29 @@ func defaultGitManualOriginSHARunner(ctx context.Context, dir, branch string) (s
 //	is not a trustworthy content-address for what the build actually produced.
 //	Only valid for KindCompose repos.
 //
+// ExecuteManualDeploy runs a fully synchronous manual deploy, routing through
+// the same kind-aware builders as the webhook path. It is the explicit human
+// path (server_deploy MCP tool) and is NEVER gated by deploy_on: manual — the
+// gate lives in executeBuild (the automatic webhook/queue path), which this
+// function does not call. On a successful deploy of a deploy_on: manual repo,
+// the pending-deploy gauge (dozor_pending_deploy) is cleared back to 0 — the
+// artifact that was held ready is now deployed (issue #183 half 2).
+//
 // The caller is expected to run this in a goroutine and write the log to a
 // temp file — see StartManualDeploy in internal/engine/deploy.go.
 func ExecuteManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDeployResult {
+	result := executeManualDeploy(ctx, req)
+	if result.Success && req.Config.DeployOn == deployOnManual {
+		setPendingDeploy(req.Repo, req.Config.Services, 0)
+		slog.Info("deploy/manual: pending-deploy gauge cleared (server_deploy completed)",
+			"repo", req.Repo,
+			"services", req.Config.Services,
+		)
+	}
+	return result
+}
+
+func executeManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDeployResult {
 	branch := req.Config.Branch
 	if branch == "" {
 		branch = defaultBranch
