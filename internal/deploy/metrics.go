@@ -416,14 +416,18 @@ func PreinitPendingDeployGauge(cfg *Config) {
 	}
 }
 
-// setPendingDeploy sets the dozor_pending_deploy gauge to v for each service.
-// repo is the full GitHub repo name (owner/name) as carried by
-// BuildRequest.Repo / ManualDeployRequest.Repo. The caller MUST guard on
-// deploy_on == manual — this function does not re-check, so calling it for a
-// non-manual repo would incorrectly create a series for a repo that should
-// never appear on this gauge.
+// setPendingDeploy sets the dozor_pending_deploy gauge to v for each service
+// and mirrors the state to the durable persist file (issue #188) so a
+// withheld release survives a dozor restart. repo is the full GitHub repo
+// name (owner/name) as carried by BuildRequest.Repo / ManualDeployRequest.Repo.
+// The caller MUST guard on deploy_on == manual — this function does not
+// re-check, so calling it for a non-manual repo would incorrectly create a
+// series for a repo that should never appear on this gauge.
 func setPendingDeploy(repo string, services []string, v float64) {
 	for _, svc := range services {
 		PendingDeployGauge.WithLabelValues(repo, svc).Set(v)
 	}
+	pendingDeployMu.Lock()
+	persistPendingDeployLocked(repo, services, v)
+	pendingDeployMu.Unlock()
 }

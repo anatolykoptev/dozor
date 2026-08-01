@@ -288,6 +288,16 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 	// from "the exporter is not running" (series absent) — issue #183 half 2.
 	deploy.PreinitPendingDeployGauge(cfg)
 
+	// Durable pending-deploy state (issue #188): configure persistence BEFORE
+	// queue.RecoverQueue (which may re-enqueue a gated build that calls
+	// setPendingDeploy), then restore the gauge to 1 for any repo that was
+	// pending (a release withheld) at the last shutdown. PreinitPendingDeployGauge
+	// seeded every manual repo at 0 above; this overrides the 0 for repos that
+	// were actually pending, so a withheld release survives a restart instead
+	// of silently reading "nothing pending".
+	deploy.ConfigurePendingDeployPersistence(deploy.DefaultPendingDeployPersistPath())
+	deploy.RestorePendingDeployGauge(cfg)
+
 	// Log all deploy lifecycle events to journalctl.
 	//
 	// DOZOR_DEPLOY_NOTIFY controls which deploy events reach Telegram:
