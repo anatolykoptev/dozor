@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.0](https://github.com/anatolykoptev/dozor/compare/v1.15.0...v1.16.0) (2026-08-01)
+
+
+### Added
+
+* **deploy:** add skip_if_all path filter (dual of skip_if_any) ([3c0164e](https://github.com/anatolykoptev/dozor/commit/3c0164e80c86bfa9be2dc0f61112b13e76ee9115))
+
 ## [1.15.0](https://github.com/anatolykoptev/dozor/compare/v1.14.0...v1.15.0) (2026-08-01)
 
 
