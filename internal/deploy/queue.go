@@ -45,6 +45,7 @@ type BuildResult struct {
 	Error          string
 	RolledBack     bool              // true if rollback was attempted and succeeded
 	PreviousImages map[string]string // service → image ID before compose up
+	ManualGated    bool              // true when deploy_on=manual held the deploy (artifact ready, not deployed)
 }
 
 // Queue serializes Docker builds: at most ONE build runs at a time across all
@@ -508,8 +509,14 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 	}
 
 	if result.Success {
-		q.notify(fmt.Sprintf(
-			"✅ [%s] Deployed (%s)", services, result.Duration.Round(time.Second)))
+		if result.ManualGated {
+			q.notify(fmt.Sprintf(
+				"⏸️ [%s] Deploy withheld (deploy_on: manual) — run server_deploy to deploy (%s)",
+				services, result.Duration.Round(time.Second)))
+		} else {
+			q.notify(fmt.Sprintf(
+				"✅ [%s] Deployed (%s)", services, result.Duration.Round(time.Second)))
+		}
 	} else if result.RolledBack {
 		q.notify(fmt.Sprintf(
 			"⚠️ [%s] FAILED (rolled back): %s", services, result.Error))

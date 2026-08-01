@@ -283,6 +283,11 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 		return
 	}
 
+	// Pre-initialise the pending-deploy gauge to 0 for every deploy_on: manual
+	// repo so "no pending deploy" (gauge present, value 0) is distinguishable
+	// from "the exporter is not running" (series absent) — issue #183 half 2.
+	deploy.PreinitPendingDeployGauge(cfg)
+
 	// Log all deploy lifecycle events to journalctl.
 	//
 	// DOZOR_DEPLOY_NOTIFY controls which deploy events reach Telegram:

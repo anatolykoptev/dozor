@@ -367,4 +367,63 @@ var (
 		Name: "dozor_fetch_lock_timeout_total",
 		Help: "Fetch-lock acquisition timeouts (contention), by reason. Distinct from fail-open (dozor_fetch_lock_fail_open_total).",
 	}, []string{"reason"})
+
+	// PendingDeployGauge is a per-service gauge for "a deployable artifact is
+	// ready and has not been deployed yet" — the second half of issue #183.
+	// A deploy_on: manual repo builds/pulls its image on the release event but
+	// STOPS before composeUp; this gauge is set to 1 for each of its services
+	// at that moment and returned to 0 when an explicit server_deploy
+	// (ExecuteManualDeploy) brings the containers up.
+	//
+	// Without it, a fix that is merged, released, and never deployed is
+	// invisible: every upstream gate stays green while prod runs stale. The
+	// gauge makes that state LOUD — pair it with an alert that fires when it
+	// has been 1 for longer than a threshold (the alert text must say what to
+	// run: `server_deploy` for the affected repo).
+	//
+	// Pre-initialised to 0 for every service of every deploy_on: manual repo at
+	// startup (PreinitPendingDeployGauge) so "nothing pending" and "the
+	// exporter is not running" are distinguishable — an absent series reads as
+	// healthy, which is exactly the failure mode this gauge exists to prevent.
+	// Labels:
+	//   repo    — full GitHub repo name (owner/name)
+	//   service — docker compose service name
+	PendingDeployGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dozor_pending_deploy",
+		Help: "1 when a deployable artifact is ready for a service and has not been deployed (deploy_on: manual). Pre-initialised to 0. Alert when 1 for longer than a threshold — clear by running server_deploy for the repo.",
+	}, []string{"repo", "service"})
 )
+
+// PreinitPendingDeployGauge pre-initialises dozor_pending_deploy to 0 for every
+// service of every deploy_on: manual repo in cfg. Call once at startup, after
+// LoadConfig, before serving webhooks. This makes the series EXIST at 0 so a
+// dashboard can tell "no pending deploy" (gauge present, value 0) apart from
+// "the exporter is not running / the metric vanished" (series absent) — the
+// distinction that cost a real fix in a sibling repo. Idempotent and safe to
+// call with a config that has no manual repos (no-op).
+func PreinitPendingDeployGauge(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	for key, rc := range cfg.Repos {
+		if rc.DeployOn != deployOnManual {
+			continue
+		}
+		repo := stripBranchSuffix(key)
+		for _, svc := range rc.Services {
+			PendingDeployGauge.WithLabelValues(repo, svc).Set(0)
+		}
+	}
+}
+
+// setPendingDeploy sets the dozor_pending_deploy gauge to v for each service.
+// repo is the full GitHub repo name (owner/name) as carried by
+// BuildRequest.Repo / ManualDeployRequest.Repo. The caller MUST guard on
+// deploy_on == manual — this function does not re-check, so calling it for a
+// non-manual repo would incorrectly create a series for a repo that should
+// never appear on this gauge.
+func setPendingDeploy(repo string, services []string, v float64) {
+	for _, svc := range services {
+		PendingDeployGauge.WithLabelValues(repo, svc).Set(v)
+	}
+}

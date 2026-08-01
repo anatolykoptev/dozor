@@ -48,6 +48,13 @@ const (
 	KindStatic  DeployKind = "static"  // custom deploy script (Astro / Vite / Next static export)
 )
 
+// deploy_on accepted values (see RepoConfig.DeployOn). Centralised so the
+// webhook router, drift checker, and gate share one source of truth.
+const (
+	deployOnRelease = "release"
+	deployOnManual  = "manual"
+)
+
 // RepoConfig maps a GitHub repository to its deploy strategy.
 type RepoConfig struct {
 	// Kind selects the deploy strategy. Default: "compose".
@@ -134,6 +141,17 @@ type RepoConfig struct {
 	//     on main between releases and rebuilding on every push wastes the
 	//     build host. The release-event path (webhook_release.go) handles
 	//     it exactly as any other repo — no special-casing there.
+	//   - "manual": the repo is triggered by the SAME release event as
+	//     "release" (so its webhook still needs the "release" subscription),
+	//     but on that event dozor does everything it does today EXCEPT the
+	//     deploy: it resolves the target, builds/pulls the image (build-once-
+	//     promote lets it reuse the canary's published tree-hash image), and
+	//     STOPS before bringing containers up. Deployment happens only via
+	//     the explicit server_deploy path (ExecuteManualDeploy). A pending-
+	//     deploy gauge (dozor_pending_deploy) is set per service so a
+	//     released-but-never-deployed fix is visible instead of silent. Use
+	//     for production targets that must never deploy automatically — the
+	//     inverse of the opt-out no-auto-deploy label (issue #183).
 	//
 	// Any other value is rejected at config load with an error naming the
 	// repo and the bad value.
@@ -487,8 +505,8 @@ type Config struct {
 // It is called once per repo by LoadConfig after profile resolution.
 // Mutates rc in-place to fill derived fields (Services from UserServices, etc.).
 func validateRepoConfig(repo string, rc *RepoConfig) error {
-	if rc.DeployOn != "" && rc.DeployOn != "release" {
-		return fmt.Errorf("repo %q has invalid deploy_on %q: want \"\" or \"release\"", repo, rc.DeployOn)
+	if rc.DeployOn != "" && rc.DeployOn != deployOnRelease && rc.DeployOn != deployOnManual {
+		return fmt.Errorf("repo %q has invalid deploy_on %q: want \"\", \"release\", or \"manual\"", repo, rc.DeployOn)
 	}
 	switch rc.resolvedKind() {
 	case KindBinary:
@@ -739,9 +757,9 @@ func (c *Config) LookupAll(repoFullName, branch string) []*RepoConfig {
 }
 
 // LookupReleaseTargets returns every entry configured to deploy on GitHub
-// release events (deploy_on: release) for repoFullName, in deterministic
-// (key-sorted) order via LookupAll. A release event must build ONLY these
-// targets — never a random first-match.
+// release events (deploy_on: release OR deploy_on: manual) for repoFullName,
+// in deterministic (key-sorted) order via LookupAll. A release event must
+// build ONLY these targets — never a random first-match.
 //
 // The previous LookupBranch(repo, "") fallback returned whichever map entry
 // Go's randomised iteration happened to yield first, so for a repo with both
@@ -757,7 +775,7 @@ func (c *Config) LookupAll(repoFullName, branch string) []*RepoConfig {
 func (c *Config) LookupReleaseTargets(repoFullName string) []*RepoConfig {
 	var targets []*RepoConfig
 	for _, rc := range c.LookupAll(repoFullName, "") {
-		if rc.DeployOn == "release" {
+		if rc.DeployOn == deployOnRelease || rc.DeployOn == deployOnManual {
 			targets = append(targets, rc)
 		}
 	}

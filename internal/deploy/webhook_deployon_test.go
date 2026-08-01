@@ -80,6 +80,31 @@ repos:
 	}
 }
 
+// TestLoadConfig_DeployOn_Manual_Parses verifies that deploy_on: manual
+// round-trips through YAML into RepoConfig.DeployOn == "manual" and is
+// accepted at config load (issue #183).
+func TestLoadConfig_DeployOn_Manual_Parses(t *testing.T) {
+	t.Parallel()
+
+	yamlStr := `
+repos:
+  anatolykoptev/ox-manual:
+    compose_path: /tmp
+    source_path: /tmp
+    services: [ox-manual]
+    deploy_on: manual
+`
+	path := writeYAML(t, t.TempDir(), yamlStr)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	rc := cfg.Repos["anatolykoptev/ox-manual"]
+	if rc.DeployOn != "manual" {
+		t.Errorf("DeployOn = %q, want %q", rc.DeployOn, "manual")
+	}
+}
+
 // TestHandler_DeployOnRelease_Push_Skipped verifies that a push to a repo
 // configured with deploy_on: release does NOT enqueue a build — it is held
 // for the release event. RED-on-revert: remove the push filter and this test
@@ -112,8 +137,8 @@ func TestHandler_DeployOnRelease_Push_Skipped(t *testing.T) {
 	if resp["status"] != "ignored" {
 		t.Errorf("status = %q, want ignored (deploy_on=release holds for release event)", resp["status"])
 	}
-	if resp["reason"] != "all matched targets are deploy_on: release" {
-		t.Errorf("reason = %q, want %q", resp["reason"], "all matched targets are deploy_on: release")
+	if resp["reason"] != "all matched targets are deploy_on: release|manual" {
+		t.Errorf("reason = %q, want %q", resp["reason"], "all matched targets are deploy_on: release|manual")
 	}
 	if q.queuedHas(serviceKey([]string{"ox-codes"})) {
 		t.Error("build must NOT be enqueued for deploy_on=release repo on push")
@@ -239,5 +264,80 @@ func TestHandler_DeployOn_Monorepo_Mixed_FiltersPerMatch(t *testing.T) {
 	}
 	if q.queuedHas(serviceKey([]string{"mono-release"})) {
 		t.Error("mono-release (deploy_on=release) must NOT be enqueued on push")
+	}
+}
+
+// TestHandler_DeployOnManual_Push_Skipped verifies that a push to a repo
+// configured with deploy_on: manual does NOT enqueue a build — like release,
+// manual is release-triggered, so a push must be ignored. RED-on-revert: add
+// "manual" back to the push filter's skip set incorrectly (or remove it) and
+// this test fails (build enqueued).
+func TestHandler_DeployOnManual_Push_Skipped(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/ox-manual-push": {
+				ComposePath: "/tmp",
+				SourcePath:  "/tmp",
+				Services:    []string{"ox-manual-push"},
+				DeployOn:    "manual",
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := pushPayloadWithFiles("anatolykoptev/ox-manual-push", "refs/heads/main", "abc1234567890",
+		[]string{"src/main.rs"})
+	w := postPush(h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "ignored" {
+		t.Errorf("status = %q, want ignored (deploy_on=manual holds for release event)", resp["status"])
+	}
+	if q.queuedHas(serviceKey([]string{"ox-manual-push"})) {
+		t.Error("build must NOT be enqueued for deploy_on=manual repo on push")
+	}
+}
+
+// TestHandler_DeployOnManual_ReleaseEvent_Queued verifies the release trigger
+// for manual: a release event for a deploy_on: manual repo DOES enqueue a
+// build (the gate that withholds the deploy lives in executeBuild, not here).
+// RED-on-revert: remove "manual" from LookupReleaseTargets and this test
+// fails (status=ignored, nothing enqueued).
+func TestHandler_DeployOnManual_ReleaseEvent_Queued(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Repos: map[string]RepoConfig{
+			"anatolykoptev/ox-manual-rel": {
+				ComposePath: "/tmp",
+				SourcePath:  "/tmp",
+				Services:    []string{"ox-manual-rel"},
+				DeployOn:    "manual",
+			},
+		},
+	}
+	q, _ := newTestQueue()
+	h := NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := releasePayload("anatolykoptev/ox-manual-rel", "v1.0.0", "main")
+	w := postRelease(h, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "queued" {
+		t.Errorf("status = %q, want queued (deploy_on=manual repo routes on release event)", resp["status"])
+	}
+	if !q.queuedHas(serviceKey([]string{"ox-manual-rel"})) {
+		t.Error("build must be enqueued for deploy_on=manual repo on release event")
 	}
 }

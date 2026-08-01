@@ -312,9 +312,13 @@ func (d *DriftChecker) requiredEventsByRepo() map[string][]string {
 		repoKey := stripBranchSuffix(key)
 		var need string
 		switch rc.DeployOn {
-		case eventRelease:
+		case eventRelease, deployOnManual:
+			// "release" and "manual" are both triggered by the GitHub
+			// "release published" event (manual gates the deploy but keeps
+			// the release trigger), so both require the release webhook
+			// subscription. Neither requires "push".
 			need = eventRelease
-		default: // "" or any other value (validated at load to be "" or "release")
+		default: // "" (validated at load to be "", "release", or "manual")
 			need = eventPush
 		}
 		result[repoKey] = appendUnique(result[repoKey], need)
