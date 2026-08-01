@@ -414,8 +414,16 @@ func TestFetchLock_ProductionSitesBlockOnHeldLock(t *testing.T) {
 			}
 			// Must have actually blocked ~the lock timeout, not returned
 			// immediately — proving it waited on the held lock rather than
-			// proceeding. With the wrapper removed (falsification), the git
-			// command succeeds in well under this threshold.
+			// proceeding.
+			//
+			// This elapsed-time guard is what catches an amputated wrapper for
+			// gitPrepare and gitManualFetchRunner, whose fetches succeed in
+			// milliseconds without the lock. It does NOT carry the
+			// defaultGitRefFFRunner case: unlocked, that self-fetch fails fast
+			// with "refusing to fetch into branch 'refs/heads/main' checked out
+			// at ..." rather than succeeding, so there it is the
+			// errors.Is(ErrFetchLock) assertion above that goes red. Both cases
+			// are gated — just by different assertions.
 			if elapsed < 150*time.Millisecond {
 				t.Errorf("%s: returned in %v — expected to block ~%v on the held lock (proceeded without the lock?)",
 					tc.name, elapsed, fetchLockTimeout)

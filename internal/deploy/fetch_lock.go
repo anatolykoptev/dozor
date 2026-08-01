@@ -35,7 +35,10 @@ var ErrFetchLock = errors.New("fetch lock acquisition failed")
 //
 // It is a var (not a const) so the own-deadline branch of acquireFetchLockInternal
 // can be exercised in tests without a 5-minute wait; production code never
-// mutates it. Note: source_sync's two call sites (defaultGitRefFFRunner and
+// mutates it. Tests that shorten it MUST NOT call t.Parallel(): this is a plain
+// package global with no synchronisation, so a parallel test would race every
+// other test in the package that takes the lock, and the symptom would surface
+// as a rare load-dependent failure somewhere unrelated. Note: source_sync's two call sites (defaultGitRefFFRunner and
 // the up-front gitFetchRunner) run under a 60s sourceSyncTimeout, so this
 // 5-minute ceiling never applies there — the caller's deadline always wins.
 // The 5-minute ceiling is real for the other three sites (gitPrepare's two
