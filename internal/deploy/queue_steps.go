@@ -29,7 +29,9 @@ func gitPrepare(ctx context.Context, sourcePath, commitSHA string) (worktreePath
 	if sourcePath == "" {
 		return "", "", noop, ""
 	}
-	if err := runCmd(ctx, sourcePath, "git", "fetch", "origin"); err != nil {
+	if err := withFetchLock(ctx, sourcePath, func() error {
+		return runCmd(ctx, sourcePath, "git", "fetch", "origin")
+	}); err != nil {
 		return "", "", noop, fmt.Sprintf("git fetch: %v", err)
 	}
 
@@ -44,7 +46,9 @@ func gitPrepare(ctx context.Context, sourcePath, commitSHA string) (worktreePath
 		// If the server rejects fetch-by-SHA, fall through to the resolvability
 		// guard below — it fails fast with a clear error instead of the opaque
 		// "fatal: invalid reference" from git worktree add.
-		if err := runCmd(ctx, sourcePath, "git", "fetch", "origin", commitSHA); err != nil {
+		if err := withFetchLock(ctx, sourcePath, func() error {
+			return runCmd(ctx, sourcePath, "git", "fetch", "origin", commitSHA)
+		}); err != nil {
 			slog.Warn("deploy: targeted SHA fetch failed; relying on generic fetch + resolvability guard",
 				"sha", commitSHA, "error", err)
 		}

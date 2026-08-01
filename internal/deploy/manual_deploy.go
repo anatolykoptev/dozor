@@ -35,7 +35,9 @@ type ManualDeployResult struct {
 // gitManualFetchRunner wraps the git fetch step for the manual path.
 // Seam for unit tests — defaults to the shared runCmd runner.
 var gitManualFetchRunner = func(ctx context.Context, sourcePath, branch string) error {
-	return runCmd(ctx, sourcePath, "git", "fetch", "origin", branch, "--no-tags", "--quiet")
+	return withFetchLock(ctx, sourcePath, func() error {
+		return runCmd(ctx, sourcePath, "git", "fetch", "origin", branch, "--no-tags", "--quiet")
+	})
 }
 
 // gitManualCurrentBranchRunner returns the source clone's checked-out branch.

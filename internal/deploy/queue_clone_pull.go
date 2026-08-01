@@ -38,13 +38,15 @@ var gitFetchRunner = defaultGitFetchRunner
 
 //nolint:unused // DI default seam — assigned to var gitFetchRunner, swapped in tests
 func defaultGitFetchRunner(ctx context.Context, clonePath, branch string) error {
-	cmd := exec.CommandContext(ctx, "git", "fetch", "origin", branch, "--no-tags", "--quiet") //nolint:gosec // trusted config
-	cmd.Dir = clonePath
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%w: %s", err, truncate(string(out), maxOutputLen))
-	}
-	return nil
+	return withFetchLock(ctx, clonePath, func() error {
+		cmd := exec.CommandContext(ctx, "git", "fetch", "origin", branch, "--no-tags", "--quiet") //nolint:gosec // trusted config
+		cmd.Dir = clonePath
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, truncate(string(out), maxOutputLen))
+		}
+		return nil
+	})
 }
 
 // gitCurrentBranchRunner returns the clone's current branch (rev-parse --abbrev-ref HEAD).
