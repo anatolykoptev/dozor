@@ -310,3 +310,54 @@ func TestExecuteBuild_ManualGate_NonManualRepo_Deploys(t *testing.T) {
 		t.Errorf("gauge for release repo = %q, want anchored 0 (untouched)", line)
 	}
 }
+
+// TestExecuteBuild_ManualGate_Binary_SetsPendingGauge — the binary/static gate
+// returns early without building anything, but the user-visible state is the
+// same as compose: a release happened and production did not get it. The gauge
+// must therefore move 0→1 here too.
+//
+// This is not symmetry for its own sake. PreinitPendingDeployGauge seeds every
+// manual repo at 0 regardless of kind, so a binary gate that skipped the signal
+// would leave the series reading a confident 0 — "nothing is waiting" — while a
+// release sat undeployed. An absent series reads as unknown; a stale 0 reads as
+// healthy, which is worse and is exactly the quiet failure half 2 exists to
+// prevent.
+func TestExecuteBuild_ManualGate_Binary_SetsPendingGauge(t *testing.T) {
+	withCmdRunner(t, func(_ context.Context, _ string, _ string, _ ...string) error {
+		t.Error("no build command must run for a binary manual repo")
+		return nil
+	})
+	withSystemctlRunnerManual(t, func(_ context.Context, _ ...string) ([]byte, error) {
+		t.Error("systemctl restart is the deploy — must not run")
+		return []byte("active\n"), nil
+	})
+	const repo = "test/gauge-binary"
+	const svc = "gauge-binary-svc"
+	PendingDeployGauge.WithLabelValues(repo, svc).Set(0)
+	if line := findPendingLine(t, repo, svc); !regexp.MustCompile(
+		`^dozor_pending_deploy\{repo="test/gauge-binary",service="gauge-binary-svc"\} 0$`).MatchString(line) {
+		t.Fatalf("pre-init line = %q, want anchored 0", line)
+	}
+	ctx := context.Background()
+	q := NewQueue(ctx, func(string) {})
+	defer q.Close()
+	req := BuildRequest{
+		Repo: repo,
+		Config: RepoConfig{
+			Kind:         KindBinary,
+			SourcePath:   "/fake/source",
+			BuildCmd:     []string{"go", "build", "-o", "/tmp/x", "./cmd/x"},
+			UserServices: []string{svc},
+			Services:     []string{svc},
+			DeployOn:     "manual",
+		},
+	}
+	result := q.executeBuild(ctx, req)
+	if !result.Success || !result.ManualGated {
+		t.Fatalf("expected manual-gated success, got %+v", result)
+	}
+	line := findPendingLine(t, repo, svc)
+	if !regexp.MustCompile(`^dozor_pending_deploy\{repo="test/gauge-binary",service="gauge-binary-svc"\} 1$`).MatchString(line) {
+		t.Fatalf("post-build line = %q, want anchored 1 (a withheld binary release must be visible)", line)
+	}
+}

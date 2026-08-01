@@ -66,6 +66,13 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 	// build IS the deploy (restart / deploy script) and is inseparable, so the
 	// whole automatic build is skipped — server_deploy does the full build+
 	// restart on demand.
+	//
+	// BOTH kinds must set the pending gauge. PreinitPendingDeployGauge seeds
+	// every manual repo at 0 regardless of kind, so a binary/static gate that
+	// returned without setting it would leave the series reading 0 — not
+	// "unknown" but an affirmative "nothing is waiting", while a release sat
+	// undeployed. That is the quiet failure this gate's second half exists to
+	// prevent, so it would defeat the feature exactly where nobody is looking.
 	if req.Config.DeployOn == deployOnManual {
 		slog.Info("deploy/manual-gate: automatic deploy withheld (deploy_on=manual); use server_deploy to deploy",
 			"repo", req.Repo,
@@ -77,6 +84,11 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 			// composeUp. Binary/static kinds have no separable artifact, so
 			// they stop here.
 		} else {
+			// No artifact is built for these kinds, but the user-visible state
+			// is identical to compose: a release happened and production did
+			// not get it. server_deploy performs the full build+restart and
+			// clears this.
+			setPendingDeploy(req.Repo, req.Config.Services, 1)
 			return BuildResult{
 				Repo:        req.Repo,
 				Services:    req.Config.Services,
