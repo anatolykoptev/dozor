@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -359,5 +360,84 @@ func TestExecuteBuild_ManualGate_Binary_SetsPendingGauge(t *testing.T) {
 	line := findPendingLine(t, repo, svc)
 	if !regexp.MustCompile(`^dozor_pending_deploy\{repo="test/gauge-binary",service="gauge-binary-svc"\} 1$`).MatchString(line) {
 		t.Fatalf("post-build line = %q, want anchored 1 (a withheld binary release must be visible)", line)
+	}
+}
+
+// TestPendingDeployGauge_SurvivesRestart — THE load-bearing test for issue
+// #188: a withheld release (gauge=1) must survive a dozor restart. Simulates
+// a restart by: (1) setting the gauge to 1 via the real setPendingDeploy
+// path (which persists), (2) resetting to 0 via PreinitPendingDeployGauge
+// (as a fresh boot would), (3) calling RestorePendingDeployGauge, (4)
+// asserting the gauge reads 1 again from the EXPORTED metric text.
+//
+// RED-on-revert: remove the persist call from setPendingDeploy, or remove
+// RestorePendingDeployGauge — the gauge stays at 0 after the "restart" and
+// the phase-3 assertion fails.
+func TestPendingDeployGauge_SurvivesRestart(t *testing.T) {
+	const repo = "test/survives-restart"
+	const svc = "survive-svc"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deploy-pending.json")
+	ConfigurePendingDeployPersistence(path)
+	defer ConfigurePendingDeployPersistence("")
+
+	// Phase 1: a release is withheld → gate sets gauge to 1 (and persists).
+	PendingDeployGauge.WithLabelValues(repo, svc).Set(0) // preinit
+	setPendingDeploy(repo, []string{svc}, 1)
+	if line := findPendingLine(t, repo, svc); !regexp.MustCompile(
+		`^dozor_pending_deploy\{repo="test/survives-restart",service="survive-svc"\} 1$`).MatchString(line) {
+		t.Fatalf("phase 1 line = %q, want anchored 1", line)
+	}
+
+	// Phase 2: simulate a restart — preinit resets to 0 (fresh boot).
+	PreinitPendingDeployGauge(&Config{
+		Repos: map[string]RepoConfig{
+			repo + "#prod": {Services: []string{svc}, DeployOn: "manual"},
+		},
+	})
+	if line := findPendingLine(t, repo, svc); !regexp.MustCompile(
+		`^dozor_pending_deploy\{repo="test/survives-restart",service="survive-svc"\} 0$`).MatchString(line) {
+		t.Fatalf("phase 2 (post-preinit) line = %q, want anchored 0", line)
+	}
+
+	// Phase 3: restore reads the persisted file and sets gauge back to 1.
+	RestorePendingDeployGauge()
+	line := findPendingLine(t, repo, svc)
+	if !regexp.MustCompile(`^dozor_pending_deploy\{repo="test/survives-restart",service="survive-svc"\} 1$`).MatchString(line) {
+		t.Fatalf("phase 3 (post-restore) line = %q, want anchored 1 (withheld state must survive restart)", line)
+	}
+}
+
+// TestPendingDeployGauge_DeployClearsPersistedState — stale-case test for
+// direction 1 (persistence): when a manual deploy clears the gauge to 0
+// (ExecuteManualDeploy → setPendingDeploy 0), the persisted state must also
+// be cleared so a subsequent restart does not restore a stale 1. This is
+// the mechanism that prevents staleness when the deploy goes through dozor.
+func TestPendingDeployGauge_DeployClearsPersistedState(t *testing.T) {
+	const repo = "test/stale-clear"
+	const svc = "stale-svc"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deploy-pending.json")
+	ConfigurePendingDeployPersistence(path)
+	defer ConfigurePendingDeployPersistence("")
+
+	// A release was withheld → gauge=1, file has the entry.
+	setPendingDeploy(repo, []string{svc}, 1)
+
+	// A manual deploy clears the gauge → file entry removed.
+	setPendingDeploy(repo, []string{svc}, 0)
+
+	// Simulate a restart: preinit + restore.
+	PreinitPendingDeployGauge(&Config{
+		Repos: map[string]RepoConfig{
+			repo + "#prod": {Services: []string{svc}, DeployOn: "manual"},
+		},
+	})
+	RestorePendingDeployGauge()
+	line := findPendingLine(t, repo, svc)
+	if !regexp.MustCompile(`^dozor_pending_deploy\{repo="test/stale-clear",service="stale-svc"\} 0$`).MatchString(line) {
+		t.Fatalf("post-restore line = %q, want anchored 0 (deploy cleared persisted state)", line)
 	}
 }

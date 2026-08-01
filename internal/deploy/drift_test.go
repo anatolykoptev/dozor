@@ -151,6 +151,18 @@ func TestCheckWebhookEvents_MissingEvent_Drift(t *testing.T) {
 			hooks:       []githubHook{hook("https://dozor.example.com/deploy/github", "release")},
 			wantMissing: "push",
 		},
+		{
+			// manual repos need the release event (the gate withholds the
+			// deploy, not the trigger), so a push-only webhook is drift —
+			// issue #188 coverage gap: the code was correct
+			// (requiredEventsByRepo maps manual → eventRelease) but had no
+			// test covering this exact case.
+			name:        "manual_repo_webhook_has_push_only",
+			repoKey:     "test/drift-manual-needs-release",
+			rc:          rc("manual", "svc"),
+			hooks:       []githubHook{hook("https://dozor.example.com/deploy/github", "push")},
+			wantMissing: "release",
+		},
 	}
 
 	for _, tc := range tests {
