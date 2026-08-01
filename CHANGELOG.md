@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.14.0](https://github.com/anatolykoptev/dozor/compare/v1.13.1...v1.14.0) (2026-08-01)
+
+
+### Added
+
+* **deploy:** add skip_if_any path filter for web-only deploy lanes ([4d4bf93](https://github.com/anatolykoptev/dozor/commit/4d4bf9360fb2522c4eebb5ad595bf2f93420d92c))
+* **deploy:** BuildArgs + PreBuildScript for web artifact reuse ([5ec55b3](https://github.com/anatolykoptev/dozor/commit/5ec55b39af621794fbde5fd2cd29ed6fc1fa95d4))
+* **deploy:** lane separation — dozor heavy builds on slot 2 ([ab89a86](https://github.com/anatolykoptev/dozor/commit/ab89a8615d54b81efcde28e03e94ea5d5f49fe0d))
+
+
+### Fixed
+
+* **deploy:** review fixes — metrics doc + SkipIfAny edge case test ([b250904](https://github.com/anatolykoptev/dozor/commit/b25090488074d70b5397416b839792101c843f86))
+* **deploy:** select release targets by deploy_on instead of map order ([#170](https://github.com/anatolykoptev/dozor/issues/170)) ([d878136](https://github.com/anatolykoptev/dozor/commit/d87813648c153fdd8cc76efd842686bc29cce2b2))
+* **deploy:** serialise git fetch per clone so co-triggered lanes stop losing deploys ([#185](https://github.com/anatolykoptev/dozor/issues/185)) ([81d0547](https://github.com/anatolykoptev/dozor/commit/81d0547012d2d4a6efecaff96697b7acbbcb5e1f))
+
 ## [1.13.1](https://github.com/anatolykoptev/dozor/compare/v1.13.0...v1.13.1) (2026-07-25)
 
 
