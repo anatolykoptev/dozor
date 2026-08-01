@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -499,5 +500,75 @@ func TestRestorePendingDeployGauge_DropsEntriesNoLongerManual(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "still-manual") {
 		t.Fatalf("live entry lost during reconciliation: %s", raw)
+	}
+}
+
+// TestReconcilePendingState — the pure reconciliation rule, tested directly
+// rather than only through the restore path. It decides what survives a
+// restart, and both directions of getting it wrong are silent: keep too much
+// and a dead entry pins the gauge at 1 with no clearer left; keep too little
+// and a genuinely withheld release disappears, which is the original bug.
+func TestReconcilePendingState(t *testing.T) {
+	allowed := map[string]map[string]bool{
+		"o/live": {"a": true, "b": true},
+	}
+	doc := pendingDeployFile{Pending: map[string][]string{
+		"o/live": {"a", "gone-svc"}, // one live service, one renamed away
+		"o/dead": {"x"},             // repo no longer manual
+	}}
+
+	kept, dropped := reconcilePendingState(doc, allowed)
+
+	if got := kept["o/live"]; len(got) != 1 || got[0] != "a" {
+		t.Errorf("kept[o/live] = %v, want [a] (only the still-configured service)", got)
+	}
+	if _, ok := kept["o/dead"]; ok {
+		t.Error("o/dead must not be kept: no clearer exists for a non-manual repo")
+	}
+	sort.Strings(dropped)
+	want := []string{"o/dead svc=x", "o/live svc=gone-svc"}
+	if !reflect.DeepEqual(dropped, want) {
+		t.Errorf("dropped = %v, want %v", dropped, want)
+	}
+}
+
+// TestReconcilePendingState_EmptyAllowedDropsAll documents the consequence of an
+// empty allowed-set, which is why RestorePendingDeployGauge refuses to run with
+// a nil config rather than calling this with nothing.
+func TestReconcilePendingState_EmptyAllowedDropsAll(t *testing.T) {
+	doc := pendingDeployFile{Pending: map[string][]string{"o/r": {"s"}}}
+	kept, dropped := reconcilePendingState(doc, map[string]map[string]bool{})
+	if len(kept) != 0 {
+		t.Errorf("kept = %v, want empty", kept)
+	}
+	if len(dropped) != 1 {
+		t.Errorf("dropped = %v, want exactly one entry", dropped)
+	}
+}
+
+// TestRestorePendingDeployGauge_NilConfigLeavesStateIntact — a nil config must
+// be a no-op, never a wipe. manualServiceSet(nil) is empty, so without the
+// guard every entry would be dropped and the file rewritten empty, destroying
+// exactly the state this feature exists to preserve.
+func TestRestorePendingDeployGauge_NilConfigLeavesStateIntact(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deploy-pending.json")
+	ConfigurePendingDeployPersistence(path)
+	t.Cleanup(func() { ConfigurePendingDeployPersistence("") })
+
+	if err := writeJSONAtomic(path, pendingDeployFile{
+		Pending: map[string][]string{"test/nil-guard": {"svc"}},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	RestorePendingDeployGauge(nil)
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !strings.Contains(string(raw), "nil-guard") {
+		t.Fatalf("nil config wiped the persisted state: %s", raw)
 	}
 }

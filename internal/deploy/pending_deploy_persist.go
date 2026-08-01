@@ -184,7 +184,9 @@ func reconcilePendingState(doc pendingDeployFile, allowed map[string]map[string]
 				live = append(live, svc)
 				continue
 			}
-			dropped = append(dropped, repo+"/"+svc)
+			// repo already contains a slash (owner/name); a third field with
+			// the same separator reads as a path and hides where svc starts.
+			dropped = append(dropped, repo+" svc="+svc)
 		}
 		if len(live) > 0 {
 			kept[repo] = live
@@ -209,6 +211,17 @@ func RestorePendingDeployGauge(cfg *Config) {
 	}
 	doc := readPendingDeployFile()
 	if len(doc.Pending) == 0 {
+		return
+	}
+	// A nil config would make manualServiceSet return an empty set, so every
+	// entry would be dropped and the file wiped. That is unreachable today
+	// (registerDeployWebhook returns early when LoadConfig fails), but the
+	// sibling PreinitPendingDeployGauge treats nil as a no-op, and the two
+	// must not disagree about what nil means when one of them is destructive.
+	// Keep the state; a later boot with a real config reconciles it.
+	if cfg == nil {
+		slog.Warn("deploy: pending-deploy restore skipped, no config; state left intact",
+			"path", pendingDeployPersistPath)
 		return
 	}
 
