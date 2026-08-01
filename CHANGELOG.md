@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.15.0](https://github.com/anatolykoptev/dozor/compare/v1.14.0...v1.15.0) (2026-08-01)
+
+
+### Added
+
+* **deploy:** deploy_on: manual so production never deploys automatically ([#187](https://github.com/anatolykoptev/dozor/issues/187)) ([ea85e1e](https://github.com/anatolykoptev/dozor/commit/ea85e1ef5ad4b6a550033a222ef8cbddfcc1a3de))
+
+
+### Fixed
+
+* **deploy:** persist the pending-deploy gauge so a withheld release survives a restart ([#190](https://github.com/anatolykoptev/dozor/issues/190)) ([deaee44](https://github.com/anatolykoptev/dozor/commit/deaee446be8fb9f46e4a6b9bf316f1f9029e0f31))
+
 ## [1.14.0](https://github.com/anatolykoptev/dozor/compare/v1.13.1...v1.14.0) (2026-08-01)
 
 
