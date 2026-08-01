@@ -77,9 +77,14 @@ var gitRefFFRunner = defaultGitRefFFRunner
 //nolint:unused // DI default seam — assigned to var gitRefFFRunner, swapped in tests
 func defaultGitRefFFRunner(ctx context.Context, sourcePath, branch string) (string, error) {
 	refspec := fmt.Sprintf("origin/%s:%s", branch, branch)
-	cmd := exec.CommandContext(ctx, "git", "fetch", ".", refspec) //nolint:gosec // trusted config
-	cmd.Dir = sourcePath
-	out, err := cmd.CombinedOutput()
+	var out []byte
+	err := withFetchLock(ctx, sourcePath, func() error {
+		cmd := exec.CommandContext(ctx, "git", "fetch", ".", refspec) //nolint:gosec // trusted config
+		cmd.Dir = sourcePath
+		var err error
+		out, err = cmd.CombinedOutput()
+		return err
+	})
 	if err != nil {
 		return string(out), fmt.Errorf("%w: %s", err, truncate(string(out), maxOutputLen))
 	}
