@@ -210,9 +210,9 @@ func TestHandler_PathFilter_SkipIfAny_VetoWithEmptyBuildPaths(t *testing.T) {
 		Repos: map[string]RepoConfig{
 			"anatolykoptev/memdb": {
 				ComposePath: "/tmp", SourcePath: "/tmp",
-				Services:    []string{"memdb-go"},
-				BuildPaths:  nil, // empty allowlist
-				SkipIfAny:   []string{"crates/**"},
+				Services:   []string{"memdb-go"},
+				BuildPaths: nil, // empty allowlist
+				SkipIfAny:  []string{"crates/**"},
 			},
 		},
 	}
