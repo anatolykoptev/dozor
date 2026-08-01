@@ -37,6 +37,21 @@ func MatchAny(paths, patterns []string) bool {
 	return false
 }
 
+// MatchAll returns true if every element of paths matches at least one
+// pattern. It is the dual of MatchAny: MatchAny is "∃ path ∈ paths that
+// matches", MatchAll is "∀ path ∈ paths, matches". An empty paths slice
+// yields true (vacuous truth) — callers must guard against that case if an
+// empty set should NOT be treated as "all match" (skipByPathFilter does so by
+// returning "only_skip_paths" before reaching the SkipIfAll check).
+func MatchAll(paths, patterns []string) bool {
+	for _, p := range paths {
+		if !MatchPath(p, patterns) {
+			return false
+		}
+	}
+	return true
+}
+
 // matchGlob is a backtracking matcher for the subset of glob described above.
 func matchGlob(pattern, name string) bool {
 	// Fast path: no wildcards.

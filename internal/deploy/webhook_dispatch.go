@@ -37,15 +37,16 @@ func (p pushEvent) changedFiles() []string {
 }
 
 // skipByPathFilter reports whether this push should be skipped due to the
-// BuildPaths whitelist, SkipPaths deny-list, or SkipIfAny hard veto. Returns
-// (true, reason) when the push should be skipped, or (false, "") when it
-// should proceed to build. Skip reasons:
-//   - "skip_if_any":     a changed file matched SkipIfAny (hard veto).
-//   - "only_skip_paths": all changed files matched SkipPaths.
+// BuildPaths whitelist, SkipPaths deny-list, SkipIfAny hard veto, or SkipIfAll
+// pure-kind filter. Returns (true, reason) when the push should be skipped, or
+// (false, "") when it should proceed to build. Skip reasons:
+//   - "skip_if_any":       a changed file matched SkipIfAny (hard veto).
+//   - "only_skip_paths":   all changed files matched SkipPaths.
+//   - "skip_if_all":       every build-relevant file matched SkipIfAll.
 //   - "no_relevant_paths": no remaining file matched BuildPaths.
 //
 // Returns (false, "") (proceed to build) when:
-//   - BuildPaths and SkipIfAny are both empty (feature disabled)
+//   - BuildPaths, SkipIfAny, and SkipIfAll are all empty (feature disabled)
 //   - the push has no per-commit file list (force push / oversize)
 //   - at least one non-skip changed file matches the whitelist
 //
@@ -56,11 +57,18 @@ func (p pushEvent) changedFiles() []string {
 //     (skip-list wins on overlap). Operator intent: "even if Cargo.toml
 //     matches build_paths, ignore changes under target/**".
 //  2. If nothing remains → skip{reason="only_skip_paths"}.
-//  3. Else if remaining files don't match BuildPaths → skip{reason="no_relevant_paths"}.
+//  3. SkipIfAll — if EVERY remaining file matches SkipIfAll, skip. This is
+//     the dual of SkipIfAny: it fires only when the push is ENTIRELY of the
+//     matched kind, so a mixed push (web/** + crates/**) does NOT skip.
+//     Evaluated on the post-SkipPaths set so a push of web/foo.ts + README.md
+//     (where *.md is a skip path) counts as pure-web and skips. An empty
+//     remaining set already returned at step 2, so vacuous truth is
+//     impossible by construction.
+//  4. Else if remaining files don't match BuildPaths → skip{reason="no_relevant_paths"}.
 //
 // On skip, increments dozor_deploy_skipped_total{reason=<above>}.
 func (h *Handler) skipByPathFilter(push pushEvent, rc *RepoConfig) (bool, string) {
-	if len(rc.BuildPaths) == 0 && len(rc.SkipIfAny) == 0 {
+	if len(rc.BuildPaths) == 0 && len(rc.SkipIfAny) == 0 && len(rc.SkipIfAll) == 0 {
 		return false, ""
 	}
 	changed := push.changedFiles()
@@ -83,7 +91,9 @@ func (h *Handler) skipByPathFilter(push pushEvent, rc *RepoConfig) (bool, string
 		}
 	}
 
-	if len(rc.BuildPaths) == 0 {
+	// If neither BuildPaths nor SkipIfAll is set, SkipIfAny (checked above)
+	// was the only filter and it did not fire — nothing else to do.
+	if len(rc.BuildPaths) == 0 && len(rc.SkipIfAll) == 0 {
 		return false, ""
 	}
 
@@ -101,6 +111,23 @@ func (h *Handler) skipByPathFilter(push pushEvent, rc *RepoConfig) (bool, string
 			}
 			return true, "only_skip_paths"
 		}
+	}
+
+	// SkipIfAll: skip when EVERY relevant file matches at least one glob.
+	// The dual of SkipIfAny — fires only on a pure-kind push. `relevant` is
+	// non-empty here (an empty set returned at the only_skip_paths step
+	// above), so vacuous truth cannot occur.
+	if len(rc.SkipIfAll) > 0 {
+		if MatchAll(relevant, rc.SkipIfAll) {
+			for _, svc := range rc.Services {
+				SkippedTotal.WithLabelValues(push.Repository.FullName, svc, "skip_if_all").Inc()
+			}
+			return true, "skip_if_all"
+		}
+	}
+
+	if len(rc.BuildPaths) == 0 {
+		return false, ""
 	}
 
 	if MatchAny(relevant, rc.BuildPaths) {

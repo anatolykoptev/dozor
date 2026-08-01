@@ -132,6 +132,32 @@ type RepoConfig struct {
 	// Empty (the default) preserves backward-compat: no hard veto.
 	SkipIfAny []string `yaml:"skip_if_any,omitempty"`
 
+	// SkipIfAll is the exact dual of SkipIfAny: it skips this entry when
+	// EVERY build-relevant changed file matches at least one of the given
+	// globs. Where SkipIfAny is a hard veto (one matching file aborts),
+	// SkipIfAll fires only when the push is ENTIRELY of the matched kind —
+	// a mixed push (e.g. web/** + crates/**) does NOT skip, so the heavy
+	// full lane still runs on a real Rust change.
+	//
+	// Use case (the gap this closes): a repo with a heavy full lane and a
+	// fast web-only lane whose build_paths is a strict subset of the full
+	// lane's. skip_if_any cannot separate them — putting web/** in the full
+	// lane's skip_if_any would veto on a mixed push too, dropping the Rust
+	// build. skip_if_all=[web/**] on the full lane skips it ONLY when the
+	// push is purely web, letting the web lane run alone.
+	//
+	// Evaluation order: SkipIfAny hard veto (1) → subtract SkipPaths (2) →
+	// SkipIfAll on the REMAINING set (3) → BuildPaths check (4). Step 3 runs
+	// on the post-SkipPaths set, not the raw changed set, so a push of
+	// web/foo.ts + README.md (where *.md is a skip path) counts as a pure-
+	// web push and skips. An empty remaining set already returned at step 2
+	// ("only_skip_paths"), so vacuous truth ("all match" on an empty set) is
+	// impossible by construction.
+	//
+	// Skip reason: "skip_if_all". Empty (the default) preserves backward-
+	// compat: the filter is a no-op.
+	SkipIfAll []string `yaml:"skip_if_all,omitempty"`
+
 	// DeployOn gates which GitHub event triggers a build for this repo.
 	//   - "" (default): every push to the configured branch builds — the
 	//     original push-based behaviour, unchanged.
