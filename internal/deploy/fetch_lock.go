@@ -93,16 +93,12 @@ func resolveGitCommonDir(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve absolute path: %w", err)
 	}
-	// Resolve symlinks BEFORE computing the lock path: filepath.Abs does not
-	// follow them, so two symlink paths to one clone would produce two
-	// different lock-file paths and silently not contend — a failure of the
-	// whole mechanism. On resolution failure, return an error; the caller
-	// (acquireFetchLockInternal) fail-opens, preserving the existing behaviour.
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
-	} else {
-		return "", fmt.Errorf("resolve symlinks in %s: %w", abs, err)
-	}
+	// Symlinks are deliberately NOT resolved here. flock(2) keys on the inode,
+	// and the kernel resolves symlinks when the lock file is opened, so two
+	// different path spellings of one clone already contend — verified by
+	// TestFetchLock_SymlinkedPathSharesLock, which still passes with any
+	// canonicalisation removed. Calling filepath.EvalSymlinks would add a
+	// syscall and a new fail-open branch to fix a race that does not exist.
 	gitPath := filepath.Join(abs, ".git")
 	info, err := os.Stat(gitPath)
 	if err != nil {

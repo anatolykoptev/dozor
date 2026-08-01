@@ -295,26 +295,18 @@ func TestFetchLock_SymlinkedPathSharesLock(t *testing.T) {
 		t.Skipf("cannot create symlink (platform does not support it?): %v", err)
 	}
 
-	// resolveGitCommonDir must resolve the symlink to the SAME .git as the real
-	// path — otherwise the two produce different lock files and do not contend.
-	realDir, err := resolveGitCommonDir(clone)
-	if err != nil {
-		t.Fatalf("resolveGitCommonDir(real): %v", err)
-	}
-	linkDir2, err := resolveGitCommonDir(link)
-	if err != nil {
-		t.Fatalf("resolveGitCommonDir(symlink): %v", err)
-	}
-	if realDir != linkDir2 {
-		t.Fatalf("symlink not resolved: real=%q symlink=%q (would produce different lock files — no contention)",
-			realDir, linkDir2)
-	}
-
-	// Hold the lock via the symlink; the real path must contend (same lock file).
+	// Assert the PROPERTY (the two spellings contend), not the path strings
+	// resolveGitCommonDir happens to return. The lock paths may legitimately
+	// differ as text: flock(2) keys on the inode, and the kernel resolves the
+	// symlink when the lock file is opened, so both spellings land on one file.
+	// A string comparison here would pin the implementation instead - it goes
+	// red when canonicalisation is removed even though contention still works.
+	//
+	// Hold the lock via the symlink; the real path must contend.
 	release := holdFetchLock(t, link)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	err = withFetchLock(ctx, clone, func() error {
+	err := withFetchLock(ctx, clone, func() error {
 		t.Error("fn must not be called when the lock is held via a symlinked path")
 		return nil
 	})
