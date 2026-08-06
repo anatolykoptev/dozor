@@ -367,7 +367,8 @@ func TestComposeBuild_InjectsBuildArgs_NoWorktree(t *testing.T) {
 }
 
 // TestComposeBuild_ExtraBuildArgs_SHAPlaceholder verifies that per-repo
-// BuildArgs are injected with ${SHA} substituted to the 12-char short SHA.
+// BuildArgs are injected with ${SHA} substituted to the 12-char artifact tag
+// derived from the FULL 40-char commit SHA via artifactTagSHA.
 func TestComposeBuild_ExtraBuildArgs_SHAPlaceholder(t *testing.T) {
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
 	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
@@ -390,7 +391,7 @@ func TestComposeBuild_ExtraBuildArgs_SHAPlaceholder(t *testing.T) {
 
 	req := BuildRequest{
 		Repo:      "test/repo",
-		CommitSHA: "abc1234567890abcdef", // 18 chars → ${SHA} = "abc123456789"
+		CommitSHA: "9e57d2974426b7e070cb0deadbeefcafe1234567", // 40 chars → ${SHA} = "9e57d2974426"
 		Config: RepoConfig{
 			ComposePath: "/fake/compose",
 			SourcePath:  "/fake/source",
@@ -407,8 +408,8 @@ func TestComposeBuild_ExtraBuildArgs_SHAPlaceholder(t *testing.T) {
 	}
 
 	args := strings.Join(capturedArgs, " ")
-	// ${SHA} must be substituted with the 12-char short SHA.
-	want := "--build-arg WEB_ARTIFACT_IMAGE=oxpulse-chat-web:prod-abc123456789"
+	// ${SHA} must be substituted with the 12-char artifact tag from the full SHA.
+	want := "--build-arg WEB_ARTIFACT_IMAGE=oxpulse-chat-web:prod-9e57d2974426"
 	if !strings.Contains(args, want) {
 		t.Errorf("missing substituted build-arg; want %q in args: %s", want, args)
 	}

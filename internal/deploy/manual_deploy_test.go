@@ -49,6 +49,14 @@ func withOriginSHARunner(t *testing.T, fn func(context.Context, string, string) 
 	t.Cleanup(func() { gitManualOriginSHARunner = orig })
 }
 
+// withFullSHARunnerManual stubs gitFullSHARunner for the duration of the test.
+func withFullSHARunnerManual(t *testing.T, fn func(context.Context, string) (string, error)) {
+	t.Helper()
+	orig := gitFullSHARunner
+	gitFullSHARunner = fn
+	t.Cleanup(func() { gitFullSHARunner = orig })
+}
+
 // withOutputRunner stubs the outputRunner used by resolveBuildOverrides inside
 // composeBuild. The stub returns a minimal docker compose config JSON so that
 // composeBuild can construct the build-context override without shelling out.
@@ -309,6 +317,9 @@ func TestManualDeploy_StaticKind_RunsScriptNotCompose(t *testing.T) {
 		return "main", nil
 	})
 	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) { return "def5678", nil })
+	withOriginSHARunner(t, func(_ context.Context, _, _ string) (string, error) {
+		return "abcdef1234567890abcdef1234567890abcdef12", nil // full 40-char SHA
+	})
 
 	staticScriptCalled := false
 	withStaticScript(t, func(_ context.Context, _, _, _ string, _ []string) ([]byte, error) {
@@ -411,27 +422,33 @@ func TestManualDeploy_BinaryKind_RunsBinaryNotCompose(t *testing.T) {
 // TestManualDeploy_StaticKind_UsesOriginSHA — static path DEPLOY_SHA must come
 // from origin/<branch> (gitManualOriginSHARunner), not from the on-disk HEAD.
 //
-// RED-on-revert: replace gitManualOriginSHARunner with resolveGitSHA(ctx, sourcePath) —
-// the assertion `gotSHA != "origin123"` fails because the static script is called with
-// the HEAD value returned by gitShortSHARunner ("head456") instead.
+// RED-on-revert: replace gitManualOriginSHARunner with resolveGitFullSHA(ctx, sourcePath) —
+// the assertion `gotSHA != originSHA` fails because the static script is called with
+// the HEAD value returned by gitFullSHARunner (headFullSHA) instead.
 func TestManualDeploy_StaticKind_UsesOriginSHA(t *testing.T) {
-	const originSHA = "origin123"
-	const headSHA = "head456"
+	const originSHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"   // full 40-char hex
+	const headFullSHA = "1234567890abcdef1234567890abcdef12345678" // full 40-char hex (different)
+	const headShortSHA = "head456"                                 // short SHA for OXPULSE_GIT_SHA
 
 	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
 		return "main", nil
 	})
-	// Origin SHA runner returns a distinct value — proves the static path reads origin.
+	// Origin SHA runner returns a distinct full SHA — proves the static path reads origin.
 	withOriginSHARunner(t, func(_ context.Context, _, branch string) (string, error) {
 		if branch != "main" {
 			t.Errorf("origin SHA runner: expected branch 'main', got %q", branch)
 		}
 		return originSHA, nil
 	})
-	// HEAD SHA runner would return a different value — must NOT be the one used.
+	// HEAD short SHA runner (for OXPULSE_GIT_SHA) would return a different value —
+	// must NOT be the one used for DEPLOY_SHA.
 	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
-		return headSHA, nil
+		return headShortSHA, nil
+	})
+	// Full SHA runner (fallback) would also return a different value — must NOT be used.
+	withFullSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return headFullSHA, nil
 	})
 
 	var gotSHA string
@@ -458,7 +475,7 @@ func TestManualDeploy_StaticKind_UsesOriginSHA(t *testing.T) {
 	}
 	if gotSHA != originSHA {
 		t.Errorf("static script received SHA=%q; want origin SHA %q (not head SHA %q)",
-			gotSHA, originSHA, headSHA)
+			gotSHA, originSHA, headFullSHA)
 	}
 	if result.BuiltSHA != originSHA {
 		t.Errorf("BuiltSHA=%q; want origin SHA %q", result.BuiltSHA, originSHA)

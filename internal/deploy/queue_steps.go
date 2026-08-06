@@ -218,13 +218,22 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	)
 
 	// Inject per-repo extra build args with ${SHA} placeholder substitution.
-	// ${SHA} resolves to the 12-char short commit SHA, matching the image
-	// tag format used by deploy-web-only.sh (SHORT_SHA="${SHA:0:12}").
+	// ${SHA} resolves to the 12-char artifact tag derived from the FULL 40-char
+	// commit SHA via artifactTagSHA — the single helper used by both lanes.
+	// This ensures cross-lane tag parity: a manual-lane deploy and a webhook-lane
+	// deploy of the SAME commit derive the SAME artifact tag. A short or invalid
+	// SHA is REJECTED here (deploy fails) rather than silently truncated — a
+	// silent [:12] on a 9-char string was the root cause of the cross-lane
+	// tag mismatch bug.
 	// Used for passing pre-built artifact image tags
 	// (e.g. WEB_ARTIFACT_IMAGE=oxpulse-chat-web:prod-${SHA}).
-	shortSHA12 := req.CommitSHA
-	if len(shortSHA12) > 12 { //nolint:mnd // 12-char short SHA for image tags
-		shortSHA12 = shortSHA12[:12]
+	var shortSHA12 string
+	if len(req.Config.BuildArgs) > 0 {
+		tag, err := artifactTagSHA(req.CommitSHA)
+		if err != nil {
+			return fmt.Sprintf("artifact tag derivation: %v", err)
+		}
+		shortSHA12 = tag
 	}
 	for _, arg := range req.Config.BuildArgs {
 		expanded := strings.ReplaceAll(arg, "${SHA}", shortSHA12)
@@ -238,7 +247,9 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	}
 
 	imagesAfter := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
-	logImageDiff(imagesBefore, imagesAfter, req.Config.Services, req.CommitSHA)
+	if errMsg := logImageDiff(imagesBefore, imagesAfter, req.Config.Services, req.CommitSHA); errMsg != "" {
+		return errMsg
+	}
 	return ""
 }
 
@@ -469,7 +480,16 @@ func pruneOldImages(ctx context.Context, composePath string) {
 // and DEPLOY_SHA env vars set. The script runs in sourceDir. A non-zero exit
 // code returns an error message string (not a Go error) to match the
 // composeBuild return convention.
+//
+// DEPLOY_SHA contract: the value MUST be a full 40-char hex commit SHA.
+// Pre-build scripts in another repo do `SHORT_SHA="${SHA:0:12}"` — a short
+// SHA here makes that a no-op and produces a tag that doesn't match the
+// webhook lane's 12-char tag. validateDeploySHA enforces this at the shell
+// boundary so a short value can never leave dozor.
 func runPreBuildScript(ctx context.Context, scriptPath, sourceDir, commitSHA string) string {
+	if errMsg := validateDeploySHA(commitSHA); errMsg != "" {
+		return errMsg
+	}
 	cmd := exec.CommandContext(ctx, "bash", scriptPath)
 	cmd.Dir = sourceDir
 	cmd.Env = append(os.Environ(),

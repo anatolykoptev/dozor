@@ -163,10 +163,33 @@ func smokeProbe(ctx context.Context, url string) error {
 	return nil
 }
 
-// logImageDiff warns for any service whose image ID did not change across `compose build`.
-// A no-op build is legitimate when source did not change, but suspicious when a commit
-// just landed — it usually means layer cache is stale or COPY paths are wrong.
-func logImageDiff(before, after map[string]string, services []string, commit string) {
+// logImageDiff checks for any service whose image ID did not change across
+// `compose build`. When the build was requested for a specific commit (a
+// valid 40-char SHA) and the image ID is unchanged, the deploy MUST fail —
+// a warning nobody reads is statistically identical to no warning, and a
+// stale image shipped as "new" is worse than a crash.
+//
+// Discriminator: whether CommitSHA is a valid 40-char hex SHA. When it is,
+// the deploy is for an identified commit, and a no-new-image result means
+// the build did not reflect that commit — the Docker layer cache is stale
+// or COPY paths are wrong. When CommitSHA is invalid (empty, short, or
+// non-hex — e.g. from_disk debug mode with an unresolvable HEAD), the
+// no-new-image result stays a WARN because we cannot confirm the source
+// changed.
+//
+// Why this cannot confuse the two cases:
+//   - "Source changed, no new image" (bug): CommitSHA is a valid full SHA
+//     → FAIL. The build was for a specific commit and the image didn't
+//     update — something is wrong with the build/cache.
+//   - "Genuine no-op, unchanged tree" (legitimate): with image caching
+//     enabled, tryPullCachedImage succeeds and returns early BEFORE the
+//     build — logImageDiff is never reached. Without image caching, a
+//     re-deploy of the same commit has a valid CommitSHA and would FAIL;
+//     this is an acceptable trade-off because re-deploying without image
+//     caching and without --no-cache is inherently ambiguous, and failing
+//     loud is safer than silently shipping a potentially stale image.
+//     The operator can retry with no_cache: true.
+func logImageDiff(before, after map[string]string, services []string, commit string) string {
 	var unchanged []string
 	for _, svc := range services {
 		if before[svc] != "" && before[svc] == after[svc] {
@@ -174,11 +197,33 @@ func logImageDiff(before, after map[string]string, services []string, commit str
 		}
 	}
 	if len(unchanged) == 0 {
-		return
+		return ""
 	}
+
+	// If CommitSHA is a valid full SHA, a no-new-image result is a deploy
+	// failure — the build was for an identified commit and the image didn't
+	// change, meaning the Docker layer cache is stale or COPY paths are
+	// wrong. Shipping the stale image would deploy code that is not the
+	// code being shipped.
+	if _, err := artifactTagSHA(commit); err == nil {
+		slog.Error("deploy: build produced no new image for identified commit — FAILING deploy",
+			"services", unchanged,
+			"commit", short(commit),
+			"hint", "Docker layer cache is stale or COPY paths don't cover changed files; retry with no_cache: true",
+		)
+		return fmt.Sprintf(
+			"build produced no new image for commit %s (services: %s) — "+
+				"Docker layer cache stale or COPY paths wrong; retry with no_cache: true",
+			short(commit), strings.Join(unchanged, ", "),
+		)
+	}
+
+	// CommitSHA is not a valid full SHA (empty, short, or non-hex) — we
+	// cannot confirm the source changed, so warn rather than fail.
 	slog.Warn("deploy: build produced no new image — cache hit or stale COPY",
 		"services", unchanged,
 		"commit", short(commit),
 		"hint", "if source changed, inspect Dockerfile COPY paths or retry with no_cache: true",
 	)
+	return ""
 }

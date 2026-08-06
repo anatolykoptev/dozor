@@ -205,8 +205,11 @@ type RepoConfig struct {
 	// StaticDeployScript (kind=static): absolute path to a bash script that
 	// performs the atomic deploy. The script receives two environment variables:
 	//   DEPLOY_REPO_PATH  — absolute path to the local git checkout (SourcePath)
-	//   DEPLOY_SHA        — commit SHA from the webhook
+	//   DEPLOY_SHA        — full 40-char commit SHA being built
 	// stdout+stderr are captured and logged. A non-zero exit code is a failure.
+	// DEPLOY_SHA is validated to be a full 40-char hex SHA before the script
+	// runs — a short SHA would make the script's ${SHA:0:12} a no-op and
+	// produce a tag that doesn't match the webhook lane's 12-char tag.
 	StaticDeployScript string `yaml:"static_deploy_script,omitempty"`
 
 	// PruneBuildkitCache, when true, runs
@@ -305,8 +308,10 @@ type RepoConfig struct {
 	// PreBuildScript is an absolute path to a bash script that runs BEFORE
 	// `docker compose build` for this repo. The script receives two env vars:
 	//   DEPLOY_REPO_PATH — SourcePath (the local git checkout)
-	//   DEPLOY_SHA       — full commit SHA being built
+	//   DEPLOY_SHA       — full 40-char commit SHA being built
 	// A non-zero exit code aborts the build with the script's stderr.
+	// DEPLOY_SHA is validated to be a full 40-char hex SHA before the script
+	// runs — see the DEPLOY_SHA contract in runPreBuildScript.
 	//
 	// Use case: building a web OCI artifact (Dockerfile.web) that the main
 	// Dockerfile consumes via WEB_ARTIFACT_IMAGE build-arg. The pre-build

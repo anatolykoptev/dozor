@@ -44,21 +44,23 @@ var gitManualFetchRunner = func(ctx context.Context, sourcePath, branch string) 
 // Seam for unit tests.
 var gitManualCurrentBranchRunner = defaultGitCurrentBranchRunner
 
-// gitManualOriginSHARunner resolves the short SHA of origin/<branch> in dir.
+// gitManualOriginSHARunner resolves the FULL 40-char SHA of origin/<branch> in dir.
 // Unlike gitShortSHARunner (which reads HEAD), this reads the remote-tracking
 // ref — so the value is truthful even when the on-disk HEAD lags behind the
-// most recent fetch.
+// most recent fetch. Returns the FULL SHA (not --short) so CommitSHA is
+// consistent with the webhook lane (which receives a full SHA from the GitHub
+// payload).
 // Seam for unit tests.
 var gitManualOriginSHARunner = defaultGitManualOriginSHARunner
 
 //nolint:unused // DI default seam — assigned to var gitManualOriginSHARunner, swapped in tests
 func defaultGitManualOriginSHARunner(ctx context.Context, dir, branch string) (string, error) {
 	ref := "origin/" + branch
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--short", ref) //nolint:gosec // trusted config
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", ref) //nolint:gosec // trusted config
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git rev-parse --short %s: %w", ref, err)
+		return "", fmt.Errorf("git rev-parse %s: %w", ref, err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -144,7 +146,7 @@ func executeManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 		ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "started").Inc()
 		buildReq := BuildRequest{
 			Repo:      req.Repo,
-			CommitSHA: "", // resolveGitSHA reads HEAD of sourcePath at build time
+			CommitSHA: resolveGitFullSHA(ctx, sourcePath), // full SHA so DEPLOY_SHA and ${SHA} are valid
 			Config:    req.Config,
 		}
 		if errMsg := composeBuild(ctx, buildReq, "", ""); errMsg != "" {
@@ -179,9 +181,12 @@ func executeManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 // executeManualStaticDeploy handles KindStatic manual deploys:
 //  1. Fetch origin/<branch> so SourcePath is fresh.
 //  2. Drift guard (informational, build always uses origin/<branch> via the script's env).
-//  3. Run StaticDeployScript with DEPLOY_REPO_PATH=SourcePath and DEPLOY_SHA=<sha at origin/<branch>>.
-//     SHA is resolved via gitManualOriginSHARunner (git rev-parse --short origin/<branch>),
+//  3. Run StaticDeployScript with DEPLOY_REPO_PATH=SourcePath and DEPLOY_SHA=<full sha at origin/<branch>>.
+//     SHA is resolved via gitManualOriginSHARunner (git rev-parse origin/<branch>),
 //     not from HEAD, so the value is truthful even when the on-disk clone lags.
+//     The SHA is the FULL 40-char commit SHA, matching the webhook lane's
+//     CommitSHA (from the GitHub payload) — see artifactTagSHA for why this
+//     invariant is enforced.
 func executeManualStaticDeploy(ctx context.Context, req ManualDeployRequest, branch, sourcePath string) ManualDeployResult {
 	result := ManualDeployResult{}
 
@@ -221,7 +226,7 @@ func executeManualStaticDeploy(ctx context.Context, req ManualDeployRequest, bra
 	if s, err := gitManualOriginSHARunner(ctx, sourcePath, branch); err != nil {
 		slog.Warn("deploy/manual: cannot resolve origin SHA; falling back to HEAD",
 			"repo", req.Repo, "branch", branch, "error", err)
-		sha = resolveGitSHA(ctx, sourcePath)
+		sha = resolveGitFullSHA(ctx, sourcePath)
 	} else {
 		sha = s
 	}
@@ -367,7 +372,7 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 	// webhook path's executeBuild → composeBuild).
 	buildReq := BuildRequest{
 		Repo:      req.Repo,
-		CommitSHA: resolveGitSHA(ctx, worktreePath), // short SHA at worktree HEAD
+		CommitSHA: resolveGitFullSHA(ctx, worktreePath), // FULL 40-char SHA — matches webhook lane's CommitSHA
 		Config:    req.Config,
 	}
 	result.BuiltSHA = buildReq.CommitSHA
