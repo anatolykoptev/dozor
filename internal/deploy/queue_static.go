@@ -23,7 +23,7 @@ var staticScriptRunner = defaultStaticScriptRunner
 // Environment variables provided to the script:
 //
 //	DEPLOY_REPO_PATH      — absolute path to the local git checkout (SourcePath)
-//	DEPLOY_SHA            — commit SHA from the webhook
+//	DEPLOY_SHA            — full 40-char commit SHA being built
 //	DEPLOY_CHANGED_PATHS  — newline-separated list of changed file paths across
 //	                        all commits in the push (union across coalesced events).
 //	                        Empty string when unknown (force-push or oversized push):
@@ -46,10 +46,19 @@ func defaultStaticScriptRunner(ctx context.Context, script, repoPath, commitSHA 
 //  1. Runs StaticDeployScript with DEPLOY_REPO_PATH and DEPLOY_SHA in the environment.
 //  2. Captures stdout+stderr and logs them.
 //  3. Returns success/failure based on the script exit code.
+//
+// DEPLOY_SHA contract: the value MUST be a full 40-char hex commit SHA.
+// validateDeploySHA enforces this before the script runs so a short value
+// can never leave dozor via the static path.
 func executeStaticBuild(ctx context.Context, req BuildRequest) BuildResult {
 	result := BuildResult{
 		Repo:     req.Repo,
 		Services: req.Config.Services,
+	}
+
+	if errMsg := validateDeploySHA(req.CommitSHA); errMsg != "" {
+		result.Error = errMsg
+		return result
 	}
 
 	script := req.Config.StaticDeployScript
