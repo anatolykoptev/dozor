@@ -811,3 +811,73 @@ func TestManualDeploy_PushFailureDoesNotFailDeploy(t *testing.T) {
 		t.Errorf("ERROR log must include the underlying push error; got:\n%s", logOutput)
 	}
 }
+
+// TestManualDeploy_ComposeLane_UsesFullSHA_AtTheCallSite guards the PRODUCTION
+// call site, which TestCrossLane_TagParity does not.
+//
+// That test simulates the manual lane by calling resolveGitFullSHA and
+// artifactTagSHA directly, so it proves the two helpers compose correctly and
+// nothing about manual_deploy.go. Verified by mutation on 2026-08-06: reverting
+// `CommitSHA: resolveGitFullSHA(...)` to `resolveGitSHA(...)` at
+// manual_deploy.go:375 — the exact production defect this PR exists to fix —
+// left BOTH TestCrossLane_TagParity and TestF1_ManualLaneShortSHAFails GREEN.
+//
+// A gate that survives the reintroduction of its own bug is not a gate. This
+// test drives ExecuteManualDeploy end to end with both SHA runners mocked to
+// return DIFFERENT values, and asserts the compose lane picked the full one.
+//
+// Mutation contract: manual_deploy.go:375
+//
+//	`CommitSHA: resolveGitFullSHA(ctx, worktreePath),`
+//	-> `CommitSHA: resolveGitSHA(ctx, worktreePath),`
+//
+// must turn THIS test RED.
+func TestManualDeploy_ComposeLane_UsesFullSHA_AtTheCallSite(t *testing.T) {
+	const fullSHA = "9e57d2974426b7e070cb0deadbeefcafe1234567"
+	const shortSHA = "9e57d2974" // what the old code produced — 9 chars, not 12
+
+	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
+		return "main", nil
+	})
+	withCmdRunner(t, func(_ context.Context, _ string, _ string, _ ...string) error { return nil })
+	// Both runners are mocked, and they DISAGREE. Whichever the call site reaches
+	// for is the one that shows up in BuiltSHA, so the assertion cannot pass by
+	// coincidence the way a same-value mock would let it.
+	withFullSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return fullSHA, nil
+	})
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return shortSHA, nil
+	})
+	withOutputRunner(t, noopOutputRunner("oxpulse-chat", "/fake/source"))
+	defer zeroDelays(t)()
+
+	result := ExecuteManualDeploy(context.Background(), ManualDeployRequest{
+		Repo: "anatolykoptev/oxpulse-chat",
+		Config: RepoConfig{
+			Branch:      "main",
+			SourcePath:  "/fake/source",
+			ComposePath: "/fake/compose",
+			Services:    []string{"oxpulse-chat"},
+		},
+	})
+
+	if !result.Success {
+		t.Fatalf("deploy failed: %s", result.Error)
+	}
+	if result.BuiltSHA != fullSHA {
+		t.Fatalf("compose lane built with %q (len %d), want the FULL sha %q (len %d) — "+
+			"a short sha here is the cross-lane tag-namespace bug: ${SHA:0:12} is a no-op "+
+			"on it, so this lane tags artifacts the webhook lane can never find",
+			result.BuiltSHA, len(result.BuiltSHA), fullSHA, len(fullSHA))
+	}
+	// The tag actually handed to WEB_ARTIFACT_IMAGE must be 12 chars.
+	tag, err := artifactTagSHA(result.BuiltSHA)
+	if err != nil {
+		t.Fatalf("artifactTagSHA rejected the lane's own CommitSHA: %v", err)
+	}
+	if len(tag) != 12 {
+		t.Fatalf("artifact tag %q has len %d, want 12", tag, len(tag))
+	}
+}
