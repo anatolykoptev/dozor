@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.1](https://github.com/anatolykoptev/dozor/compare/v1.16.0...v1.16.1) (2026-09-05)
+
+
+### Fixed
+
+* **deploy:** enforce full 40-char SHA across all deploy lanes ([#199](https://github.com/anatolykoptev/dozor/issues/199)) ([f8c3f9b](https://github.com/anatolykoptev/dozor/commit/f8c3f9b98e766ad4ca787c5372f3c87b1e1bffe9))
+
 ## [1.16.0](https://github.com/anatolykoptev/dozor/compare/v1.15.0...v1.16.0) (2026-08-01)
 
 
