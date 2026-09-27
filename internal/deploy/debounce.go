@@ -68,7 +68,7 @@ type Debouncer struct {
 
 	// persistPath, when non-empty, enables durable mirroring of the pending
 	// set to a JSON file so a process restart can recover queued builds.
-	// shaResolver resolves the deployed HEAD for the no-stale-rebuild guard on
+	// shaResolver resolves the deployed-SHA receipt for the no-stale-rebuild guard on
 	// reload. Both are configured via WithPersistence; zero values keep the
 	// debouncer purely in-memory (original behaviour). See debounce_persist.go.
 	persistPath string

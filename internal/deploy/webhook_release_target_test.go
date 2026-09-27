@@ -1,7 +1,6 @@
 package deploy
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -18,7 +17,7 @@ import (
 // noResolveSHA is a shaResolverFunc that always returns "unknown", so
 // attachReleaseDiff's BuildPaths gating is bypassed (conservative build
 // fallback) and the test focuses on target selection, not diff resolution.
-func noResolveSHA(context.Context, string) string { return "unknown" }
+func noResolveSHA(string) string { return "unknown" }
 
 // TestHandler_ReleaseTarget_OneReleaseOnePush_DeploysReleaseTarget is the
 // core regression: a repo with a prod entry (deploy_on: release) and a
@@ -299,8 +298,11 @@ func TestHandler_ReleaseTarget_MultiTarget_DiffDoesNotLeakBetweenTargets(t *test
 	defer h.Close()
 	// Resolve a real deployed SHA for A's clone; "unknown" for B's clone so
 	// B's diff cannot be resolved (attachReleaseDiff no-op for B).
-	h.shaResolver = func(_ context.Context, dir string) string {
-		if dir == sourceA {
+	// The deployed receipt is repo-keyed: both targets share
+	// "anatolykoptev/leak". Target B's clone does not contain the SHAs, so
+	// its diff still fails -> conservative fallback -> B is queued.
+	h.shaResolver = func(repo string) string {
+		if repo == "anatolykoptev/leak" {
 			return deployedSHA
 		}
 		return "unknown"

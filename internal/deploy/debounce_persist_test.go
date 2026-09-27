@@ -77,7 +77,7 @@ func TestDebouncePersist_ReloadRearmsAndFires(t *testing.T) {
 	})
 	deb2.WithPersistence(path)
 	// SHA resolver returns a DIFFERENT sha → not stale → must re-arm.
-	deb2.shaResolver = func(_ context.Context, _ string) string { return "oldDEPLOYED" }
+	deb2.shaResolver = func(string) string { return "oldDEPLOYED" }
 
 	if err := deb2.Reload(context.Background()); err != nil {
 		t.Fatalf("Reload failed: %v", err)
@@ -121,7 +121,7 @@ func TestDebouncePersist_ReloadFiresOnBootWhenDeadlinePassed(t *testing.T) {
 		mu.Unlock()
 	})
 	deb2.WithPersistence(path)
-	deb2.shaResolver = func(_ context.Context, _ string) string { return "somethingElse" }
+	deb2.shaResolver = func(string) string { return "somethingElse" }
 
 	if err := deb2.Reload(context.Background()); err != nil {
 		t.Fatalf("Reload failed: %v", err)
@@ -163,7 +163,7 @@ func TestDebouncePersist_ReloadStaleSkip(t *testing.T) {
 	})
 	deb2.WithPersistence(path)
 	// Deployed HEAD == persisted SHA (short form) → stale, must skip.
-	deb2.shaResolver = func(_ context.Context, _ string) string { return ShortSHA("abcdef1234567890") }
+	deb2.shaResolver = func(string) string { return ShortSHA("abcdef1234567890") }
 
 	if err := deb2.Reload(context.Background()); err != nil {
 		t.Fatalf("Reload failed: %v", err)
@@ -205,7 +205,7 @@ func TestDebouncePersist_DedupOneEntryPerKey(t *testing.T) {
 		mu.Unlock()
 	})
 	deb2.WithPersistence(path)
-	deb2.shaResolver = func(_ context.Context, _ string) string { return "deployed-old" }
+	deb2.shaResolver = func(string) string { return "deployed-old" }
 
 	if err := deb2.Reload(context.Background()); err != nil {
 		t.Fatalf("Reload failed: %v", err)
