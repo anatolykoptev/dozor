@@ -248,11 +248,16 @@ func TestReconcileMissedReleases_EnqueuesTagDrift(t *testing.T) {
 
 	origURL, origLS, origSHA := gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA
 	gitRemoteURLRunner = func(context.Context, string) (string, error) { return "fake-url", nil }
-	// Real ls-remote order for an annotated tag: tag-object line first, then
-	// the peeled ^{} commit line. The target MUST be the peeled commit —
-	// a tag object SHA is not a commit and poisons CommitSHA/DEPLOY_SHA.
+	// Real ls-remote order under --sort=-v:refname (verified on dozor's own
+	// annotated tags): the peeled ^{} line sorts BEFORE its object line.
+	// Include a second, older annotated tag to pin "newest semver only".
+	// The target MUST be the peeled commit — a tag object SHA is not a
+	// commit and poisons CommitSHA/DEPLOY_SHA.
 	gitLsRemoteRunner = func(_ context.Context, _ string, pattern string, _ ...string) (string, error) {
-		return tagObjSHA + "\trefs/tags/v1.2.3\n" + tagSHA + "\trefs/tags/v1.2.3^{}\n", nil
+		return tagSHA + "\trefs/tags/v1.2.3^{}\n" +
+			tagObjSHA + "\trefs/tags/v1.2.3\n" +
+			"dddddddddddddddddddddddddddddddddddddddd\trefs/tags/v1.2.2^{}\n" +
+			"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\trefs/tags/v1.2.2\n", nil
 	}
 	// The deployed receipt must come from the SOURCE clone, never the foreign
 	// deploy clone — answer correctly only for sourceDir to pin the wiring.

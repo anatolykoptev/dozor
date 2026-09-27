@@ -112,13 +112,15 @@ func latestSemverTag(ctx context.Context, url string) (string, error) {
 		return "", err
 	}
 	// Sorted newest-first by version. Annotated tags emit TWO lines — the
-	// tag object (refs/tags/vX.Y.Z) then the peeled commit
-	// (refs/tags/vX.Y.Z^{}); the object line sorts first, so a naive
-	// first-match returns the tag object SHA — which is not a commit, never
-	// equals a deployed HEAD, and would poison CommitSHA/DEPLOY_SHA with a
-	// non-commit. Remember the first unpeeled semver tag and keep scanning
-	// for ITS peeled line; a second tag's line before the peel means the tag
-	// was lightweight (object line == commit).
+	// peeled commit (refs/tags/vX.Y.Z^{}) and the tag object
+	// (refs/tags/vX.Y.Z). Under -v:refname the PEEL line sorts BEFORE its
+	// object line (verified live 2026-09-26 on dozor's own annotated tags),
+	// so order-dependent scanning is fragile — collect peeled lines into a
+	// map, take the first unpeeled semver tag (the newest), and prefer its
+	// peeled commit. Returning the tag-object SHA would poison
+	// CommitSHA/DEPLOY_SHA with a non-commit and make tag-vs-HEAD drift
+	// comparisons never match.
+	peeled := map[string]string{}
 	var candTag, candSHA string
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
@@ -127,21 +129,21 @@ func latestSemverTag(ctx context.Context, url string) (string, error) {
 		}
 		sha, ref := fields[0], fields[1]
 		name := strings.TrimPrefix(ref, "refs/tags/")
-		if peeled := strings.HasSuffix(name, "^{}"); peeled {
-			if strings.TrimSuffix(name, "^{}") == candTag {
-				return sha, nil // annotated tag → the peeled COMMIT
-			}
+		if strings.HasSuffix(name, "^{}") {
+			peeled[strings.TrimSuffix(name, "^{}")] = sha
 			continue
 		}
-		if !matchesSemVer(name) {
-			continue
+		if candTag == "" && matchesSemVer(name) {
+			candTag, candSHA = name, sha
 		}
-		if candTag != "" {
-			return candSHA, nil // previous tag had no peel → lightweight
-		}
-		candTag, candSHA = name, sha
 	}
-	return candSHA, nil
+	if candTag == "" {
+		return "", nil
+	}
+	if p, ok := peeled[candTag]; ok {
+		return p, nil // annotated tag → the peeled COMMIT
+	}
+	return candSHA, nil // lightweight tag → object line IS the commit
 }
 
 // lsRemoteSHA resolves a single ref to a commit SHA via git ls-remote.
