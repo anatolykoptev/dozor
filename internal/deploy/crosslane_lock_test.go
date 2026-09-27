@@ -138,6 +138,11 @@ func TestCrossLaneLock_HeavyAcquireThenRelease(t *testing.T) {
 	fl := newFakeLock(t, true)
 	restore := installFakeLock(t, fl)
 	defer restore()
+	// The P3 load guard waits when the box is busy (krolik compiles hot under
+	// load) — stub the reader so these tests exercise the LOCK, not the guard.
+	origReader := loadavgReader
+	loadavgReader = func() (float64, error) { return 0.1, nil }
+	defer func() { loadavgReader = origReader }()
 
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
@@ -193,6 +198,11 @@ func TestCrossLaneLock_ReleasedOnBuildError(t *testing.T) {
 	fl := newFakeLock(t, true)
 	restore := installFakeLock(t, fl)
 	defer restore()
+	// The P3 load guard waits when the box is busy (krolik compiles hot under
+	// load) — stub the reader so these tests exercise the LOCK, not the guard.
+	origReader := loadavgReader
+	loadavgReader = func() (float64, error) { return 0.1, nil }
+	defer func() { loadavgReader = origReader }()
 
 	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
 		return []byte("build failed"), errors.New("exit status 1")
@@ -223,6 +233,11 @@ func TestCrossLaneLock_ReleasedOnPanic(t *testing.T) {
 	fl := newFakeLock(t, true)
 	restore := installFakeLock(t, fl)
 	defer restore()
+	// The P3 load guard waits when the box is busy (krolik compiles hot under
+	// load) — stub the reader so these tests exercise the LOCK, not the guard.
+	origReader := loadavgReader
+	loadavgReader = func() (float64, error) { return 0.1, nil }
+	defer func() { loadavgReader = origReader }()
 
 	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
 		panic("simulated cargo build panic")
@@ -259,6 +274,11 @@ func TestCrossLaneLock_NonHeavySkipsLock(t *testing.T) {
 	fl := newFakeLock(t, true)
 	restore := installFakeLock(t, fl)
 	defer restore()
+	// The P3 load guard waits when the box is busy (krolik compiles hot under
+	// load) — stub the reader so these tests exercise the LOCK, not the guard.
+	origReader := loadavgReader
+	loadavgReader = func() (float64, error) { return 0.1, nil }
+	defer func() { loadavgReader = origReader }()
 
 	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
 		return []byte("ok"), nil
@@ -284,6 +304,11 @@ func TestCrossLaneLock_AcquireTimeoutProceedsUnlocked(t *testing.T) {
 	fl := newFakeLock(t, false) // acquire always fails
 	restore := installFakeLock(t, fl)
 	defer restore()
+	// The P3 load guard waits when the box is busy — stub the reader so the
+	// test exercises the acquire fail-safe, not the guard.
+	origReader := loadavgReader
+	loadavgReader = func() (float64, error) { return 0.1, nil }
+	defer func() { loadavgReader = origReader }()
 
 	buildRan := false
 	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {

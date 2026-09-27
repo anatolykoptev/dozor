@@ -99,6 +99,7 @@ func (a *ServerAgent) StartManualDeploy(ctx context.Context, req deploy.ManualDe
 
 		var line string
 		if result.Success {
+			deploy.RecordDeployedSHA(req.Repo, result.BuiltSHA)
 			setManualDeployStatus(deployID, manualDeployCompleted)
 			line = fmt.Sprintf("DEPLOY COMPLETE: %s (sha=%s)\n", deployID, result.BuiltSHA)
 		} else {

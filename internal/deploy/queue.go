@@ -480,6 +480,14 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 		BuildResultTotal.WithLabelValues(req.Repo, svc, status).Inc()
 	}
 
+	// Durable deployed-SHA receipt for the boot reconciler (issue #174):
+	// record what actually shipped, not what was attempted. ManualGated
+	// builds are withheld — the pending gauge carries that state, and the
+	// manual deploy path records the SHA itself when it deploys.
+	if result.Success && !result.ManualGated {
+		recordDeployedSHA(req.Repo, req.CommitSHA)
+	}
+
 	// Best-effort source-checkout sync, OFF the critical path: advance this
 	// repo's ~/src/X default-branch ref to origin so go-code indexes fresh and
 	// the dev checkout stays current. Runs UNCONDITIONALLY (success OR failure —
