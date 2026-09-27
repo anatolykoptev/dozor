@@ -29,13 +29,15 @@ import (
 //
 // Detection is remote-read-only: `git ls-remote` against the source clone's
 // origin URL — no local fetch, so it works even when the clone is stale.
-// Deployed SHA is rev-parse HEAD of the repo's OWN source clone — the clone
-// whose HEAD syncSourceCheckout fast-forwards to origin/<branch> at build time,
-// so after a release deploy it sits at the tag's merge commit. The deploy clone
-// (buildDirForConfig) is deliberately NOT used: on this fleet deploy_clone_path
-// points at the compose repo (krolik-server), an unrelated repository whose
-// HEAD can never equal an app-repo tag SHA — comparing against it enqueues a
-// redundant build for every repo on every dozor restart.
+//
+// The "deployed" side is NOT a clone HEAD: on this fleet the deploy clone is
+// the compose repo (krolik-server, an unrelated repository whose HEAD can
+// never equal an app-repo tag SHA), and the source clone's HEAD is only
+// advanced opportunistically (sync is dirty-skipped and off by default), so
+// neither is a deploy receipt. The receipt is the SHA dozor last built and
+// brought up, recorded durably in deployed-sha.json by recordDeployedSHA on
+// every successful deploy. No record → we cannot prove drift → skip: the
+// reconciler never deploys on a guess.
 //
 // Conservative: an unresolvable remote URL, target ref, or deployed SHA skips
 // the repo with a WARN — the reconciler must never deploy on a guess.
@@ -58,13 +60,13 @@ func ReconcileMissedReleases(ctx context.Context, cfg *Config, q *Queue) {
 		if target == "" {
 			continue
 		}
-		deployed := reconcileDeployedSHA(ctx, dir)
+		deployed := deployedSHALookup(repo)
 		if deployed == "" || deployed == "unknown" {
-			// Never deployed → not a "missed release" we can prove; the first
-			// real push/release deploys it. Don't guess.
+			// No deploy receipt → cannot prove this is a missed release rather
+			// than a repo that was never deployed through dozor. Don't guess.
 			continue
 		}
-		if target == deployed {
+		if sameSHA(target, deployed) {
 			continue
 		}
 		slog.Info("deploy/reconcile: deployed SHA is behind the remote target — enqueueing missed deploy",
@@ -197,8 +199,16 @@ func defaultGitLsRemoteRunner(ctx context.Context, url, pattern string, flags ..
 	return string(out), nil
 }
 
-// reconcileDeployedSHA resolves the deployed commit — the FULL 40-char SHA
-// (ls-remote emits full SHAs; a short SHA can never equal them, making every
-// restart look like drift). Bound to resolveGitFullSHA, not resolveGitSHA.
-// Seam var so tests can stub the resolver.
-var reconcileDeployedSHA = resolveGitFullSHA
+// deployedSHALookup returns the last recorded deployed SHA for a repo.
+// Seam var so tests can stub the receipt store.
+var deployedSHALookup = lookupDeployedSHA
+
+// sameSHA compares two SHAs tolerant of length: a 7-char BuiltSHA from the
+// manual lane and a 40-char ls-remote SHA name the same commit when one is a
+// prefix of the other.
+func sameSHA(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return a == b || strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
+}

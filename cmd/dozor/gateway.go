@@ -298,6 +298,11 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 	deploy.ConfigurePendingDeployPersistence(deploy.DefaultPendingDeployPersistPath())
 	deploy.RestorePendingDeployGauge(cfg)
 
+	// Durable last-deployed-SHA receipts for the missed-release reconciler
+	// (issue #174): loaded before RecoverQueue so reconcile sees the state
+	// surviving restarts.
+	deploy.ConfigureDeployedSHAPersistence(deploy.DefaultDeployedSHAPersistPath())
+
 	// Log all deploy lifecycle events to journalctl.
 	//
 	// DOZOR_DEPLOY_NOTIFY controls which deploy events reach Telegram:

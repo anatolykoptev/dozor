@@ -241,12 +241,12 @@ func TestSweepDozorCiLockSlots_RemovesOnlyDozorOwned(t *testing.T) {
 
 func TestReconcileMissedReleases_EnqueuesTagDrift(t *testing.T) {
 	sourceDir := t.TempDir()
-	foreignDeployClone := t.TempDir() // stands in for krolik-server: a DIFFERENT repo
+	foreignDeployClone := t.TempDir() // the compose repo — must NOT be consulted for the app SHA
 	const tagObjSHA = "cccccccccccccccccccccccccccccccccccccccc"
 	const tagSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // the peeled commit
 	const deployedSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-	origURL, origLS, origSHA := gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA
+	origURL, origLS, origSHA := gitRemoteURLRunner, gitLsRemoteRunner, deployedSHALookup
 	gitRemoteURLRunner = func(context.Context, string) (string, error) { return "fake-url", nil }
 	// Real ls-remote order under --sort=-v:refname (verified on dozor's own
 	// annotated tags): the peeled ^{} line sorts BEFORE its object line.
@@ -259,16 +259,16 @@ func TestReconcileMissedReleases_EnqueuesTagDrift(t *testing.T) {
 			"dddddddddddddddddddddddddddddddddddddddd\trefs/tags/v1.2.2^{}\n" +
 			"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\trefs/tags/v1.2.2\n", nil
 	}
-	// The deployed receipt must come from the SOURCE clone, never the foreign
-	// deploy clone — answer correctly only for sourceDir to pin the wiring.
-	reconcileDeployedSHA = func(_ context.Context, dir string) string {
-		if dir == sourceDir {
+	// The deployed receipt is the persisted last-built SHA keyed by bare repo —
+	// answer correctly only for the canonical key to pin the wiring.
+	deployedSHALookup = func(repo string) string {
+		if repo == "anatolykoptev/x" {
 			return deployedSHA
 		}
-		return "unknown"
+		return ""
 	}
 	t.Cleanup(func() {
-		gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA = origURL, origLS, origSHA
+		gitRemoteURLRunner, gitLsRemoteRunner, deployedSHALookup = origURL, origLS, origSHA
 	})
 
 	cfg := &Config{Repos: map[string]RepoConfig{
@@ -294,14 +294,37 @@ func TestReconcileMissedReleases_EnqueuesTagDrift(t *testing.T) {
 	}
 }
 
-// The comparator only works when BOTH sides are full 40-char SHAs —
-// ls-remote emits full SHAs, so the deployed side must too. Pin the binding:
-// resolveGitFullSHA, not the 7-char resolveGitSHA used for display.
-func TestReconcileDeployedSHA_ResolvesFullSHA(t *testing.T) {
-	dir, _, _ := buildTwoCommitFixture(t, "CHANGELOG.md", "# Changelog\n")
-	sha := reconcileDeployedSHA(context.Background(), dir)
-	if len(sha) != 40 {
-		t.Fatalf("reconcileDeployedSHA returned %d-char %q — must be a full SHA to compare against ls-remote output", len(sha), sha)
+// The deployed receipt is the persisted last-built SHA — a clone HEAD is NOT
+// a receipt (deploy clone = compose repo; source clone ff is opportunistic).
+// Pin: record persists under the bare key and lookup canonicalises suffixes.
+func TestDeployedSHAReceipt_PersistAndLookup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deployed.json")
+	ConfigureDeployedSHAPersistence(path)
+	t.Cleanup(func() { ConfigureDeployedSHAPersistence("") })
+
+	recordDeployedSHA("anatolykoptev/x#staging", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if got := lookupDeployedSHA("anatolykoptev/x"); got != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("lookup under bare key = %q", got)
+	}
+	if got := lookupDeployedSHA("anatolykoptev/x#prod"); got != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("lookup under different suffix = %q — keys must canonicalise", got)
+	}
+
+	// Reload from disk — durability is the whole point.
+	ConfigureDeployedSHAPersistence(path)
+	if got := lookupDeployedSHA("anatolykoptev/x"); got == "" {
+		t.Fatal("deployed SHA not restored from persist file")
+	}
+}
+
+// sameSHA must treat a 7-char BuiltSHA and a 40-char ls-remote SHA as equal.
+func TestSameSHA_PrefixTolerant(t *testing.T) {
+	full := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if !sameSHA(full, "aaaaaaa") || !sameSHA("aaaaaaa", full) {
+		t.Fatal("prefix comparison failed")
+	}
+	if sameSHA(full, "bbbbbbb") {
+		t.Fatal("different SHAs must not compare equal")
 	}
 }
 
@@ -310,15 +333,15 @@ func TestReconcileMissedReleases_LightweightTag(t *testing.T) {
 	const tagSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const deployedSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-	origURL, origLS, origSHA := gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA
+	origURL, origLS, origSHA := gitRemoteURLRunner, gitLsRemoteRunner, deployedSHALookup
 	gitRemoteURLRunner = func(context.Context, string) (string, error) { return "fake-url", nil }
 	// Lightweight tag: object line only, no ^{} follow-up.
 	gitLsRemoteRunner = func(context.Context, string, string, ...string) (string, error) {
 		return tagSHA + "\trefs/tags/v1.2.3\n", nil
 	}
-	reconcileDeployedSHA = func(context.Context, string) string { return deployedSHA }
+	deployedSHALookup = func(string) string { return deployedSHA }
 	t.Cleanup(func() {
-		gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA = origURL, origLS, origSHA
+		gitRemoteURLRunner, gitLsRemoteRunner, deployedSHALookup = origURL, origLS, origSHA
 	})
 
 	cfg := &Config{Repos: map[string]RepoConfig{
@@ -335,14 +358,14 @@ func TestReconcileMissedReleases_NoDriftNoSubmit(t *testing.T) {
 	dir := t.TempDir()
 	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-	origURL, origLS, origSHA := gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA
+	origURL, origLS, origSHA := gitRemoteURLRunner, gitLsRemoteRunner, deployedSHALookup
 	gitRemoteURLRunner = func(context.Context, string) (string, error) { return "fake-url", nil }
 	gitLsRemoteRunner = func(context.Context, string, string, ...string) (string, error) {
 		return sha + "\trefs/tags/v1.2.3\n", nil
 	}
-	reconcileDeployedSHA = func(context.Context, string) string { return sha }
+	deployedSHALookup = func(string) string { return sha }
 	t.Cleanup(func() {
-		gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA = origURL, origLS, origSHA
+		gitRemoteURLRunner, gitLsRemoteRunner, deployedSHALookup = origURL, origLS, origSHA
 	})
 
 	cfg := &Config{Repos: map[string]RepoConfig{
@@ -359,12 +382,12 @@ func TestReconcileMissedReleases_NoDriftNoSubmit(t *testing.T) {
 func TestReconcileMissedReleases_UnresolvableSkips(t *testing.T) {
 	dir := t.TempDir()
 
-	origURL, origLS, origSHA := gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA
+	origURL, origLS, origSHA := gitRemoteURLRunner, gitLsRemoteRunner, deployedSHALookup
 	gitRemoteURLRunner = func(context.Context, string) (string, error) { return "", errFetchBoom }
 	gitLsRemoteRunner = func(context.Context, string, string, ...string) (string, error) { return "", errFetchBoom }
-	reconcileDeployedSHA = func(context.Context, string) string { return "unknown" }
+	deployedSHALookup = func(string) string { return "" }
 	t.Cleanup(func() {
-		gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA = origURL, origLS, origSHA
+		gitRemoteURLRunner, gitLsRemoteRunner, deployedSHALookup = origURL, origLS, origSHA
 	})
 
 	cfg := &Config{Repos: map[string]RepoConfig{
