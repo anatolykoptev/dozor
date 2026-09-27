@@ -135,7 +135,7 @@ func TestHandler_Release_PathFilter_SkipsChangelogOnlyRelease(t *testing.T) {
 	q, _ := newTestQueue()
 	h := NewHandler(cfg, q, func(string) {})
 	defer h.Close()
-	h.shaResolver = func(context.Context, string) string { return deployedSHA }
+	h.shaResolver = func(string) string { return deployedSHA }
 
 	body := releasePayload("anatolykoptev/memdb", "v1.0.0", targetSHA)
 	w := postRelease(h, body)
@@ -174,7 +174,7 @@ func TestHandler_Release_PathFilter_BuildsOnRelevantChange(t *testing.T) {
 	q, _ := newTestQueue()
 	h := NewHandler(cfg, q, func(string) {})
 	defer h.Close()
-	h.shaResolver = func(context.Context, string) string { return deployedSHA }
+	h.shaResolver = func(string) string { return deployedSHA }
 
 	body := releasePayload("anatolykoptev/memdb", "v1.0.0", targetSHA)
 	w := postRelease(h, body)
@@ -212,7 +212,7 @@ func TestHandler_Release_PathFilter_FallsBackToBuildWhenSHAUnresolvable(t *testi
 	q, _ := newTestQueue()
 	h := NewHandler(cfg, q, func(string) {})
 	defer h.Close()
-	h.shaResolver = func(context.Context, string) string { return "unknown" }
+	h.shaResolver = func(string) string { return "unknown" }
 
 	body := releasePayload("anatolykoptev/memdb", "v1.0.0", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
 	w := postRelease(h, body)
@@ -256,7 +256,7 @@ func TestHandler_Release_PathFilter_FallsBackToBuildWhenTargetCommitishInvalid(t
 	q, _ := newTestQueue()
 	h := NewHandler(cfg, q, func(string) {})
 	defer h.Close()
-	h.shaResolver = func(context.Context, string) string { return deployedSHA }
+	h.shaResolver = func(string) string { return deployedSHA }
 
 	body := releasePayload("anatolykoptev/memdb", "v1.0.0", "not-a-real-revision-in-this-repo")
 	w := postRelease(h, body)
@@ -319,7 +319,7 @@ func TestHandler_Release_PathFilter_MultiRepo_DiffsInSourceClone(t *testing.T) {
 	q, _ := newTestQueue()
 	h := NewHandler(cfg, q, func(string) {})
 	defer h.Close()
-	h.shaResolver = func(context.Context, string) string { return deployedSHA }
+	h.shaResolver = func(string) string { return deployedSHA }
 
 	body := releasePayload("anatolykoptev/vaelor", "v1.0.0", targetSHA)
 	w := postRelease(h, body)
@@ -366,7 +366,7 @@ func TestHandler_Release_PathFilter_UnresolvableSHA_LogsError(t *testing.T) {
 	q, _ := newTestQueue()
 	h := NewHandler(cfg, q, func(string) {})
 	defer h.Close()
-	h.shaResolver = func(context.Context, string) string { return deployedSHA }
+	h.shaResolver = func(string) string { return deployedSHA }
 
 	foreignSHA := "dd8d0d9eb825f48d0de27008d6d7ef5ad04e4497"
 	body := releasePayload("anatolykoptev/memdb", "v1.0.0", foreignSHA)

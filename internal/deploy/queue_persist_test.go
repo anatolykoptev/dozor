@@ -64,7 +64,7 @@ func TestQueuePersist_RecoverRequeuesQueuedBuild(t *testing.T) {
 	q2 := newStoppedQueue(t)
 	q2.WithPersistence(path)
 	// SHA resolver returns a DIFFERENT sha → not stale → must re-enqueue.
-	q2.shaResolver = func(_ context.Context, _ string) string { return "oldDEPLOYED" }
+	q2.shaResolver = func(string) string { return "oldDEPLOYED" }
 
 	if err := q2.RecoverQueue(context.Background()); err != nil {
 		t.Fatalf("RecoverQueue failed: %v", err)
@@ -97,7 +97,7 @@ func TestQueuePersist_RecoverRequeuesInFlightBuild(t *testing.T) {
 
 	q2 := newStoppedQueue(t)
 	q2.WithPersistence(path)
-	q2.shaResolver = func(_ context.Context, _ string) string { return "deployed-old" }
+	q2.shaResolver = func(string) string { return "deployed-old" }
 
 	if err := q2.RecoverQueue(context.Background()); err != nil {
 		t.Fatalf("RecoverQueue failed: %v", err)
@@ -126,7 +126,7 @@ func TestQueuePersist_RecoverStaleSkip(t *testing.T) {
 	q2 := newStoppedQueue(t)
 	q2.WithPersistence(path)
 	// Deployed HEAD == persisted SHA (short form) → stale, must skip.
-	q2.shaResolver = func(_ context.Context, _ string) string { return ShortSHA("abcdef1234567890") }
+	q2.shaResolver = func(string) string { return ShortSHA("abcdef1234567890") }
 
 	before := testutil.ToFloat64(QueuePersistTotal.WithLabelValues("r", "svc", "stale_skip"))
 	if err := q2.RecoverQueue(context.Background()); err != nil {
@@ -165,7 +165,7 @@ func TestQueuePersist_CorruptFileTolerated(t *testing.T) {
 
 	q := newStoppedQueue(t)
 	q.WithPersistence(path)
-	q.shaResolver = func(_ context.Context, _ string) string { return "x" }
+	q.shaResolver = func(string) string { return "x" }
 
 	before := testutil.ToFloat64(QueuePersistTotal.WithLabelValues("", "", "reload_error"))
 	if err := q.RecoverQueue(context.Background()); err != nil {
@@ -265,7 +265,7 @@ func TestQueuePersist_NoDoubleRecoveryWithDebounce(t *testing.T) {
 
 	q2 := newStoppedQueue(t)
 	q2.WithPersistence(path)
-	q2.shaResolver = func(_ context.Context, _ string) string { return "different" }
+	q2.shaResolver = func(string) string { return "different" }
 
 	if err := q2.RecoverQueue(context.Background()); err != nil {
 		t.Fatalf("RecoverQueue failed: %v", err)

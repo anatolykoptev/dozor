@@ -49,13 +49,9 @@ type Handler struct {
 	notify    func(string)
 	debouncer *Debouncer
 	checker   *prLabelChecker
-	// shaResolver resolves the currently-deployed short SHA for a repo, given
-	// its build/source directory. Used only by the release-event path
-	// (webhook_release.go) to compute a real changed-files diff, since a
-	// GitHub "release published" payload carries no per-commit file list.
-	// Defaults to resolveGitSHA — the same primitive the debounce-persistence
-	// layer (debounce_persist.go) uses to detect a stale rebuild. Swappable in
-	// tests.
+	// shaResolver resolves the recorded last-deployed SHA for a repo
+	// (receipt store — deployed-sha.json, never a clone HEAD; issue #181).
+	// Defaults to lookupDeployedSHA; swappable in tests.
 	shaResolver shaResolverFunc
 }
 
@@ -68,7 +64,7 @@ func NewHandler(config *Config, queue *Queue, notify func(string)) *Handler {
 		queue:       queue,
 		notify:      notify,
 		checker:     newPRLabelChecker(config.GitHubToken),
-		shaResolver: resolveGitSHA,
+		shaResolver: lookupDeployedSHA,
 	}
 	if config.GitHubToken == "" {
 		slog.Warn("DOZOR_GITHUB_TOKEN not set; PR label check disabled (marker-only mode)")

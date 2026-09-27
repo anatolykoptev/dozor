@@ -85,7 +85,7 @@ func TestReleaseChangedFiles_FetchesBeforeDiff(t *testing.T) {
 	sourceDir, deployedSHA, targetSHA := buildStaleCloneFixture(t, "CHANGELOG.md", "# Changelog\n")
 	rc := &RepoConfig{SourcePath: sourceDir, Branch: "main"}
 
-	files, ok := releaseChangedFiles(context.Background(), rc, "anatolykoptev/x", targetSHA, resolveGitSHA)
+	files, ok := releaseChangedFiles(context.Background(), rc, "anatolykoptev/x", targetSHA, func(string) string { return deployedSHA })
 	if !ok {
 		t.Fatal("releaseChangedFiles returned ok=false on a stale clone — the fetch did not run before the diff")
 	}
@@ -103,7 +103,7 @@ func TestReleaseChangedFiles_FetchFailureIsConservative(t *testing.T) {
 	gitFetchRunner = func(context.Context, string, string) error { return errFetchBoom }
 	t.Cleanup(func() { gitFetchRunner = orig })
 
-	files, ok := releaseChangedFiles(context.Background(), rc, "anatolykoptev/x", targetSHA, resolveGitSHA)
+	files, ok := releaseChangedFiles(context.Background(), rc, "anatolykoptev/x", targetSHA, func(string) string { return "unused" })
 	if ok || files != nil {
 		t.Fatalf("fetch failure must degrade to ok=false (conservative build), got ok=%v files=%v", ok, files)
 	}

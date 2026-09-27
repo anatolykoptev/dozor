@@ -101,13 +101,13 @@ func DefaultQueuePersistPath() string {
 // set to path and returns the Queue for chaining. A zero path disables
 // persistence (the queue behaves exactly as before — in-memory only). The
 // shaResolver (for the no-stale-rebuild guard on recovery) defaults to the
-// package git resolver; swappable in tests.
+// durable deployed-SHA receipt store; swappable in tests.
 func (q *Queue) WithPersistence(path string) *Queue {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.persistPath = path
 	if q.shaResolver == nil {
-		q.shaResolver = resolveGitSHA
+		q.shaResolver = lookupDeployedSHA
 	}
 	// Re-arm the drain gate (the constructor closed it for eager draining): with
 	// persistence enabled, workers must NOT drain until RecoverQueue has
@@ -241,17 +241,16 @@ func (q *Queue) recoverQueueEntry(ctx context.Context, pe persistedQueueEntry, r
 	svc := serviceKey(req.Config.Services)
 
 	// No-stale-rebuild guard: if the persisted commit already matches the
-	// deployed HEAD, the build either already completed or is unnecessary.
+	// recorded deployed SHA, the build either already completed or is
+	// unnecessary. No receipt -> do NOT skip: re-firing is the safe direction
+	// (a wrong skip strands the release).
 	if resolver != nil {
-		dir := buildDirForConfig(req.Config)
-		if dir != "" {
-			deployed := resolver(ctx, dir)
-			if deployed != "" && deployed != "unknown" && ShortSHA(deployed) == ShortSHA(req.CommitSHA) {
-				slog.Info("deploy queue: skipping recovered build (already deployed)",
-					"repo", req.Repo, "service", svc, "commit", short(req.CommitSHA), "in_flight", pe.InFlight)
-				QueuePersistTotal.WithLabelValues(req.Repo, svc, "stale_skip").Inc()
-				return 0
-			}
+		deployed := resolver(req.Repo)
+		if deployed != "" && deployed != "unknown" && ShortSHA(deployed) == ShortSHA(req.CommitSHA) {
+			slog.Info("deploy queue: skipping recovered build (already deployed)",
+				"repo", req.Repo, "service", svc, "commit", short(req.CommitSHA), "in_flight", pe.InFlight)
+			QueuePersistTotal.WithLabelValues(req.Repo, svc, "stale_skip").Inc()
+			return 0
 		}
 	}
 

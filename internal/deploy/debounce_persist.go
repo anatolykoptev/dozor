@@ -65,10 +65,13 @@ func DefaultDebouncePersistPath() string {
 	return filepath.Join(ws, "deploy-debounce.json")
 }
 
-// shaResolverFunc resolves the currently-deployed short SHA for a repo, given
-// the directory dozor would build from. Defaults to the package git resolver;
-// swappable in tests.
-type shaResolverFunc func(ctx context.Context, dir string) string
+// shaResolverFunc resolves the currently-deployed SHA for a repo. The
+// deployment ground truth is the durable last-built receipt
+// (deployed-sha.json), NOT a clone HEAD: DeployClonePath points at the
+// compose repo (krolik-server) for most entries, and SourcePath HEAD is
+// only advanced opportunistically — neither reflects what was deployed
+// (issue #181, same class as the #174 reconcile fix).
+type shaResolverFunc func(repo string) string
 
 // WithPersistence enables durable mirroring of the pending set to path and
 // returns the Debouncer for chaining. A zero path disables persistence (the
@@ -78,7 +81,7 @@ func (d *Debouncer) WithPersistence(path string) *Debouncer {
 	defer d.mu.Unlock()
 	d.persistPath = path
 	if d.shaResolver == nil {
-		d.shaResolver = resolveGitSHA
+		d.shaResolver = lookupDeployedSHA
 	}
 	return d
 }
@@ -210,17 +213,16 @@ func (d *Debouncer) recoverEntry(ctx context.Context, pe persistedEntry, now tim
 	ev := pe.Event
 
 	// No-stale-rebuild guard: if the persisted commit already matches the
-	// deployed HEAD, the build either already happened or is unnecessary.
+	// recorded deployed SHA, the build either already happened or is
+	// unnecessary. A missing receipt does NOT skip — firing a recovered
+	// entry is the safe direction; a wrong skip would strand the release.
 	if d.shaResolver != nil {
-		dir := buildDirForConfig(ev.Config)
-		if dir != "" {
-			deployed := d.shaResolver(ctx, dir)
-			if deployed != "" && deployed != "unknown" && ShortSHA(deployed) == ShortSHA(ev.CommitSHA) {
-				slog.Info("deploy debounce: skipping recovered build (already deployed)",
-					"repo", ev.Repo, "service", ev.Service, "commit", short(ev.CommitSHA))
-				DebouncePersistTotal.WithLabelValues(ev.Repo, ev.Service, "stale_skip").Inc()
-				return 0
-			}
+		deployed := d.shaResolver(ev.Repo)
+		if deployed != "" && deployed != "unknown" && ShortSHA(deployed) == ShortSHA(ev.CommitSHA) {
+			slog.Info("deploy debounce: skipping recovered build (already deployed)",
+				"repo", ev.Repo, "service", ev.Service, "commit", short(ev.CommitSHA))
+			DebouncePersistTotal.WithLabelValues(ev.Repo, ev.Service, "stale_skip").Inc()
+			return 0
 		}
 	}
 
@@ -257,24 +259,13 @@ func (d *Debouncer) recoverEntry(ctx context.Context, pe persistedEntry, now tim
 	return 1
 }
 
-// buildDirForConfig returns the directory whose HEAD represents the deployed
-// commit for stale comparison: the deploy clone if configured, else the
-// source checkout. Empty when neither is known (stale-skip is then bypassed).
-func buildDirForConfig(rc RepoConfig) string {
-	if rc.DeployClonePath != "" {
-		return rc.DeployClonePath
-	}
-	return rc.SourcePath
-}
-
 // sourceDirForConfig returns the directory of the repo's OWN source clone —
 // the clone whose history contains the webhook's commit SHAs. This is
 // SourcePath when set (the repo's own checkout), falling back to
 // DeployClonePath when SourcePath is empty (a compose repo whose deploy
 // clone IS its source — the common single-clone case).
 //
-// Unlike buildDirForConfig (which prefers DeployClonePath for the
-// stale-skip check), this prefers SourcePath because the release diff
+// This prefers SourcePath because the release diff
 // (releaseChangedFiles) compares two SHAs from the webhook's repo, which
 // must both resolve in a clone OF that repo — not in a foreign deploy
 // clone that happens to hold the compose file. Passing a webhook-repo SHA

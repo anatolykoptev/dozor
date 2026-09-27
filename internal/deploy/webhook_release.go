@@ -103,7 +103,7 @@ func releaseChangedFiles(ctx context.Context, rc *RepoConfig, repo, targetCommit
 		ReleaseDiffResolutionTotal.WithLabelValues(repo, "fetch_failed").Inc()
 		return nil, false
 	}
-	deployed := resolveSHA(ctx, dir)
+	deployed := resolveSHA(repo)
 	if deployed == "" || deployed == "unknown" {
 		ReleaseDiffResolutionTotal.WithLabelValues(repo, "no_deployed").Inc()
 		return nil, false

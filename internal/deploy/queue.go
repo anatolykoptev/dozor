@@ -79,7 +79,7 @@ type Queue struct {
 
 	// persistPath, when non-empty, enables durable mirroring of the pending +
 	// in-flight set to a JSON file so a process restart can recover queued and
-	// interrupted builds. shaResolver resolves the deployed HEAD for the
+	// interrupted builds. shaResolver resolves the deployed-SHA receipt for the
 	// no-stale-rebuild guard on recovery. Both are configured via WithPersistence;
 	// zero values keep the queue purely in-memory (original behaviour).
 	// See queue_persist.go (VOLATILE-PENDING-STATE fix, queue layer).
