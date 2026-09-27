@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.2](https://github.com/anatolykoptev/dozor/compare/v1.16.1...v1.16.2) (2026-09-27)
+
+
+### Fixed
+
+* **deploy:** reconcile against a durable deploy receipt, not a clone HEAD ([#208](https://github.com/anatolykoptev/dozor/issues/208)) ([adfeec0](https://github.com/anatolykoptev/dozor/commit/adfeec07c980045d5fd79b9ead5da8949dbd6b53))
+
 ## [1.16.1](https://github.com/anatolykoptev/dozor/compare/v1.16.0...v1.16.1) (2026-09-27)
 
 
