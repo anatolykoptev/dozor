@@ -3,9 +3,13 @@ package deploy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // makeStaticReq returns a minimal BuildRequest for KindStatic tests.
@@ -181,5 +185,49 @@ func TestExecuteStaticBuild_ChangedPathsPassthrough(t *testing.T) {
 				t.Errorf("changedPaths len = %d, want %d; got %v", len(gotPaths), len(tc.changedPaths), gotPaths)
 			}
 		})
+	}
+}
+
+// TestStaticScriptRunner_KillsProcessGroup reproduces issue #180: the static
+// deploy script spawns a grandchild (docker build); a ctx deadline must kill
+// the WHOLE group — before the fix, CommandContext killed only the script and
+// the orphaned grandchild held the pipes, so CombinedOutput blocked on it.
+// Oracle: a uniquely-marked `sleep` grandchild must be dead after the return,
+// not merely the call returning.
+func TestStaticScriptRunner_KillsProcessGroup(t *testing.T) {
+	// Unique sleep duration doubles as the pgrep marker (dash has no exec -a).
+	marker := fmt.Sprintf("%d", 31000+time.Now().UnixNano()%2000)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "deploy.sh")
+	// Grandchild: a long sleep with the unique arg; the script then blocks
+	// forever — exactly like a deploy script waiting on its docker build.
+	content := "#!/bin/sh\nsleep " + marker + " &\nsleep " + marker + "\n"
+	if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := defaultStaticScriptRunner(ctx, script, dir, strings.Repeat("a", 40), nil)
+	if err == nil {
+		t.Fatal("expected ctx error")
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("runner blocked %v on orphaned grandchild — group kill did not happen", d)
+	}
+
+	// The grandchild must actually be dead. Give pgrep a moment to observe.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		out, _ := exec.Command("pgrep", "-f", "sleep "+marker).CombinedOutput()
+		if len(out) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("orphaned grandchild %q still alive 3s after deadline kill", marker)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
