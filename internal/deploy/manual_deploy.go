@@ -149,6 +149,11 @@ func executeManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 			CommitSHA: resolveGitFullSHA(ctx, sourcePath), // full SHA so DEPLOY_SHA and ${SHA} are valid
 			Config:    req.Config,
 		}
+		if req.Config.Heavy {
+			waitForLoadBelowThreshold(ctx)
+			release := acquireCrossLaneLock(ctx, req.Repo, buildReq.CommitSHA)
+			defer release()
+		}
 		if errMsg := composeBuild(ctx, buildReq, "", ""); errMsg != "" {
 			ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "failure").Inc()
 			result.Error = errMsg
@@ -384,6 +389,19 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 		"sha", result.BuiltSHA,
 		"tree_hash", treeHash,
 	)
+
+	// Same P3+P2 guards as the webhook lane's processBuild: a manual heavy
+	// build must serialise against CI and auto-deploys too — running it
+	// unlocked is the 3-concurrent-cargo-build scenario the lock exists to
+	// prevent (issue #130). Fail-safe semantics identical to processBuild:
+	// the load gate proceeds after its cap, the lock proceeds on acquire
+	// timeout — a manual deploy must never deadlock on the guard.
+
+	if req.Config.Heavy {
+		waitForLoadBelowThreshold(ctx)
+		release := acquireCrossLaneLock(ctx, req.Repo, result.BuiltSHA)
+		defer release()
+	}
 
 	if errMsg := composeBuild(ctx, buildReq, worktreePath, treeHash); errMsg != "" {
 		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
