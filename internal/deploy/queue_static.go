@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // staticScriptRunner is the function used to execute the static deploy script.
@@ -33,6 +35,20 @@ func defaultStaticScriptRunner(ctx context.Context, script, repoPath, commitSHA 
 	//nolint:gosec // script path comes from trusted deploy-repos.yaml, not user input
 	cmd := exec.CommandContext(ctx, script)
 	cmd.Dir = repoPath
+	// Kill the whole process GROUP on deadline: the script spawns
+	// `docker build` as a child and CommandContext's default Cancel kills
+	// only the script itself — the orphaned build then holds the pipes
+	// (and the box) until it finishes, and Wait() blocks on the inherited
+	// descriptors, so the reported duration overstated the timeout by the
+	// orphan's tail (issue #180, measured 12m27s against a 10m timeout).
+	// WaitDelay bounds the post-kill wait for the residual case: a
+	// grandchild that escaped the group still holding our pipes.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		//nolint:gosec // process-group kill of our own child tree
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 5 * time.Second
 	changedPathsVal := strings.Join(changedPaths, "\n")
 	cmd.Env = append(cmd.Environ(),
 		"DEPLOY_REPO_PATH="+repoPath,
