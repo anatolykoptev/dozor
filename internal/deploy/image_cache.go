@@ -62,7 +62,7 @@ func defaultDockerLoginRunner(ctx context.Context, registry, username, token str
 	cmd.Stdin = strings.NewReader(token)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("docker login %s: %w: %s", registry, err, truncate(string(out), maxOutputLen))
+		return fmt.Errorf("docker login %s: %w: %s", registry, err, tail(string(out), maxOutputLen))
 	}
 	return nil
 }

@@ -37,3 +37,18 @@ func TestGetDeployStatus_ManualDeployRegistry(t *testing.T) {
 		t.Fatal("ProcessRunning must be false once the deploy completed")
 	}
 }
+
+// Issue #201 continuation: the status path validates the ID before consulting
+// anything — ^deploy-\d+$ rejected the deploy-manual-<ts> IDs that
+// StartManualDeploy mints and advertises, making the registry unreachable.
+func TestValidateDeployID_AcceptsManualIDs(t *testing.T) {
+	if ok, reason := ValidateDeployID("deploy-manual-1700000000"); !ok {
+		t.Fatalf("deploy-manual ID rejected: %s", reason)
+	}
+	if ok, _ := ValidateDeployID("deploy-1700000000"); !ok {
+		t.Fatal("legacy deploy ID must still validate")
+	}
+	if ok, _ := ValidateDeployID("deploy-evil-1700000000"); ok {
+		t.Fatal("arbitrary word IDs must still be rejected")
+	}
+}

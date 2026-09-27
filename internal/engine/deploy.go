@@ -29,6 +29,14 @@ var (
 
 func setManualDeployStatus(id, status string) {
 	manualDeployMu.Lock()
+	// Unbounded growth guard: entries are ~40B, but the map would otherwise
+	// grow one per manual deploy for the process lifetime.
+	if len(manualDeployStates) >= 64 {
+		for k := range manualDeployStates {
+			delete(manualDeployStates, k)
+			break
+		}
+	}
 	manualDeployStates[id] = status
 	manualDeployMu.Unlock()
 }
@@ -200,10 +208,10 @@ func (a *ServerAgent) GetDeployStatus(ctx context.Context, deployID string) Depl
 	// StartManualDeploy the "process" is a goroutine INSIDE dozor — pgrep
 	// can never see it — so consult the registry first (issue #201).
 	manualStatus, isManual := getManualDeployStatus(deployID)
-	pRes := a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("pgrep -f %s 2>/dev/null", deployID))
-	processRunning := pRes.Success && strings.TrimSpace(pRes.Stdout) != ""
-	if isManual {
-		processRunning = manualStatus == manualDeployRunning
+	processRunning := manualStatus == manualDeployRunning
+	if !isManual {
+		pRes := a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("pgrep -f %s 2>/dev/null", deployID))
+		processRunning = pRes.Success && strings.TrimSpace(pRes.Stdout) != ""
 	}
 
 	// Read log file

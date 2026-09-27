@@ -29,8 +29,13 @@ import (
 //
 // Detection is remote-read-only: `git ls-remote` against the source clone's
 // origin URL — no local fetch, so it works even when the clone is stale.
-// Deployed SHA is rev-parse HEAD of buildDirForConfig (the deploy clone whose
-// HEAD tracks what docker compose last built).
+// Deployed SHA is rev-parse HEAD of the repo's OWN source clone — the clone
+// whose HEAD syncSourceCheckout fast-forwards to origin/<branch> at build time,
+// so after a release deploy it sits at the tag's merge commit. The deploy clone
+// (buildDirForConfig) is deliberately NOT used: on this fleet deploy_clone_path
+// points at the compose repo (krolik-server), an unrelated repository whose
+// HEAD can never equal an app-repo tag SHA — comparing against it enqueues a
+// redundant build for every repo on every dozor restart.
 //
 // Conservative: an unresolvable remote URL, target ref, or deployed SHA skips
 // the repo with a WARN — the reconciler must never deploy on a guess.
@@ -41,8 +46,7 @@ func ReconcileMissedReleases(ctx context.Context, cfg *Config, q *Queue) {
 	for key, rc := range cfg.Repos {
 		repo := stripBranchSuffix(key)
 		dir := sourceDirForConfig(rc)
-		buildDir := buildDirForConfig(rc)
-		if dir == "" || buildDir == "" {
+		if dir == "" {
 			continue
 		}
 		target, err := reconcileTarget(ctx, dir, &rc)
@@ -54,7 +58,7 @@ func ReconcileMissedReleases(ctx context.Context, cfg *Config, q *Queue) {
 		if target == "" {
 			continue
 		}
-		deployed := reconcileDeployedSHA(ctx, buildDir)
+		deployed := reconcileDeployedSHA(ctx, dir)
 		if deployed == "" || deployed == "unknown" {
 			// Never deployed → not a "missed release" we can prove; the first
 			// real push/release deploys it. Don't guess.
@@ -107,30 +111,37 @@ func latestSemverTag(ctx context.Context, url string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Sorted newest-first by version; pick the first semver-shaped tag and
-	// prefer its peeled commit line over the tag-object line.
+	// Sorted newest-first by version. Annotated tags emit TWO lines — the
+	// tag object (refs/tags/vX.Y.Z) then the peeled commit
+	// (refs/tags/vX.Y.Z^{}); the object line sorts first, so a naive
+	// first-match returns the tag object SHA — which is not a commit, never
+	// equals a deployed HEAD, and would poison CommitSHA/DEPLOY_SHA with a
+	// non-commit. Remember the first unpeeled semver tag and keep scanning
+	// for ITS peeled line; a second tag's line before the peel means the tag
+	// was lightweight (object line == commit).
+	var candTag, candSHA string
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 {
 			continue
 		}
 		sha, ref := fields[0], fields[1]
-		tag := strings.TrimPrefix(ref, "refs/tags/")
-		peeled := strings.HasSuffix(tag, "^{}")
-		tag = strings.TrimSuffix(tag, "^{}")
-		if !matchesSemVer(tag) {
+		name := strings.TrimPrefix(ref, "refs/tags/")
+		if peeled := strings.HasSuffix(name, "^{}"); peeled {
+			if strings.TrimSuffix(name, "^{}") == candTag {
+				return sha, nil // annotated tag → the peeled COMMIT
+			}
 			continue
 		}
-		if peeled {
-			return sha, nil // annotated tag → the peeled commit
+		if !matchesSemVer(name) {
+			continue
 		}
-		// Lightweight tag line — first match for this tag wins; the ^{} line,
-		// when present, sorts AFTER it, so keep scanning only if the ref was
-		// the tag object line (which we take anyway — lightweight tags resolve
-		// directly to the commit).
-		return sha, nil
+		if candTag != "" {
+			return candSHA, nil // previous tag had no peel → lightweight
+		}
+		candTag, candSHA = name, sha
 	}
-	return "", nil
+	return candSHA, nil
 }
 
 // lsRemoteSHA resolves a single ref to a commit SHA via git ls-remote.
@@ -150,8 +161,11 @@ func lsRemoteSHA(ctx context.Context, url, ref string) (string, error) {
 
 // ── seams (replaced in tests) ──────────────────────────────────────────────
 
-// gitRemoteURLRunner resolves a clone's origin URL.
-var gitRemoteURLRunner = func(ctx context.Context, dir string) (string, error) {
+// gitRemoteURLRunner resolves a clone's origin URL. Replaceable in tests.
+var gitRemoteURLRunner = defaultGitRemoteURLRunner
+
+//nolint:unused // DI default seam — assigned to var gitRemoteURLRunner, swapped in tests
+func defaultGitRemoteURLRunner(ctx context.Context, dir string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin") //nolint:gosec // trusted config dir
 	cmd.Dir = dir
 	out, err := cmd.Output()
@@ -163,8 +177,11 @@ var gitRemoteURLRunner = func(ctx context.Context, dir string) (string, error) {
 
 // gitLsRemoteRunner runs `git ls-remote [flags] <url> [pattern]` — git's
 // usage is `ls-remote [<options>] <repository> [<refs>...]`, so url sits
-// between flags and patterns. Returns raw stdout.
-var gitLsRemoteRunner = func(ctx context.Context, url, pattern string, flags ...string) (string, error) {
+// between flags and patterns. Returns raw stdout. Replaceable in tests.
+var gitLsRemoteRunner = defaultGitLsRemoteRunner
+
+//nolint:unused // DI default seam — assigned to var gitLsRemoteRunner, swapped in tests
+func defaultGitLsRemoteRunner(ctx context.Context, url, pattern string, flags ...string) (string, error) {
 	argv := append([]string{"ls-remote"}, flags...)
 	argv = append(argv, url)
 	if pattern != "" {
@@ -178,6 +195,8 @@ var gitLsRemoteRunner = func(ctx context.Context, url, pattern string, flags ...
 	return string(out), nil
 }
 
-// reconcileDeployedSHA resolves the deployed commit (deploy clone HEAD).
+// reconcileDeployedSHA resolves the deployed commit — the FULL 40-char SHA
+// (ls-remote emits full SHAs; a short SHA can never equal them, making every
+// restart look like drift). Bound to resolveGitFullSHA, not resolveGitSHA.
 // Seam var so tests can stub the resolver.
-var reconcileDeployedSHA = resolveGitSHA
+var reconcileDeployedSHA = resolveGitFullSHA

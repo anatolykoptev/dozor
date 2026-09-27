@@ -240,24 +240,36 @@ func TestSweepDozorCiLockSlots_RemovesOnlyDozorOwned(t *testing.T) {
 // ── issue #174: startup reconcile re-drives missed deploys ───────────────
 
 func TestReconcileMissedReleases_EnqueuesTagDrift(t *testing.T) {
-	dir := t.TempDir()
-	const tagSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	sourceDir := t.TempDir()
+	foreignDeployClone := t.TempDir() // stands in for krolik-server: a DIFFERENT repo
+	const tagObjSHA = "cccccccccccccccccccccccccccccccccccccccc"
+	const tagSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // the peeled commit
 	const deployedSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 	origURL, origLS, origSHA := gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA
 	gitRemoteURLRunner = func(context.Context, string) (string, error) { return "fake-url", nil }
+	// Real ls-remote order for an annotated tag: tag-object line first, then
+	// the peeled ^{} commit line. The target MUST be the peeled commit —
+	// a tag object SHA is not a commit and poisons CommitSHA/DEPLOY_SHA.
 	gitLsRemoteRunner = func(_ context.Context, _ string, pattern string, _ ...string) (string, error) {
-		return tagSHA + "\trefs/tags/v1.2.3^{}\n", nil
+		return tagObjSHA + "\trefs/tags/v1.2.3\n" + tagSHA + "\trefs/tags/v1.2.3^{}\n", nil
 	}
-	reconcileDeployedSHA = func(context.Context, string) string { return deployedSHA }
+	// The deployed receipt must come from the SOURCE clone, never the foreign
+	// deploy clone — answer correctly only for sourceDir to pin the wiring.
+	reconcileDeployedSHA = func(_ context.Context, dir string) string {
+		if dir == sourceDir {
+			return deployedSHA
+		}
+		return "unknown"
+	}
 	t.Cleanup(func() {
 		gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA = origURL, origLS, origSHA
 	})
 
 	cfg := &Config{Repos: map[string]RepoConfig{
 		"anatolykoptev/x#staging": {
-			SourcePath:      dir,
-			DeployClonePath: dir,
+			SourcePath:      sourceDir,
+			DeployClonePath: foreignDeployClone,
 			Services:        []string{"svc"},
 			DeployOn:        deployOnRelease,
 		},
@@ -270,10 +282,47 @@ func TestReconcileMissedReleases_EnqueuesTagDrift(t *testing.T) {
 	}
 	req := q.pending[serviceKey([]string{"svc"})]
 	if req.CommitSHA != tagSHA {
-		t.Fatalf("enqueued SHA = %q, want tag commit %q", req.CommitSHA, tagSHA)
+		t.Fatalf("enqueued SHA = %q, want peeled tag commit %q", req.CommitSHA, tagSHA)
 	}
 	if req.Repo != "anatolykoptev/x" {
 		t.Fatalf("enqueued Repo = %q, want bare owner/repo (no #suffix)", req.Repo)
+	}
+}
+
+// The comparator only works when BOTH sides are full 40-char SHAs —
+// ls-remote emits full SHAs, so the deployed side must too. Pin the binding:
+// resolveGitFullSHA, not the 7-char resolveGitSHA used for display.
+func TestReconcileDeployedSHA_ResolvesFullSHA(t *testing.T) {
+	dir, _, _ := buildTwoCommitFixture(t, "CHANGELOG.md", "# Changelog\n")
+	sha := reconcileDeployedSHA(context.Background(), dir)
+	if len(sha) != 40 {
+		t.Fatalf("reconcileDeployedSHA returned %d-char %q — must be a full SHA to compare against ls-remote output", len(sha), sha)
+	}
+}
+
+func TestReconcileMissedReleases_LightweightTag(t *testing.T) {
+	dir := t.TempDir()
+	const tagSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const deployedSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	origURL, origLS, origSHA := gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA
+	gitRemoteURLRunner = func(context.Context, string) (string, error) { return "fake-url", nil }
+	// Lightweight tag: object line only, no ^{} follow-up.
+	gitLsRemoteRunner = func(context.Context, string, string, ...string) (string, error) {
+		return tagSHA + "\trefs/tags/v1.2.3\n", nil
+	}
+	reconcileDeployedSHA = func(context.Context, string) string { return deployedSHA }
+	t.Cleanup(func() {
+		gitRemoteURLRunner, gitLsRemoteRunner, reconcileDeployedSHA = origURL, origLS, origSHA
+	})
+
+	cfg := &Config{Repos: map[string]RepoConfig{
+		"anatolykoptev/x": {SourcePath: dir, Services: []string{"svc"}, DeployOn: deployOnRelease},
+	}}
+	q, _ := newTestQueue()
+	ReconcileMissedReleases(context.Background(), cfg, q)
+	if !q.queuedHas(serviceKey([]string{"svc"})) {
+		t.Fatal("lightweight-tag drift was not enqueued")
 	}
 }
 

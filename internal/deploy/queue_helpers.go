@@ -35,7 +35,7 @@ func defaultRunCmd(ctx context.Context, dir, name string, args ...string) error 
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%w: %s", err, truncate(string(output), maxOutputLen))
+		return fmt.Errorf("%w: %s", err, tail(string(output), maxOutputLen))
 	}
 	return nil
 }
