@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.16.3](https://github.com/anatolykoptev/dozor/compare/v1.16.2...v1.16.3) (2026-09-27)
+
+
+### Fixed
+
+* **deploy:** kill the static-script process GROUP on timeout ([#211](https://github.com/anatolykoptev/dozor/issues/211)) ([f06519b](https://github.com/anatolykoptev/dozor/commit/f06519bf03d3b5ff168c3f1015db3210582fd1e3))
+* **deploy:** manual heavy builds take the cross-lane lock ([#212](https://github.com/anatolykoptev/dozor/issues/212)) ([6ecc0c8](https://github.com/anatolykoptev/dozor/commit/6ecc0c8a3ef34c012d10c12a039b2fa7015bea31))
+* **deploy:** skip the image-cache push when the pull already hit ([#213](https://github.com/anatolykoptev/dozor/issues/213)) ([bc55144](https://github.com/anatolykoptev/dozor/commit/bc55144f32615faf121fe2c1250ae7d585f7458d))
+* **deploy:** stale-skip guards read the deploy receipt, not a clone HEAD ([#209](https://github.com/anatolykoptev/dozor/issues/209)) ([7aab704](https://github.com/anatolykoptev/dozor/commit/7aab7046bcf497eda187270145121a8d56fee70e))
+
 ## [1.16.2](https://github.com/anatolykoptev/dozor/compare/v1.16.1...v1.16.2) (2026-09-27)
 
 
