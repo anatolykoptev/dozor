@@ -85,6 +85,24 @@ func releaseChangedFiles(ctx context.Context, rc *RepoConfig, repo, targetCommit
 		ReleaseDiffResolutionTotal.WithLabelValues(repo, "no_dir").Inc()
 		return nil, false
 	}
+	// Fetch the repo's own source clone BEFORE diffing: the release commit
+	// (targetCommitish) is brand-new and only exists in the clone after a
+	// fetch. Without this the diff exits 128 ("bad revision") on EVERY
+	// release and build_paths gating silently degrades to a conservative
+	// full rebuild — ~31 wasted full builds/week observed (issues #173,
+	// #175, #176, #177, #178, #179, #198 — seven filings, one root cause).
+	// A fetch failure degrades identically to every other unresolved-diff
+	// path: log, count, build conservatively. Never skip on a guess.
+	branch := rc.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	if err := gitFetchRunner(ctx, dir, branch); err != nil {
+		slog.Warn("deploy/webhook: release diff source fetch failed — building conservatively",
+			"dir", dir, "branch", branch, "target", targetCommitish, "error", err)
+		ReleaseDiffResolutionTotal.WithLabelValues(repo, "fetch_failed").Inc()
+		return nil, false
+	}
 	deployed := resolveSHA(ctx, dir)
 	if deployed == "" || deployed == "unknown" {
 		ReleaseDiffResolutionTotal.WithLabelValues(repo, "no_deployed").Inc()

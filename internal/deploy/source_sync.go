@@ -90,7 +90,7 @@ func defaultGitRefFFRunner(ctx context.Context, sourcePath, branch string) (stri
 		// On a lock-acquisition failure the closure never ran, so out is empty.
 		// Avoid the trailing ": " from "%w: %s" with an empty string — append
 		// git's output only when there is some.
-		if outStr := truncate(string(out), maxOutputLen); outStr != "" {
+		if outStr := tail(string(out), maxOutputLen); outStr != "" {
 			return string(out), fmt.Errorf("%w: %s", err, outStr)
 		}
 		return string(out), err

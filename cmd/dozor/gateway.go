@@ -343,10 +343,23 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 	//  2. RecoverPending replays debounce entries — both route through
 	//     Queue.Submit, which dedups by (service-key, SHA), so a commit recovered
 	//     by BOTH layers produces exactly one build (no double-recovery).
+	// Reclaim box-wide ci-lock slots leaked by a previous dozor process
+	// killed mid-heavy-build (the deferred release never ran). Must run
+	// BEFORE RecoverQueue: a re-enqueued interrupted build would otherwise
+	// block ~45min on the slot its predecessor died holding (issue #193).
+	deploy.SweepDozorCiLockSlots()
+
 	if err := queue.RecoverQueue(ctx); err != nil {
 		slog.Warn("deploy: queue recovery failed", "error", err)
 	}
 	handler.RecoverPending(ctx)
+
+	// Self-heal releases missed while dozor was down (a webhook delivery
+	// during a restart gets a 502 and GitHub does not auto-retry): compare
+	// each repo's latest semver tag / branch tip against the deployed SHA
+	// and enqueue the drift (issue #174). Queue dedup makes it a no-op for
+	// builds RecoverQueue already re-enqueued.
+	go deploy.ReconcileMissedReleases(ctx, cfg, queue)
 	mx.Handle("POST /deploy/github", handler)
 
 	// Tear down debouncer goroutines when the gateway shuts down.

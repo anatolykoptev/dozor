@@ -424,6 +424,15 @@ func PreinitPendingDeployGauge(cfg *Config) {
 // re-check, so calling it for a non-manual repo would incorrectly create a
 // series for a repo that should never appear on this gauge.
 func setPendingDeploy(repo string, services []string, v float64) {
+	repo = stripBranchSuffix(repo)
+	// Canonicalise the label key: callers reach this with EITHER the bare
+	// webhook FullName ("owner/repo") OR a config map key that carries a
+	// target suffix ("owner/repo#staging"). Preinit/restore already normalise
+	// via stripBranchSuffix — without the same normalisation here the gauge
+	// is SET under "owner/repo" (release path) and CLEARED under
+	// "owner/repo#staging" (manual path), leaving a permanently-stuck
+	// dozor_pending_deploy=1 series that DozorReleaseWithheld can never see
+	// clear (issues #202, #203).
 	for _, svc := range services {
 		PendingDeployGauge.WithLabelValues(repo, svc).Set(v)
 	}

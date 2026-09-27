@@ -43,7 +43,7 @@ func defaultGitFetchRunner(ctx context.Context, clonePath, branch string) error 
 		cmd.Dir = clonePath
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("%w: %s", err, truncate(string(out), maxOutputLen))
+			return fmt.Errorf("%w: %s", err, tail(string(out), maxOutputLen))
 		}
 		return nil
 	})
@@ -88,7 +88,7 @@ func defaultGitPullFFRunner(ctx context.Context, clonePath, branch string) error
 	cmd.Dir = clonePath
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%w: %s", err, truncate(string(out), maxOutputLen))
+		return fmt.Errorf("%w: %s", err, tail(string(out), maxOutputLen))
 	}
 	return nil
 }

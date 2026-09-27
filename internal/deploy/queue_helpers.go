@@ -35,7 +35,7 @@ func defaultRunCmd(ctx context.Context, dir, name string, args ...string) error 
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%w: %s", err, truncate(string(output), maxOutputLen))
+		return fmt.Errorf("%w: %s", err, tail(string(output), maxOutputLen))
 	}
 	return nil
 }
@@ -92,6 +92,18 @@ func ShortSHA(sha string) string {
 func truncate(s string, max int) string {
 	if len(s) > max {
 		return s[:max] + "..."
+	}
+	return s
+}
+
+// tail returns the LAST max bytes of s, marking truncation with a leading
+// "...". Use for captured subprocess output (stderr_tail fields): the
+// actionable error sits at the END of a docker build/up stream, after the
+// progress spam — truncate() keeps the head, which showed "[internal] load
+// build definition" while discarding the actual complaint (issue #165).
+func tail(s string, max int) string {
+	if len(s) > max {
+		return "..." + s[len(s)-max:]
 	}
 	return s
 }

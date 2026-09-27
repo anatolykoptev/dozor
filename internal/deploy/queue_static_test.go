@@ -12,7 +12,7 @@ import (
 func makeStaticReq(script string) BuildRequest {
 	return BuildRequest{
 		Repo:      "anatolykoptev/krolik-tools-site",
-		CommitSHA: "abc1234567890",
+		CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		Config: RepoConfig{
 			Kind:               KindStatic,
 			SourcePath:         "/home/krolik/sites/krolik-tools-site",
@@ -49,7 +49,7 @@ func TestExecuteStaticBuild_HappyPath(t *testing.T) {
 	if gotRepoPath != "/home/krolik/sites/krolik-tools-site" {
 		t.Errorf("repoPath = %q", gotRepoPath)
 	}
-	if gotSHA != "abc1234567890" {
+	if gotSHA != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Errorf("commitSHA = %q", gotSHA)
 	}
 	if len(gotChangedPaths) != 2 {

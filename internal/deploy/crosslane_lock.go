@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -143,6 +145,58 @@ func ciLockEnv(repo, buildID string) []string {
 		// slot 1 (their default CI_LOCK_SLOT_START=1). This way a 45m Rust
 		// cargo build never blocks a 3m Go preflight on the single shared box.
 		"CI_LOCK_SLOT_START=2",
+	}
+}
+
+// SweepDozorCiLockSlots releases box-wide ci-lock slots still owned by a
+// PREVIOUS dozor process — the deferred release in processBuild never ran when
+// dozor was killed/restarted mid-heavy-build, so the slot dir and its ci-job-*
+// reverse index outlive the process. The next build then blocks on its own
+// corpse until the script's 1h stale-steal — observed as a ~45min silent stall
+// on every dozor self-deploy that interrupts a heavy build (issue #193).
+//
+// Called once at startup, BEFORE queue.RecoverQueue re-enqueues interrupted
+// builds, so a recovered build acquires cleanly instead of queueing behind the
+// slot it died holding. Safe by construction:
+//   - Runs before any build in THIS process could have acquired a slot, so a
+//     dozor-owned slot can only belong to a dead predecessor.
+//   - Only owner keys matching dozor_<repo>-*-<ciLockJob> are touched — CI
+//     runner slots (gha_*) are never swept.
+//
+// Best-effort: a failed sweep logs and continues; the stale-steal remains the
+// backstop.
+func SweepDozorCiLockSlots() {
+	runDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runDir == "" {
+		runDir = "/run/user/" + strconv.Itoa(os.Getuid())
+	}
+	slots, err := filepath.Glob(filepath.Join(runDir, "ci-slot-*"))
+	if err != nil {
+		slog.Warn("deploy: ci-lock sweep: cannot list slots", "dir", runDir, "error", err)
+		return
+	}
+	for _, slot := range slots {
+		ownerBytes, err := os.ReadFile(filepath.Join(slot, "owner"))
+		if err != nil {
+			continue // mid-acquire or already gone — not ours to judge
+		}
+		owner := strings.TrimSpace(string(ownerBytes))
+		// JOB_KEY shape from the acquire script: <repo>-<runid>-<job> with '/'
+		// flattened to '_', so a dozor slot owner is "dozor_<repo>-<id>-dozor-deploy".
+		if !strings.HasPrefix(owner, "dozor_") || !strings.HasSuffix(owner, "-"+ciLockJob) {
+			continue
+		}
+		slog.Info("deploy: sweeping ci-lock slot leaked by previous dozor process",
+			"slot", filepath.Base(slot), "owner", owner)
+		if err := os.RemoveAll(slot); err != nil {
+			slog.Warn("deploy: ci-lock sweep: cannot remove slot", "slot", slot, "error", err)
+			continue
+		}
+		// Mirror ci-lock-release.sh: drop the reverse-index state file so a
+		// later release attempt for the same key is a clean no-op.
+		if err := os.Remove(filepath.Join(runDir, "ci-job-"+owner)); err != nil && !os.IsNotExist(err) {
+			slog.Warn("deploy: ci-lock sweep: cannot remove state file", "owner", owner, "error", err)
+		}
 	}
 }
 

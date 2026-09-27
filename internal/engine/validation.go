@@ -176,7 +176,9 @@ func ValidateTimeDuration(duration string) (bool, string) {
 	return true, ""
 }
 
-var deployIDRe = regexp.MustCompile(`^deploy-\d{10,13}$`)
+// deploy-<ts> is the legacy nohup path; deploy-manual-<ts> is the SHA-pinned
+// queue path — both are minted by this process and both must validate.
+var deployIDRe = regexp.MustCompile(`^deploy(-manual)?-\d{10,13}$`)
 
 // ValidateDeployID checks if a deploy ID format is valid.
 func ValidateDeployID(id string) (bool, string) {

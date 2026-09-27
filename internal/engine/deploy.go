@@ -6,10 +6,47 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/deploy"
 )
+
+// manualDeployStatus tracks in-flight SHA-pinned deploys started by
+// StartManualDeploy. Unlike the legacy StartDeploy (nohup + pgrep), a manual
+// deploy runs as a goroutine inside dozor, so neither pgrep nor the log file
+// can answer "is it still running" — the registry can (issue #201).
+const (
+	manualDeployRunning   = "RUNNING"
+	manualDeployCompleted = "COMPLETED"
+	manualDeployFailed    = "FAILED"
+)
+
+var (
+	manualDeployMu     sync.Mutex
+	manualDeployStates = map[string]string{} // deployID → manualDeploy* value
+)
+
+func setManualDeployStatus(id, status string) {
+	manualDeployMu.Lock()
+	// Unbounded growth guard: entries are ~40B, but the map would otherwise
+	// grow one per manual deploy for the process lifetime.
+	if len(manualDeployStates) >= 64 {
+		for k := range manualDeployStates {
+			delete(manualDeployStates, k)
+			break
+		}
+	}
+	manualDeployStates[id] = status
+	manualDeployMu.Unlock()
+}
+
+func getManualDeployStatus(id string) (string, bool) {
+	manualDeployMu.Lock()
+	defer manualDeployMu.Unlock()
+	s, ok := manualDeployStates[id]
+	return s, ok
+}
 
 // StartManualDeploy triggers a SHA-pinned deploy for a repo configured in
 // deploy-repos.yaml, using the same git-worktree pipeline as the webhook path.
@@ -35,6 +72,15 @@ func (a *ServerAgent) StartManualDeploy(ctx context.Context, req deploy.ManualDe
 	}
 	f.Close() //nolint:errcheck // just ensuring file exists before goroutine writes
 
+	// Register the deploy BEFORE the goroutine so GetDeployStatus answers
+	// truthfully from the first instant (issue #201: the file stayed empty
+	// for the whole build and pgrep -f can't see a goroutine, so the status
+	// endpoint reported UNKNOWN for an ID it had just advertised).
+	setManualDeployStatus(deployID, manualDeployRunning)
+	// Same for the log file: a RUNNING marker keeps the advertised path
+	// honest while the real build output continues to journald.
+	_ = os.WriteFile(logFile, []byte(fmt.Sprintf("RUNNING: %s\n", deployID)), 0o600) //nolint:mnd
+
 	go func() {
 		// Use a fresh background context so the deploy survives the MCP
 		// request context being cancelled (MCP requests are short-lived).
@@ -53,8 +99,10 @@ func (a *ServerAgent) StartManualDeploy(ctx context.Context, req deploy.ManualDe
 
 		var line string
 		if result.Success {
+			setManualDeployStatus(deployID, manualDeployCompleted)
 			line = fmt.Sprintf("DEPLOY COMPLETE: %s (sha=%s)\n", deployID, result.BuiltSHA)
 		} else {
+			setManualDeployStatus(deployID, manualDeployFailed)
 			line = fmt.Sprintf("DEPLOY FAILED: %s: %s\n", deployID, result.Error)
 		}
 
@@ -156,9 +204,15 @@ func (a *ServerAgent) CheckDeployHealth(ctx context.Context, services []string) 
 func (a *ServerAgent) GetDeployStatus(ctx context.Context, deployID string) DeployStatus {
 	logFile := fmt.Sprintf("${TMPDIR:-/tmp}/%s.log", deployID)
 
-	// Check if process is still running
-	pRes := a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("pgrep -f %s 2>/dev/null", deployID))
-	processRunning := pRes.Success && strings.TrimSpace(pRes.Stdout) != ""
+	// Check if process is still running. For deploys started by
+	// StartManualDeploy the "process" is a goroutine INSIDE dozor — pgrep
+	// can never see it — so consult the registry first (issue #201).
+	manualStatus, isManual := getManualDeployStatus(deployID)
+	processRunning := manualStatus == manualDeployRunning
+	if !isManual {
+		pRes := a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("pgrep -f %s 2>/dev/null", deployID))
+		processRunning = pRes.Success && strings.TrimSpace(pRes.Stdout) != ""
+	}
 
 	// Read log file
 	lRes := a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("cat %s 2>/dev/null", logFile))
@@ -166,6 +220,8 @@ func (a *ServerAgent) GetDeployStatus(ctx context.Context, deployID string) Depl
 
 	var status string
 	switch {
+	case isManual:
+		status = manualStatus
 	case processRunning:
 		status = "RUNNING"
 	case strings.Contains(logContent, "DEPLOY COMPLETE"):

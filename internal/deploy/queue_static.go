@@ -80,7 +80,7 @@ func executeStaticBuild(ctx context.Context, req BuildRequest) BuildResult {
 	}
 	if err != nil {
 		result.Error = fmt.Sprintf("static deploy script %s: %v: %s",
-			script, err, truncate(string(out), maxOutputLen))
+			script, err, tail(string(out), maxOutputLen))
 		return result
 	}
 
