@@ -881,3 +881,97 @@ func TestManualDeploy_ComposeLane_UsesFullSHA_AtTheCallSite(t *testing.T) {
 		t.Fatalf("artifact tag %q has len %d, want 12", tag, len(tag))
 	}
 }
+
+// TestManualDeploy_HeavyAcquiresCrossLaneLock pins issue #130: a manual heavy
+// compose deploy must serialise against CI + webhook builds via the same
+// cross-lane lock processBuild uses. Before the fix the manual path called
+// composeBuild directly — three concurrent cargo builds on the shared box.
+func TestManualDeploy_HeavyAcquiresCrossLaneLock(t *testing.T) {
+	fl := newFakeLock(t, true)
+	restore := installFakeLock(t, fl)
+	defer restore()
+	origReader := loadavgReader
+	loadavgReader = func() (float64, error) { return 0.1, nil }
+	defer func() { loadavgReader = origReader }()
+
+	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
+		return "main", nil
+	})
+	withGitTreeHashRunner(t, func(_ context.Context, _ string) (string, error) {
+		return "72def7ea3afd8dd4c5aa384823cd97d534d01763", nil
+	})
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return "abc1234", nil
+	})
+	withCmdRunner(t, func(_ context.Context, _ string, _ string, _ ...string) error {
+		return nil // git worktree add/cleanup, docker build/up — all succeed
+	})
+	withOutputRunner(t, composeImagesOutputRunner("oxpulse-chat", "/fake/source"))
+	defer zeroDelays(t)()
+
+	req := ManualDeployRequest{
+		Repo: "anatolykoptev/oxpulse-chat",
+		Config: RepoConfig{
+			Branch:      "main",
+			SourcePath:  "/fake/source",
+			ComposePath: "/fake/compose",
+			Services:    []string{"oxpulse-chat"},
+			Heavy:       true,
+		},
+	}
+
+	result := ExecuteManualDeploy(context.Background(), req)
+	if !result.Success {
+		t.Fatalf("expected success, got error: %s", result.Error)
+	}
+	acq, rel, _, _ := fl.snapshot()
+	if acq != 1 {
+		t.Fatalf("heavy manual deploy ran UNLOCKED — acquires=%d", acq)
+	}
+	if rel != 1 {
+		t.Fatalf("lock not released after manual deploy — releases=%d", rel)
+	}
+}
+
+// Non-heavy manual deploys must stay cheap: no lock interaction at all.
+func TestManualDeploy_NonHeavySkipsCrossLaneLock(t *testing.T) {
+	fl := newFakeLock(t, true)
+	restore := installFakeLock(t, fl)
+	defer restore()
+
+	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
+		return "main", nil
+	})
+	withGitTreeHashRunner(t, func(_ context.Context, _ string) (string, error) {
+		return "72def7ea3afd8dd4c5aa384823cd97d534d01763", nil
+	})
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return "abc1234", nil
+	})
+	withCmdRunner(t, func(_ context.Context, _ string, _ string, _ ...string) error {
+		return nil
+	})
+	withOutputRunner(t, composeImagesOutputRunner("go-wowa", "/fake/source"))
+	defer zeroDelays(t)()
+
+	req := ManualDeployRequest{
+		Repo: "anatolykoptev/go-wowa",
+		Config: RepoConfig{
+			Branch:      "main",
+			SourcePath:  "/fake/source",
+			ComposePath: "/fake/compose",
+			Services:    []string{"go-wowa"},
+		},
+	}
+
+	result := ExecuteManualDeploy(context.Background(), req)
+	if !result.Success {
+		t.Fatalf("expected success, got error: %s", result.Error)
+	}
+	acq, _, _, _ := fl.snapshot()
+	if acq != 0 {
+		t.Fatalf("non-heavy manual deploy touched the cross-lane lock: acquires=%d", acq)
+	}
+}
