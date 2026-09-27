@@ -296,7 +296,7 @@ func TestComposeBuild_InjectsBuildArgs(t *testing.T) {
 		},
 	}
 
-	errMsg := composeBuild(context.Background(), req, "/fake/worktree", "")
+	errMsg, _ := composeBuild(context.Background(), req, "/fake/worktree", "")
 	if errMsg != "" {
 		t.Fatalf("composeBuild: unexpected error: %s", errMsg)
 	}
@@ -355,7 +355,7 @@ func TestComposeBuild_InjectsBuildArgs_NoWorktree(t *testing.T) {
 	}
 
 	// worktreePath = "" → no override generation
-	errMsg := composeBuild(context.Background(), req, "", "")
+	errMsg, _ := composeBuild(context.Background(), req, "", "")
 	if errMsg != "" {
 		t.Fatalf("composeBuild no-worktree: unexpected error: %s", errMsg)
 	}
@@ -402,7 +402,7 @@ func TestComposeBuild_ExtraBuildArgs_SHAPlaceholder(t *testing.T) {
 		},
 	}
 
-	errMsg := composeBuild(context.Background(), req, "/fake/worktree", "")
+	errMsg, _ := composeBuild(context.Background(), req, "/fake/worktree", "")
 	if errMsg != "" {
 		t.Fatalf("composeBuild: unexpected error: %s", errMsg)
 	}

@@ -369,7 +369,7 @@ func TestComposeBuild_PullHitSkipsBuild(t *testing.T) {
 		},
 	}
 
-	errMsg := composeBuild(context.Background(), req, "/fake/worktree", treeHash)
+	errMsg, _ := composeBuild(context.Background(), req, "/fake/worktree", treeHash)
 	if errMsg != "" {
 		t.Fatalf("composeBuild: unexpected error: %s", errMsg)
 	}
@@ -412,7 +412,7 @@ func TestComposeBuild_PullMissBuilds(t *testing.T) {
 		},
 	}
 
-	errMsg := composeBuild(context.Background(), req, "/fake/worktree", treeHash)
+	errMsg, _ := composeBuild(context.Background(), req, "/fake/worktree", treeHash)
 	if errMsg != "" {
 		t.Fatalf("composeBuild: unexpected error: %s", errMsg)
 	}
@@ -452,7 +452,7 @@ func TestComposeBuild_NoImageCache_BuildsAsBefore(t *testing.T) {
 		},
 	}
 
-	errMsg := composeBuild(context.Background(), req, "/fake/worktree", "someTreeHash")
+	errMsg, _ := composeBuild(context.Background(), req, "/fake/worktree", "someTreeHash")
 	if errMsg != "" {
 		t.Fatalf("composeBuild: unexpected error: %s", errMsg)
 	}

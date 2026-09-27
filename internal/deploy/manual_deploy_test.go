@@ -975,3 +975,77 @@ func TestManualDeploy_NonHeavySkipsCrossLaneLock(t *testing.T) {
 		t.Fatalf("non-heavy manual deploy touched the cross-lane lock: acquires=%d", acq)
 	}
 }
+
+// TestManualDeploy_PullHit_DoesNotRePush pins issue #168: when the image-cache
+// pull HITs (build skipped), dozor must NOT push the just-pulled image back
+// under the tag it came from — waste plus a spurious ERROR when the registry
+// credential is unusable, on a deploy that in fact went perfectly.
+func TestManualDeploy_PullHit_DoesNotRePush(t *testing.T) {
+	const fakeTreeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
+	t.Setenv("DOZOR_IMAGE_CACHE_TOKEN_CMD", "fake-token-cmd")
+
+	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
+		return "main", nil
+	})
+	withGitTreeHashRunner(t, func(_ context.Context, _ string) (string, error) {
+		return fakeTreeHash, nil
+	})
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return "abc1234", nil
+	})
+	withTokenCommandRunner(t, func(_ context.Context, _ string) (string, error) { return "fake-token", nil })
+	withDockerLoginRunner(t, func(_ context.Context, _, _, _ string) error { return nil })
+	withOutputRunner(t, composeImagesOutputRunner("oxpulse-chat", "/fake/source"))
+	defer zeroDelays(t)()
+
+	var sawPull, sawPush, sawBuild bool
+	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
+		if name == "docker" && len(args) > 0 {
+			switch args[0] {
+			case "pull":
+				sawPull = true
+				return nil // cache HIT
+			case "push":
+				sawPush = true
+			}
+		}
+		if name == "docker" && len(args) > 1 && args[0] == "compose" && args[1] == "build" {
+			sawBuild = true
+		}
+		return nil
+	})
+	origBuild := buildRunner
+	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		sawBuild = true
+		return nil, nil
+	}
+	defer func() { buildRunner = origBuild }()
+
+	req := ManualDeployRequest{
+		Repo: "anatolykoptev/oxpulse-chat",
+		Config: RepoConfig{
+			Branch:      "main",
+			SourcePath:  "/fake/source",
+			ComposePath: "/fake/compose",
+			Services:    []string{"oxpulse-chat"},
+			ImageCache: ImageCacheConfig{
+				Registry: "ghcr.io/anatolykoptev/oxpulse-chat",
+			},
+		},
+	}
+
+	result := ExecuteManualDeploy(context.Background(), req)
+	if !result.Success {
+		t.Fatalf("expected success, got error: %s", result.Error)
+	}
+	if !sawPull {
+		t.Fatal("expected the cache pull to be attempted")
+	}
+	if sawBuild {
+		t.Fatal("build must NOT run on a pull hit")
+	}
+	if sawPush {
+		t.Fatal("pull-hit pushed the just-pulled image back — issue #168 regression")
+	}
+}

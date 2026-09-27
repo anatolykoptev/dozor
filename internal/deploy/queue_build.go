@@ -124,19 +124,16 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 	}
 	defer worktreeCleanup()
 
-	if errMsg := composeBuild(ctx, req, worktreePath, treeHash); errMsg != "" {
+	if errMsg, builtNow := composeBuild(ctx, req, worktreePath, treeHash); errMsg != "" {
 		result.Error = errMsg
 		return result
-	}
-
-	// Image-cache push-after-build: tag and push the freshly-built image to
-	// the registry under the tree-hash tag. Best-effort — push failure NEVER
-	// fails the deploy (the image is already built and will be brought up),
-	// but it MUST emit an ERROR-level log naming the tag and error so a
-	// silently-failing push is observable.
-	if treeHash != "" {
+	} else if treeHash != "" && builtNow {
 		pushCachedImages(ctx, req, treeHash)
 	}
+
+	// Image-cache push-after-build runs inside the composeBuild result
+	// handling above — gated on builtNow so a cache pull-hit is not
+	// re-pushed under the tag it came from (issue #168).
 
 	// deploy_on: manual gate (compose) — the image is built/pulled and
 	// published; withhold composeUp and record that a deployable artifact is

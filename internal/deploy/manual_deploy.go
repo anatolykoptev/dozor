@@ -154,7 +154,9 @@ func executeManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 			release := acquireCrossLaneLock(ctx, req.Repo, buildReq.CommitSHA)
 			defer release()
 		}
-		if errMsg := composeBuild(ctx, buildReq, "", ""); errMsg != "" {
+		// from_disk builds must never push to the image cache (no worktree,
+		// no treeHash) — the push stays gated on builtNow for clarity.
+		if errMsg, _ := composeBuild(ctx, buildReq, "", ""); errMsg != "" {
 			ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "failure").Inc()
 			result.Error = errMsg
 			return result
@@ -396,14 +398,14 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 	// prevent (issue #130). Fail-safe semantics identical to processBuild:
 	// the load gate proceeds after its cap, the lock proceeds on acquire
 	// timeout — a manual deploy must never deadlock on the guard.
-
 	if req.Config.Heavy {
 		waitForLoadBelowThreshold(ctx)
 		release := acquireCrossLaneLock(ctx, req.Repo, result.BuiltSHA)
 		defer release()
 	}
 
-	if errMsg := composeBuild(ctx, buildReq, worktreePath, treeHash); errMsg != "" {
+	errMsg, builtNow := composeBuild(ctx, buildReq, worktreePath, treeHash)
+	if errMsg != "" {
 		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
 		result.Error = errMsg
 		return result
@@ -414,7 +416,8 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 	// fails the deploy (the image is already built and will be brought up),
 	// but it MUST emit an ERROR-level log so a silently-failing push is
 	// observable. Mirrors the webhook path's executeBuild push step.
-	if treeHash != "" {
+	// Gated on builtNow: a cache pull-hit is not re-pushed (issue #168).
+	if treeHash != "" && builtNow {
 		pushCachedImages(ctx, buildReq, treeHash)
 	}
 
