@@ -123,7 +123,11 @@ func detectDefaultBranch(ctx context.Context, sourcePath string) string { //noli
 //     origin/<branch> so the compose config is never stale.
 //  2. OXPULSE_GIT_SHA and BUILD_TIMESTAMP build-args are injected so
 //     Dockerfiles that declare these ARGs get the correct values baked in.
-func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash string) string {
+func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash string) (errMsg string, builtNow bool) {
+	// builtNow reports whether a build actually ran — false on an image-cache
+	// pull HIT (issue #168): pushing the just-pulled image back under the tag
+	// it came from is pure waste, and on a broken registry credential it made
+	// a fully-successful deploy end in a spurious ERROR log.
 	// Part A: auto-pull the deploy clone before reading its compose config.
 	branch := req.Config.Branch
 	if branch == "" {
@@ -146,7 +150,7 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 			"commit", short(req.CommitSHA),
 		)
 		if errMsg := runPreBuildScript(ctx, req.Config.PreBuildScript, shaDir, req.CommitSHA); errMsg != "" {
-			return errMsg
+			return errMsg, false
 		}
 	}
 
@@ -163,7 +167,7 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	// status quo.
 	if treeHash != "" && allServicesCacheable(req) {
 		if tryPullCachedImage(ctx, req, treeHash) {
-			return ""
+			return "", false // cache HIT — nothing built; callers must not re-push
 		}
 	}
 
@@ -181,11 +185,11 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 			worktreePath,
 		)
 		if err != nil {
-			return fmt.Sprintf("resolve overrides: %v", err)
+			return fmt.Sprintf("resolve overrides: %v", err), false
 		}
 		overridePath, err := writeBuildContextOverride(overrides)
 		if err != nil {
-			return fmt.Sprintf("compose override: %v", err)
+			return fmt.Sprintf("compose override: %v", err), false
 		}
 		defer os.Remove(overridePath)
 		buildArgs = append(buildArgs, "-f", "docker-compose.yml", "-f", overridePath)
@@ -231,7 +235,7 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	if len(req.Config.BuildArgs) > 0 {
 		tag, err := artifactTagSHA(req.CommitSHA)
 		if err != nil {
-			return fmt.Sprintf("artifact tag derivation: %v", err)
+			return fmt.Sprintf("artifact tag derivation: %v", err), false
 		}
 		shortSHA12 = tag
 	}
@@ -243,14 +247,14 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	buildArgs = append(buildArgs, req.Config.Services...)
 
 	if errMsg := runBuildWithFullLog(ctx, req, buildArgs); errMsg != "" {
-		return errMsg
+		return errMsg, false
 	}
 
 	imagesAfter := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
 	if errMsg := logImageDiff(imagesBefore, imagesAfter, req.Config.Services, req.CommitSHA); errMsg != "" {
-		return errMsg
+		return errMsg, false
 	}
-	return ""
+	return "", true
 }
 
 // buildRunner invokes `docker build` and returns the full combined output.
