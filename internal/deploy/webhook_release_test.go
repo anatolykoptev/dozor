@@ -82,6 +82,11 @@ func buildTwoCommitFixture(t *testing.T, secondCommitPath, secondCommitContent s
 	mustRun(t, dir, "git", "init", "--initial-branch=main")
 	mustRun(t, dir, "git", "config", "user.email", "test@test.com")
 	mustRun(t, dir, "git", "config", "user.name", "Test")
+	// Self-remote: releaseChangedFiles fetches origin before diffing — a
+	// remote pointing at the repo itself makes the fetch a real no-op
+	// success (all objects already present), keeping the test on the
+	// production code path instead of a stubbed seam.
+	mustRun(t, dir, "git", "remote", "add", "origin", dir)
 
 	if err := os.MkdirAll(filepath.Join(dir, "app"), 0o755); err != nil {
 		t.Fatal(err)

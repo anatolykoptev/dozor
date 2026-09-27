@@ -269,6 +269,7 @@ func TestHandler_ReleaseTarget_MultiTarget_DiffDoesNotLeakBetweenTargets(t *test
 	mustRun(t, sourceB, "git", "init", "--initial-branch=main")
 	mustRun(t, sourceB, "git", "config", "user.email", "test@test.com")
 	mustRun(t, sourceB, "git", "config", "user.name", "Test")
+	mustRun(t, sourceB, "git", "remote", "add", "origin", sourceB)
 	if err := os.WriteFile(filepath.Join(sourceB, "README.md"), []byte("b\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

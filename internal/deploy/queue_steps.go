@@ -284,14 +284,14 @@ func runBuildWithFullLog(ctx context.Context, req BuildRequest, buildArgs []stri
 		"services", req.Config.Services,
 		"commit", short(req.CommitSHA),
 		"err", err,
-		"stderr_tail", truncate(string(output), maxOutputLen),
+		"stderr_tail", tail(string(output), maxOutputLen),
 		"full_log_path", dumpPath,
 	)
 
 	if dumpPath != "" {
 		return fmt.Sprintf("docker build: %v (full log: %s)", err, dumpPath)
 	}
-	return fmt.Sprintf("docker build: %v: %s", err, truncate(string(output), maxOutputLen))
+	return fmt.Sprintf("docker build: %v: %s", err, tail(string(output), maxOutputLen))
 }
 
 // BuildOverride describes the build.context rewrite for a single service in
@@ -423,14 +423,14 @@ func runUpWithFullLog(ctx context.Context, req BuildRequest, deployID string) st
 		"services", req.Config.Services,
 		"deploy_id", deployID,
 		"err", err,
-		"stderr_tail", truncate(string(output), maxUpOutputLen),
+		"stderr_tail", tail(string(output), maxUpOutputLen),
 		"full_log_path", dumpPath,
 	)
 
 	if dumpPath != "" {
 		return fmt.Sprintf("docker up: %v (full log: %s)", err, dumpPath)
 	}
-	return fmt.Sprintf("docker up: %v: %s", err, truncate(string(output), maxUpOutputLen))
+	return fmt.Sprintf("docker up: %v: %s", err, tail(string(output), maxUpOutputLen))
 }
 
 // composeUp runs docker compose up with retry on transient failure.

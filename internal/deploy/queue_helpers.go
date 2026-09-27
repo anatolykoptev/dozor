@@ -95,3 +95,15 @@ func truncate(s string, max int) string {
 	}
 	return s
 }
+
+// tail returns the LAST max bytes of s, marking truncation with a leading
+// "...". Use for captured subprocess output (stderr_tail fields): the
+// actionable error sits at the END of a docker build/up stream, after the
+// progress spam — truncate() keeps the head, which showed "[internal] load
+// build definition" while discarding the actual complaint (issue #165).
+func tail(s string, max int) string {
+	if len(s) > max {
+		return "..." + s[len(s)-max:]
+	}
+	return s
+}
