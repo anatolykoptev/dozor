@@ -129,3 +129,70 @@ func newSentinelErr(msg string) error { return &sentinelErr{msg: msg} }
 type sentinelErr struct{ msg string }
 
 func (e *sentinelErr) Error() string { return e.msg }
+
+// TestSnapshotBuiltImages_IgnoresRunningContainer is the regression test for
+// issue #214: the before/after `compose build` diff must read the image the
+// service's TAG resolves to (the artifact the build just wrote), never the
+// running container's image — which stays the OLD image until `compose up`
+// recreates it. The fake wires a stale `compose images` response AND a fresh
+// inspect response; if the snapshot consulted the container source it would
+// return the stale ID.
+func TestSnapshotBuiltImages_IgnoresRunningContainer(t *testing.T) {
+	const staleID = "sha256:stale000stale"
+	const freshID = "sha256:fresh000fresh"
+	const imgName = "krolik-server-oxpulse-chat-stagingprod:latest"
+
+	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+		if len(args) >= 2 && args[1] == "images" {
+			// container-oriented source — must NEVER be consulted here
+			return []byte(`[{"ID":"` + staleID + `","ContainerName":"oxpulse-chat-stagingprod"}]`), nil
+		}
+		if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
+			return []byte(imgName + "\n"), nil
+		}
+		if len(args) >= 2 && args[0] == "image" && args[1] == "inspect" {
+			return []byte(freshID + "\n"), nil
+		}
+		return []byte("{}"), nil
+	})
+
+	got := snapshotBuiltImages(context.Background(), "/fake/compose", []string{"oxpulse-chat-stagingprod"})
+	if got["oxpulse-chat-stagingprod"] != freshID {
+		t.Errorf("snapshotBuiltImages: got %q, want %q (tag-resolved image, not the stale container image)", got["oxpulse-chat-stagingprod"], freshID)
+	}
+	if got["oxpulse-chat-stagingprod"] == staleID {
+		t.Error("snapshotBuiltImages returned the RUNNING CONTAINER's image — build-diff would false-fail (issue #214)")
+	}
+}
+
+// TestBuiltImageID_MissingImageReturnsEmpty verifies that a service whose
+// image name cannot be resolved, or whose tag is absent locally, yields ""
+// — the "cannot compare" contract the caller's before != "" guard expects.
+func TestBuiltImageID_MissingImageReturnsEmpty(t *testing.T) {
+	t.Run("name unresolvable", func(t *testing.T) {
+		withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+			if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
+				return nil, errComposeBoom
+			}
+			return []byte("{}"), nil
+		})
+		if got := builtImageID(context.Background(), "/fake/compose", "svc"); got != "" {
+			t.Errorf("builtImageID: expected \"\" when name resolution fails, got %q", got)
+		}
+	})
+
+	t.Run("tag absent", func(t *testing.T) {
+		withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+			if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
+				return []byte("svc:latest\n"), nil
+			}
+			if len(args) >= 2 && args[0] == "image" && args[1] == "inspect" {
+				return nil, errComposeBoom // first deploy: tag never existed
+			}
+			return []byte("{}"), nil
+		})
+		if got := builtImageID(context.Background(), "/fake/compose", "svc"); got != "" {
+			t.Errorf("builtImageID: expected \"\" for absent tag, got %q", got)
+		}
+	})
+}

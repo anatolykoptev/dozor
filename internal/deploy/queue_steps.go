@@ -171,7 +171,7 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 		}
 	}
 
-	imagesBefore := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
+	imagesBefore := snapshotBuiltImages(ctx, req.Config.ComposePath, req.Config.Services)
 
 	buildArgs := []string{"compose"}
 
@@ -250,7 +250,7 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 		return errMsg, false
 	}
 
-	imagesAfter := snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
+	imagesAfter := snapshotBuiltImages(ctx, req.Config.ComposePath, req.Config.Services)
 	if errMsg := logImageDiff(imagesBefore, imagesAfter, req.Config.Services, req.CommitSHA); errMsg != "" {
 		return errMsg, false
 	}

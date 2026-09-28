@@ -21,23 +21,32 @@ func TestExecuteBuild_PortMappingRecoverySuccess(t *testing.T) {
 		return nil
 	}
 
-	// outputRunner controls both checkHealth (compose ps) and verifyPortMapping (compose config).
-	// Call sequence per checkHealth invocation: (1) compose ps, (2) compose config.
-	callCount := 0
+	// outputRunner is dispatched by command signature, not call position —
+	// the build-diff snapshot (config --images + image inspect, issue #214)
+	// interleaves with checkHealth's ps/config calls and a positional counter
+	// would misroute every response after the first snapshot.
+	psCalls := 0
 	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		callCount++
-		// Calls 1+2: first checkHealth — ps returns running/no publishers, config declares ports
-		// Calls 3+4: second checkHealth (after recovery) — ps returns running/bound port, config declares ports
-		switch callCount {
-		case 1: // first ps: no publishers
-			return []byte(`[{"State":"running","Status":"Up","Publishers":[]}]`), nil
-		case 2: // first config: declares ports so verifyPortMapping triggers error
+		switch {
+		case len(args) >= 2 && args[0] == "image" && args[1] == "inspect":
+			// build-diff snapshot: tag resolves to a built image
+			return []byte("sha256:0000buildtest\n"), nil
+		case len(args) >= 3 && args[1] == "config" && args[2] == "--images":
+			// compose model: resolved image name for the service
+			return []byte("proj-svc:latest\n"), nil
+		case len(args) >= 2 && args[1] == "config":
+			// verifyPortMapping's `config --format json`: declares ports
 			return []byte(`{"services":{"svc":{"ports":["8080:8080"]}}}`), nil
-		case 3: // second ps: publisher bound
+		case len(args) >= 2 && args[1] == "ps":
+			psCalls++
+			if psCalls == 1 {
+				// first checkHealth — running, no publishers
+				return []byte(`[{"State":"running","Status":"Up","Publishers":[]}]`), nil
+			}
+			// post-recovery checkHealth — publisher bound
 			return []byte(`[{"State":"running","Status":"Up","Publishers":[{"URL":"0.0.0.0","TargetPort":8080,"PublishedPort":8080,"Protocol":"tcp"}]}]`), nil
-		default: // second config: still declares ports but we pass since publisher is bound
-			return []byte(`{"services":{"svc":{"ports":["8080:8080"]}}}`), nil
 		}
+		return []byte("{}"), nil
 	}
 
 	ctx := context.Background()
