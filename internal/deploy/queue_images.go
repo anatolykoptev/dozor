@@ -10,8 +10,82 @@ import (
 	"strings"
 )
 
-// snapshotImages returns a map of service → image ID for the given services.
-// Used to detect no-op builds (same image ID before/after `compose build`).
+// snapshotBuiltImages returns a map of service → image ID resolved through
+// the service's image NAME (`compose config --images` → `docker image
+// inspect`), never through the project's containers. Used for the
+// before/after `compose build` diff in verify-build. Deploy serialization
+// (queue + cross-lane lock) makes the tag a stable read between the two
+// snapshots — a concurrent retag would need a bypass of the deploy queue.
+//
+// Why not `docker compose images` here: that command is documented as
+// "list images used by the CREATED CONTAINERS" — it reports the image the
+// running container was created from. Between `compose build` and
+// `compose up` the container still runs the PREVIOUS image, so a
+// container-oriented before/after snapshot is identical by construction and
+// the no-new-image check false-fires on every real build with a live
+// container (issue #214). The tag the build just wrote is the
+// container-independent source of truth for "what the build produced".
+func snapshotBuiltImages(ctx context.Context, composePath string, services []string) map[string]string {
+	ids := make(map[string]string, len(services))
+	for _, svc := range services {
+		ids[svc] = builtImageID(ctx, composePath, svc)
+	}
+	return ids
+}
+
+// builtImageID returns the image ID the service's resolved image name
+// currently points at — i.e. the artifact `compose build` just tagged —
+// without consulting any container. Returns "" when the name cannot be
+// resolved from the compose model or the ref is absent locally; callers
+// treat "" as "cannot compare" (same contract as snapshotImages).
+func builtImageID(ctx context.Context, composePath, svc string) string {
+	name := composeImageName(ctx, composePath, svc)
+	if name == "" {
+		// `config --images` resolves a name for every defined service, so ""
+		// here means the service is missing from the compose model or the
+		// config itself failed — never a normal state; surface it rather
+		// than silently disabling the diff for this service.
+		slog.Warn("deploy: cannot resolve image name for service", "service", svc)
+		return ""
+	}
+	id := imageIDForRef(ctx, composePath, name)
+	if id == "" {
+		// The compose model resolved a name but no local image carries it.
+		// Pre-build that is a normal cold start; post-build it means the
+		// build tagged something else — divergent enough to be worth a
+		// warning rather than a silent "".
+		slog.Warn("deploy: resolved image name has no local image",
+			"service", svc, "ref", name)
+	}
+	return id
+}
+
+// imageIDForRef returns the `docker image inspect` .Id a ref resolves to.
+// "" when the ref is absent or inspect fails. The ref comes from
+// composeImageName (own compose file, validated by looksLikeImageRef).
+func imageIDForRef(ctx context.Context, dir, ref string) string {
+	out, err := outputRunner(ctx, dir,
+		"docker", "image", "inspect", "--format", "{{.Id}}", ref) //nolint:gosec // trusted local config, not shell
+	if err != nil {
+		return ""
+	}
+	// `inspect --format {{.Id}}` always yields sha256:<hex> on success; treat
+	// anything else (template drift, plugin output) as unresolvable rather
+	// than comparing garbage strings as image identities.
+	id := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(id, "sha256:") {
+		return ""
+	}
+	return id
+}
+
+// snapshotImages returns a map of service → image ID for the given services,
+// read from the project's CURRENT containers (`docker compose images`).
+// Container-oriented by design: its only caller is the rollback path, which
+// needs the image the running container was actually started from — NOT the
+// fresh tag a just-finished build may already point at (post-build/pre-up,
+// tag resolution would capture the NEW image and rollback would retag it
+// over itself). Never use this for build-diff verification.
 func snapshotImages(ctx context.Context, composePath string, services []string) map[string]string {
 	ids := make(map[string]string, len(services))
 	for _, svc := range services {
@@ -20,11 +94,13 @@ func snapshotImages(ctx context.Context, composePath string, services []string) 
 	return ids
 }
 
-// composeImageID resolves the image ID that would be used by `compose up <svc>`.
-// Uses `docker compose images` which works for both `image:` and `build:` services
-// — `compose config` only returns image refs for services with an explicit image
-// field, which is the common mistake. Returns empty string if the image is absent
-// or the command fails.
+// composeImageID resolves the image ID of the service's CURRENT container.
+// Uses `docker compose images`, which lists images used by created
+// containers — it does NOT report the freshly built tag (the container keeps
+// reporting the old image until `compose up` recreates it). Correct for the
+// rollback path (restore what the container ran); wrong for build-diff
+// verification (use builtImageID). Returns "" if there is no container or
+// the command fails.
 func composeImageID(ctx context.Context, composePath, svc string) string {
 	// svc is a service name from our own deploy-repos.yaml (trusted local config),
 	// passed as an individual argv slot — not interpolated into a shell.
