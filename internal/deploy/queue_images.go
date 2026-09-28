@@ -13,7 +13,9 @@ import (
 // snapshotBuiltImages returns a map of service → image ID resolved through
 // the service's image NAME (`compose config --images` → `docker image
 // inspect`), never through the project's containers. Used for the
-// before/after `compose build` diff in verify-build.
+// before/after `compose build` diff in verify-build. Deploy serialization
+// (queue + cross-lane lock) makes the tag a stable read between the two
+// snapshots — a concurrent retag would need a bypass of the deploy queue.
 //
 // Why not `docker compose images` here: that command is documented as
 // "list images used by the CREATED CONTAINERS" — it reports the image the
@@ -39,9 +41,23 @@ func snapshotBuiltImages(ctx context.Context, composePath string, services []str
 func builtImageID(ctx context.Context, composePath, svc string) string {
 	name := composeImageName(ctx, composePath, svc)
 	if name == "" {
+		// `config --images` resolves a name for every defined service, so ""
+		// here means the service is missing from the compose model or the
+		// config itself failed — never a normal state; surface it rather
+		// than silently disabling the diff for this service.
+		slog.Warn("deploy: cannot resolve image name for service", "service", svc)
 		return ""
 	}
-	return imageIDForRef(ctx, composePath, name)
+	id := imageIDForRef(ctx, composePath, name)
+	if id == "" {
+		// The compose model resolved a name but no local image carries it.
+		// Pre-build that is a normal cold start; post-build it means the
+		// build tagged something else — divergent enough to be worth a
+		// warning rather than a silent "".
+		slog.Warn("deploy: resolved image name has no local image",
+			"service", svc, "ref", name)
+	}
+	return id
 }
 
 // imageIDForRef returns the `docker image inspect` .Id a ref resolves to.

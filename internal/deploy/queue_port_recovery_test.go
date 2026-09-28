@@ -26,10 +26,19 @@ func TestExecuteBuild_PortMappingRecoverySuccess(t *testing.T) {
 	// interleaves with checkHealth's ps/config calls and a positional counter
 	// would misroute every response after the first snapshot.
 	psCalls := 0
+	inspectCalls := 0
 	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
 		switch {
 		case len(args) >= 2 && args[0] == "image" && args[1] == "inspect":
-			// build-diff snapshot: tag resolves to a built image
+			// build-diff snapshot: model a real build — the tag moves to a
+			// NEW id on the after-snapshot (distinct ids keep this test
+			// passing even if CommitSHA is later made a valid 40-hex).
+			if strings.Contains(args[len(args)-1], "proj-svc") {
+				inspectCalls++
+			}
+			if inspectCalls > 1 {
+				return []byte("sha256:0000buildafter\n"), nil
+			}
 			return []byte("sha256:0000buildtest\n"), nil
 		case len(args) >= 3 && args[1] == "config" && args[2] == "--images":
 			// compose model: resolved image name for the service
