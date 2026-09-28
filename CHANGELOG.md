@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.4](https://github.com/anatolykoptev/dozor/compare/v1.16.3...v1.16.4) (2026-09-28)
+
+
+### Fixed
+
+* **deploy:** build-diff reads the built tag, not the running container ([#215](https://github.com/anatolykoptev/dozor/issues/215)) ([9e5eab5](https://github.com/anatolykoptev/dozor/commit/9e5eab56cac1563d5f580c3bedb3a89ad7b074cd))
+
 ## [1.16.3](https://github.com/anatolykoptev/dozor/compare/v1.16.2...v1.16.3) (2026-09-27)
 
 
