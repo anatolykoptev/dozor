@@ -3,7 +3,9 @@ package probe
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 )
 
@@ -45,15 +47,22 @@ type geminiModelsResponse struct {
 }
 
 func (g *GeminiProber) Probe(ctx context.Context) ([]Reading, error) {
+	// Key goes in the x-goog-api-key header, not the URL: a failed request
+	// returns a *url.Error whose text holds the URL, and the runner logs it.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		g.baseURL+"/v1beta/models?key="+g.apiKey, nil)
+		g.baseURL+"/v1beta/models", nil)
 	if err != nil {
-		return nil, err
+		return nil, &timeoutOrNetErr{stripURL(err)}
 	}
+	req.Header.Set("x-goog-api-key", g.apiKey)
 
-	resp, err := g.client.Do(req)
+	// Never follow redirects: the header must not be forwarded anywhere.
+	noRedirect := *g.client
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	resp, err := noRedirect.Do(req)
 	if err != nil {
-		return nil, &timeoutOrNetErr{err}
+		return nil, &timeoutOrNetErr{stripURL(err)}
 	}
 	defer resp.Body.Close()
 
@@ -99,4 +108,16 @@ func parseRateLimitPct(resp *http.Response) (float64, bool) {
 		pct = 100
 	}
 	return pct, true
+}
+
+// stripURL unwraps every *url.Error layer to its cause; url.Error.Error()
+// embeds the request URL.
+func stripURL(err error) error {
+	for {
+		var ue *url.Error
+		if !errors.As(err, &ue) {
+			return err
+		}
+		err = ue.Err
+	}
 }

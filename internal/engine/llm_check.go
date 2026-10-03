@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -34,7 +35,7 @@ func CheckLLMKeys(ctx context.Context, cfg Config) []Alert {
 	client := newHTTPClient(llmCheckTimeout)
 
 	// A) Direct Gemini API key validation via Google REST API (cheap — no tokens consumed).
-	// Uses raw HTTP GET to ?key=... endpoint; different protocol from OpenAI-compat.
+	// Uses raw HTTP GET with the key in the x-goog-api-key header; different protocol from OpenAI-compat.
 	for _, key := range cfg.GeminiAPIKeys {
 		if a := checkGeminiKey(ctx, client, key); a != nil {
 			alerts = append(alerts, *a)
@@ -100,22 +101,45 @@ func truncateUTF8(s string, maxRunes int) string {
 	return string(runes[:maxRunes])
 }
 
-// checkGeminiKey validates a single Gemini API key by listing models.
-func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert {
-	url := geminiModelsURL + "?key=" + key
-	masked := maskKey(key)
+// stripURLFromErr returns err's text with every *url.Error layer unwrapped to
+// its cause. url.Error.Error() embeds the request URL, which can carry
+// credentials; the cause ("no such host", "context deadline exceeded") cannot.
+func stripURLFromErr(err error) string {
+	for {
+		var ue *url.Error
+		if !errors.As(err, &ue) {
+			return err.Error()
+		}
+		err = ue.Err
+	}
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// checkGeminiKey validates a single Gemini API key by listing models.
+//
+// The key travels in the x-goog-api-key header, never the URL: a failed request
+// returns a *url.Error whose text holds the full URL, and Alert.Description
+// flows into LLM prompts and Telegram reports. Transport errors are unwrapped
+// to their cause for the same reason, and redirects are refused so the header
+// is never forwarded to another host.
+func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert {
+	masked := maskKey(key)
+	noRedirect := *client
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	client = &noRedirect
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, geminiModelsURL, nil)
 	if err != nil {
 		return &Alert{
 			Level:           AlertError,
 			Service:         llmServicePrefix + "gemini-key-" + masked,
 			Title:           "request error",
-			Description:     err.Error(),
+			Description:     stripURLFromErr(err),
 			SuggestedAction: "Check key format",
 			Timestamp:       time.Now(),
 		}
 	}
+
+	req.Header.Set("x-goog-api-key", key)
 
 	resp, err := client.Do(req) //nolint:gosec // request directly to Gemini API
 	if err != nil {
@@ -123,7 +147,7 @@ func checkGeminiKey(ctx context.Context, client *http.Client, key string) *Alert
 			Level:           AlertError,
 			Service:         llmServicePrefix + "gemini-key-" + masked,
 			Title:           "unreachable",
-			Description:     err.Error(),
+			Description:     stripURLFromErr(err),
 			SuggestedAction: "Check network connectivity to Google API",
 			Timestamp:       time.Now(),
 		}
