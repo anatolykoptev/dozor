@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -22,8 +23,9 @@ type Channel struct {
 	bus     *bus.Bus
 	allowed map[int64]bool // whitelisted user IDs
 	ctx     context.Context
-	sttURL  string // STT service base URL
-	sttLang string // STT transcription language
+	sttURL  string       // STT service base URL
+	sttLang string       // STT transcription language
+	dl      *http.Client // voice-file download client (nil = http.DefaultClient)
 
 	stopTyping sync.Map // chatID string → chan struct{}
 }

@@ -1,5 +1,3 @@
-// Package stt provides a speech-to-text client for OpenAI-compatible STT APIs
-// (ox-whisper, OpenAI Whisper, etc.) via multipart upload.
 package stt
 
 import (
@@ -28,6 +26,7 @@ type Client struct {
 	cb              *circuitBreaker
 	apiKey          string
 	tempDir         string
+	maxDownload     int64
 }
 
 // Option configures the Client.
@@ -50,7 +49,28 @@ func WithFormat(format string) Option {
 
 // WithTimeout sets the HTTP request timeout (default: 60s).
 func WithTimeout(timeout time.Duration) Option {
-	return func(c *Client) { c.http.Timeout = timeout }
+	return func(c *Client) {
+		hc := *c.http // copy: never mutate a client the caller supplied
+		hc.Timeout = timeout
+		c.http = &hc
+	}
+}
+
+// WithHTTPClient replaces the HTTP client (transport, proxy, TLS, timeout).
+// Use it to pass a guarded transport when [Client.TranscribeURL] receives URLs
+// you do not control. Apply [WithTimeout] after it to override its timeout.
+func WithHTTPClient(hc *http.Client) Option {
+	return func(c *Client) {
+		if hc != nil {
+			c.http = hc
+		}
+	}
+}
+
+// WithMaxDownload caps the size of audio fetched by TranscribeURL (default
+// 256 MiB); larger downloads fail with ErrResponseTooLarge.
+func WithMaxDownload(n int64) Option {
+	return func(c *Client) { c.maxDownload = n }
 }
 
 // WithPunctuate enables or disables automatic punctuation.
@@ -132,9 +152,11 @@ func WithCircuitBreaker(maxFails int, cooldown time.Duration) Option {
 	}
 }
 
-// WithAPIKey sets the API key sent as "Authorization: Bearer <key>" on all
-// HTTP requests (transcription, models, health) and on the WebSocket upgrade
-// request. Required for OpenAI API; self-hosted ox-whisper does not need it.
+// WithAPIKey sets the API key sent as "Authorization: Bearer <key>" on the STT
+// server's HTTP requests (transcription, models, health) and on the WebSocket
+// upgrade request. It is NOT sent to TranscribeURL download URLs, which are
+// arbitrary hosts. Required for OpenAI API; self-hosted servers usually do not
+// need it.
 func WithAPIKey(key string) Option {
 	return func(c *Client) { c.apiKey = key }
 }
@@ -152,7 +174,7 @@ func (c *Client) setAuth(req *http.Request) {
 	}
 }
 
-// New creates an STT client for the given base URL (e.g. "http://127.0.0.1:8092").
+// New creates an STT client for the given base URL (e.g. "http://localhost:8000").
 func New(baseURL string, opts ...Option) *Client {
 	c := &Client{
 		baseURL:  baseURL,
@@ -167,12 +189,24 @@ func New(baseURL string, opts ...Option) *Client {
 	return c
 }
 
-// IsAvailable checks if the STT service is reachable via /health.
+// IsAvailable checks if the STT service is reachable.
+// It tries /health first (self-hosted servers), then falls back to /v1/models
+// (OpenAI, Groq, and other cloud providers that don't expose /health).
 func (c *Client) IsAvailable() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second) //nolint:mnd
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+	// Try /health first (self-hosted servers).
+	if c.tryEndpoint(ctx, c.baseURL+"/health") {
+		return true
+	}
+	// Fall back to /v1/models (OpenAI, Groq, etc.).
+	return c.tryEndpoint(ctx, c.baseURL+"/v1/models")
+}
+
+// tryEndpoint returns true if the given URL responds with HTTP 200.
+func (c *Client) tryEndpoint(ctx context.Context, url string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false
 	}

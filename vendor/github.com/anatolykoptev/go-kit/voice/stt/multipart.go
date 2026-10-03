@@ -27,8 +27,11 @@ func (c *Client) buildMultipart(w io.Writer, audioReader io.Reader, filename, fo
 	if err := writeField(mw, "model", c.model); err != nil {
 		return "", err
 	}
-	if err := writeField(mw, "language", c.language); err != nil {
-		return "", err
+	// language is optional — skip if empty (lets the STT service auto-detect).
+	if c.language != "" {
+		if err := writeField(mw, "language", c.language); err != nil {
+			return "", err
+		}
 	}
 
 	format := c.format
@@ -51,41 +54,35 @@ func (c *Client) buildMultipart(w io.Writer, audioReader io.Reader, filename, fo
 
 // writeOptionalFields writes optional client fields to the multipart writer.
 func (c *Client) writeOptionalFields(w *multipart.Writer) error {
+	var fields [][2]string // name, value
 	if c.punctuate != nil {
-		if err := writeField(w, "punctuate", strconv.FormatBool(*c.punctuate)); err != nil {
-			return err
-		}
+		fields = append(fields, [2]string{"punctuate", strconv.FormatBool(*c.punctuate)})
 	}
 	if c.smartFormat != nil {
-		if err := writeField(w, "smart_format", strconv.FormatBool(*c.smartFormat)); err != nil {
-			return err
-		}
+		fields = append(fields, [2]string{"smart_format", strconv.FormatBool(*c.smartFormat)})
 	}
 	if c.diarize {
-		if err := writeField(w, "diarize", "true"); err != nil {
-			return err
-		}
+		fields = append(fields, [2]string{"diarize", "true"})
 	}
 	if c.diarizeSpeakers > 0 {
-		if err := writeField(w, "diarize_speakers", strconv.Itoa(c.diarizeSpeakers)); err != nil {
-			return err
-		}
+		fields = append(fields, [2]string{"diarize_speakers", strconv.Itoa(c.diarizeSpeakers)})
 	}
 	if len(c.keywords) > 0 {
 		b, err := json.Marshal(c.keywords)
 		if err != nil {
 			return fmt.Errorf("marshal keywords: %w", err)
 		}
-		if err := writeField(w, "keywords", string(b)); err != nil {
-			return err
-		}
+		fields = append(fields, [2]string{"keywords", string(b)})
 	}
 	if len(c.customSpelling) > 0 {
 		b, err := json.Marshal(c.customSpelling)
 		if err != nil {
 			return fmt.Errorf("marshal custom_spelling: %w", err)
 		}
-		if err := writeField(w, "custom_spelling", string(b)); err != nil {
+		fields = append(fields, [2]string{"custom_spelling", string(b)})
+	}
+	for _, f := range fields {
+		if err := writeField(w, f[0], f[1]); err != nil {
 			return err
 		}
 	}
@@ -102,24 +99,31 @@ func writeField(w *multipart.Writer, name, value string) error {
 	return nil
 }
 
-// postTranscription sends a multipart request to /v1/audio/transcriptions and returns raw bytes.
-func (c *Client) postTranscription(ctx context.Context, body io.Reader, contentType string) ([]byte, int, error) {
+// postTranscription sends a multipart request to /v1/audio/transcriptions and
+// returns the response body, capped at limit bytes. A non-200 answer becomes an
+// *Error that carries the status (and a strict reason token) but not the body.
+func (c *Client) postTranscription(ctx context.Context, body io.Reader, contentType string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/audio/transcriptions", body)
 	if err != nil {
-		return nil, 0, fmt.Errorf("create request: %w", err)
+		return nil, fmt.Errorf("create request: %w", stripURLError(err))
 	}
 	req.Header.Set("Content-Type", contentType)
 	c.setAuth(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("send request: %w", err)
+		return nil, fmt.Errorf("send request: %w", stripURLError(err))
 	}
 	defer resp.Body.Close()
+	return c.readResponse(resp, limit)
+}
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+// readResponse returns the body of a 200 response (capped at limit) or an
+// *Error for any other status.
+func (c *Client) readResponse(resp *http.Response, limit int64) ([]byte, error) {
+	if resp.StatusCode != http.StatusOK {
+		eb, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		return nil, newHTTPError(resp.StatusCode, eb, c.apiKey)
 	}
-	return respBody, resp.StatusCode, nil
+	return readLimited(resp.Body, limit)
 }
