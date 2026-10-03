@@ -7,25 +7,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
+	"github.com/anatolykoptev/go-kit/telegram/tgsafe"
 	stt "github.com/anatolykoptev/go-kit/voice/stt"
 )
-
-// stripURLError returns the cause of a *url.Error. net/http (and tgbotapi) put
-// the full request URL in that error's text, and a Telegram URL embeds the bot
-// token, so no returned error may wrap the *url.Error itself.
-func stripURLError(err error) error {
-	var ue *url.Error
-	if errors.As(err, &ue) && ue.Err != nil {
-		return ue.Err
-	}
-	return err
-}
 
 // transcribeVoice downloads a Telegram voice message and transcribes it via go-kit's voice/stt.
 // Returns the transcribed text or an error. Errors never contain the file URL
@@ -35,7 +24,7 @@ func (c *Channel) transcribeVoice(ctx context.Context, voice *tgbotapi.Voice) (s
 	fileConfig := tgbotapi.FileConfig{FileID: voice.FileID}
 	tgFile, err := c.bot.GetFile(fileConfig)
 	if err != nil {
-		return "", fmt.Errorf("get telegram file: %w", stripURLError(err))
+		return "", fmt.Errorf("get telegram file: %w", err) // scrubbed by the bot's client
 	}
 	fileURL := tgFile.Link(c.bot.Token)
 
@@ -53,11 +42,11 @@ func (c *Channel) transcribeVoice(ctx context.Context, voice *tgbotapi.Voice) (s
 	}
 	client := c.dl
 	if client == nil {
-		client = http.DefaultClient
+		client = tgsafe.NewHTTPClient(nil, c.bot.Token)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("download voice file: %w", stripURLError(err))
+		return "", fmt.Errorf("download voice file: %w", err) // scrubbed by the tgsafe client
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

@@ -21,7 +21,7 @@ github.com/a2aproject/a2a-go/internal/taskstore
 github.com/a2aproject/a2a-go/internal/taskupdate
 github.com/a2aproject/a2a-go/internal/utils
 github.com/a2aproject/a2a-go/log
-# github.com/anatolykoptev/go-kit v0.97.16
+# github.com/anatolykoptev/go-kit v0.97.17
 ## explicit; go 1.26.3
 github.com/anatolykoptev/go-kit/breaker
 github.com/anatolykoptev/go-kit/env
@@ -34,6 +34,7 @@ github.com/anatolykoptev/go-kit/score
 github.com/anatolykoptev/go-kit/session
 github.com/anatolykoptev/go-kit/strutil
 github.com/anatolykoptev/go-kit/telegram
+github.com/anatolykoptev/go-kit/telegram/tgsafe
 github.com/anatolykoptev/go-kit/toolutil
 github.com/anatolykoptev/go-kit/tracing
 github.com/anatolykoptev/go-kit/tracing/httpmw

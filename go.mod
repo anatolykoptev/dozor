@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/a2aproject/a2a-go v0.3.13
-	github.com/anatolykoptev/go-kit v0.97.16
+	github.com/anatolykoptev/go-kit v0.97.17
 	github.com/anatolykoptev/go-mcpserver v0.16.1
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
