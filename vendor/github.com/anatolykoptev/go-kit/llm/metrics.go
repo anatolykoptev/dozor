@@ -51,8 +51,11 @@ func NewChainMetrics(reg prometheus.Registerer) *ChainMetrics {
 	}, []string{"model", "position"})
 	attempt := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "llm_chain_attempt_total",
-		Help: "Total chain endpoint attempts by model and outcome (ok|error).",
-	}, []string{"model", "outcome"})
+		Help: "Total chain endpoint attempts by model, outcome (ok|error), and error_type " +
+			"(auth_expiry|dependency_block|context_overflow|transient|client|unknown|empty-on-success). " +
+			"Cardinality: model(≤8) × outcome(2) × error_type(7) = 112 max series. " +
+			"No high-cardinality user input touches labels.",
+	}, []string{"model", "outcome", "error_type"})
 	cooldown := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llm_model_cooldown_active",
 		Help: "1 while a model is in quota cooldown (free-tier quota exhausted), 0 otherwise. A 1 is expected, not an alert.",
@@ -65,7 +68,10 @@ func NewChainMetrics(reg prometheus.Registerer) *ChainMetrics {
 // ServedTotal exposes the llm_chain_served_total vector (model, position).
 func (m *ChainMetrics) ServedTotal() *prometheus.CounterVec { return m.served }
 
-// AttemptTotal exposes the llm_chain_attempt_total vector (model, outcome).
+// AttemptTotal exposes the llm_chain_attempt_total vector (model, outcome, error_type).
+// error_type is one of: auth_expiry, dependency_block, context_overflow, transient,
+// client, unknown, or "" (empty string on success). Use ClassifyErrorType to derive
+// the label value from an error.
 func (m *ChainMetrics) AttemptTotal() *prometheus.CounterVec { return m.attempt }
 
 // CooldownActive exposes the llm_model_cooldown_active gauge (model).
@@ -103,10 +109,10 @@ func (m *ChainMetrics) EndpointObserver(endpoints []Endpoint) EndpointAttemptObs
 	}
 	return func(ep Endpoint, err error) {
 		if err != nil {
-			m.attempt.WithLabelValues(ep.Model, "error").Inc()
+			m.attempt.WithLabelValues(ep.Model, "error", ClassifyErrorType(err)).Inc()
 			return
 		}
-		m.attempt.WithLabelValues(ep.Model, "ok").Inc()
+		m.attempt.WithLabelValues(ep.Model, "ok", "").Inc()
 		position, ok := pos[ep.Model]
 		if !ok {
 			position = unknownPosition

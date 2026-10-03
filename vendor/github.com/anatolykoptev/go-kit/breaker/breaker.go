@@ -154,7 +154,7 @@ func (b *Breaker) tripToOpen() {
 	b.state = StateOpen
 	b.openUntil = time.Now().Add(computeBackoff(b.opts, b.consecutiveOpens))
 	if b.opts.OnTrip != nil {
-		go b.opts.OnTrip(b.opts.Name)
+		go safeCallback(b.opts.OnTrip, b.opts.Name)
 	}
 }
 
@@ -175,6 +175,14 @@ func (b *Breaker) reset() {
 	b.consecutiveOpens = 0
 	b.halfOpenInFlight = 0
 	if b.opts.OnRecover != nil {
-		go b.opts.OnRecover(b.opts.Name)
+		go safeCallback(b.opts.OnRecover, b.opts.Name)
 	}
+}
+
+// safeCallback runs fn in a goroutine with a recover guard so a panic in an
+// OnTrip/OnRecover callback cannot crash the process. Mirrors the safeCall
+// pattern used by embed/sparse/llm circuit breakers.
+func safeCallback(fn func(string), name string) {
+	defer func() { _ = recover() }()
+	fn(name)
 }

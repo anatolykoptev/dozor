@@ -337,3 +337,123 @@ func BuildModelChainEndpointsFiltered(
 	})
 	return kept
 }
+
+// BuildMultiProxyEndpointsFiltered builds the same cross-product as
+// BuildMultiProxyEndpoints, then for each proxy drops endpoints whose Model
+// is absent from that proxy's live /v1/models set. Each proxy is filtered
+// independently (they may serve different model sets). Order is preserved:
+// proxy1:primary, proxy1:fallbacks..., proxy2:primary, proxy2:fallbacks...
+//
+// Graceful degradation: if registry is nil, a proxy's /v1/models fetch fails,
+// or filtering would empty that proxy's segment, the FULL unfiltered segment
+// for that proxy is kept. The filter never produces an empty chain.
+//
+// obs (may be nil) fires once per proxy with that proxy's outcome.
+func BuildMultiProxyEndpointsFiltered(
+	ctx context.Context,
+	registry *ModelRegistry,
+	proxies []ProxySpec,
+	primary string,
+	chain []string,
+	obs ModelFilterObserver,
+) []Endpoint {
+	full := BuildMultiProxyEndpoints(proxies, primary, chain)
+
+	if len(proxies) <= 1 {
+		// Single proxy: delegate to the single-proxy filtered builder for
+		// the standard observer event semantics.
+		if len(proxies) == 0 {
+			return full
+		}
+		return BuildModelChainEndpointsFiltered(ctx, registry,
+			proxies[0].URL, proxies[0].Key, primary, chain, obs)
+	}
+
+	emit := func(ev ModelFilterEvent) {
+		if obs != nil {
+			obs(ev)
+		}
+	}
+
+	if registry == nil {
+		for _, p := range proxies {
+			emit(ModelFilterEvent{
+				BaseURL: p.URL, Requested: countModels(primary, chain),
+				Kept:     countModels(primary, chain),
+				Degraded: true, Reason: filterReasonNoRegistry,
+			})
+		}
+		return full
+	}
+
+	out := make([]Endpoint, 0, len(full))
+	for _, p := range proxies {
+		segment := BuildModelChainEndpoints(p.URL, p.Key, primary, chain)
+
+		ids, ok := registry.available(ctx, p.URL, p.Key)
+		if !ok {
+			emit(ModelFilterEvent{
+				BaseURL: p.URL, Requested: len(segment), Kept: len(segment),
+				Degraded: true, Reason: filterReasonFetchFail,
+			})
+			out = append(out, segment...)
+			continue
+		}
+		if len(ids) == 0 {
+			emit(ModelFilterEvent{
+				BaseURL: p.URL, Requested: len(segment), Kept: len(segment),
+				Available: 0, Degraded: true, Reason: filterReasonEmptySet,
+			})
+			out = append(out, segment...)
+			continue
+		}
+
+		kept := make([]Endpoint, 0, len(segment))
+		var dropped []string
+		for _, ep := range segment {
+			if _, present := ids[ep.Model]; present {
+				kept = append(kept, ep)
+			} else {
+				dropped = append(dropped, ep.Model)
+			}
+		}
+		if len(kept) == 0 {
+			emit(ModelFilterEvent{
+				BaseURL: p.URL, Requested: len(segment), Kept: len(segment),
+				Available: len(ids), Dropped: dropped,
+				Degraded: true, Reason: filterReasonAllFiltered,
+			})
+			out = append(out, segment...)
+			continue
+		}
+
+		emit(ModelFilterEvent{
+			BaseURL: p.URL, Requested: len(segment), Kept: len(kept),
+			Available: len(ids), Dropped: dropped, Degraded: false,
+		})
+		out = append(out, kept...)
+	}
+	return out
+}
+
+// countModels returns the number of unique models in primary + chain
+// (matching BuildModelChainEndpoints deduplication).
+func countModels(primary string, chain []string) int {
+	seen := make(map[string]struct{}, 1+len(chain))
+	count := 0
+	if primary != "" {
+		seen[primary] = struct{}{}
+		count++
+	}
+	for _, m := range chain {
+		if m == "" {
+			continue
+		}
+		if _, dup := seen[m]; dup {
+			continue
+		}
+		seen[m] = struct{}{}
+		count++
+	}
+	return count
+}

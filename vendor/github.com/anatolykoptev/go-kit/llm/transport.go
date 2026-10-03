@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 )
 
@@ -68,7 +70,14 @@ func (c *Client) doRequest(ctx context.Context, baseURL, apiKey string, req *Cha
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("llm: response body close failed",
+				slog.String("url", baseURL+"/chat/completions"),
+				slog.Any("error", err),
+			)
+		}
+	}()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -89,6 +98,18 @@ func (c *Client) doRequest(ctx context.Context, baseURL, apiKey string, req *Cha
 
 	msg := chatResp.Choices[0].Message
 	clean, reasoning := splitReasoning(msg.Content, msg.ReasoningContent)
+	// Empty-completion guard: a 200-OK whose assistant message carries no usable
+	// content (no text AND no tool calls) is a semantic failure, not a success.
+	// Observed in production when a reasoning model exhausts its max_tokens budget
+	// on reasoning tokens and emits finish_reason=length with empty content. Pre-
+	// guard this short-circuited the model-fallback chain on the first such model
+	// and propagated an empty answer with no error (silent downgrade). Surface it
+	// as the empty-completion sentinel so the chain advances to a model that can
+	// answer (and a single endpoint reports a real error instead of "").
+	// Tool-call responses legitimately have empty content, so they are exempt.
+	if clean == "" && len(msg.ToolCalls) == 0 {
+		return nil, newEmptyCompletionError(chatResp.Choices[0].FinishReason)
+	}
 	return &ChatResponse{
 		Content:      clean,
 		Reasoning:    reasoning,
@@ -157,11 +178,28 @@ func (c *Client) recordCooldownOutcome(ep Endpoint, err error) {
 // stay observably identical (same observer + cooldown side effects). It does NOT
 // classify the error for chain advancement (DeadlineExceeded / failover /
 // retryable); that loop-control logic stays in executeInner.
-func (c *Client) attemptEndpoint(ctx context.Context, ep Endpoint, req *ChatRequest) (*ChatResponse, error) {
+// prepareEndpointRequest applies per-endpoint request transformations that
+// must be identical on both the non-stream (attemptEndpoint) and stream
+// (Stream) paths: the per-endpoint model override and the reasoning_effort
+// allowlist gate. Returns a shallow copy of req with the overrides applied;
+// the original req is never mutated.
+func (c *Client) prepareEndpointRequest(ep Endpoint, req *ChatRequest) ChatRequest {
 	epReq := *req
 	if ep.Model != "" {
 		epReq.Model = ep.Model
 	}
+	// Per-endpoint reasoning_effort gate: strip from endpoints NOT in the
+	// allowlist. Empty allowlist = pass-through (existing behavior preserved).
+	if epReq.ReasoningEffort != "" && len(c.reasoningEffortModels) > 0 {
+		if !slices.Contains(c.reasoningEffortModels, epReq.Model) {
+			epReq.ReasoningEffort = ""
+		}
+	}
+	return epReq
+}
+
+func (c *Client) attemptEndpoint(ctx context.Context, ep Endpoint, req *ChatRequest) (*ChatResponse, error) {
+	epReq := c.prepareEndpointRequest(ep, req)
 
 	// Per-attempt timeout: derive a child ctx bounded by d, but only when
 	// d > 0 and WithEndpoints is in use. The outer ctx remains the absolute
@@ -170,13 +208,14 @@ func (c *Client) attemptEndpoint(ctx context.Context, ep Endpoint, req *ChatRequ
 	var cancelAttempt context.CancelFunc
 	if c.perAttemptTimeout > 0 {
 		attemptCtx, cancelAttempt = context.WithTimeout(ctx, c.perAttemptTimeout)
+		// Deferred cancel guarantees the child context (and its timer goroutine)
+		// is released even if doWithRetry panics — a non-deferred call would be
+		// skipped during a panic unwind, leaking the context.WithTimeout timer.
+		defer cancelAttempt()
 	}
 
 	result, err := c.doWithRetry(attemptCtx, ep.URL, ep.Key, &epReq)
 
-	if cancelAttempt != nil {
-		cancelAttempt()
-	}
 	// Served-model attribution: the model that returned the 200 is this
 	// endpoint's effective model. Set here (the single "try one endpoint"
 	// authority) so BOTH the chain loop and the never-fail-closed race guard
@@ -193,12 +232,70 @@ func (c *Client) attemptEndpoint(ctx context.Context, ep Endpoint, req *ChatRequ
 	return result, err
 }
 
+// hasNonEmptyFallbackKey reports whether any of the fallback keys is non-empty.
+func hasNonEmptyFallbackKey(keys []string) bool {
+	for _, k := range keys {
+		if k != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Client) executeInner(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
+	// No-endpoint path guard: when no endpoint chain is configured (each
+	// endpoint carries its own key), the only keys available are c.apiKey and
+	// c.fallbackKeys. If ALL of them are empty, every doWithRetry attempt would
+	// fire with an empty Bearer token → an opaque 401/403, and the fallback loop
+	// silently skips empty keys via `if key == "" { continue }`, leaving the
+	// caller with that opaque auth error. Fail fast with a clear sentinel
+	// instead. The endpoint-chain path is unaffected: each endpoint has its own
+	// ep.Key validated separately.
+	if len(c.endpoints) == 0 && c.apiKey == "" && !hasNonEmptyFallbackKey(c.fallbackKeys) {
+		return nil, ErrNoValidAPIKey
+	}
 	if len(c.endpoints) > 0 {
 		var lastErr error
 		attempted := false
 		endpoints, skipCooled := c.cooldownCandidates()
-		for _, ep := range endpoints {
+		// tryOrder is the iteration slice for the loop. It may be a reordered or
+		// filtered subset of endpoints (never a superset). The original endpoints
+		// slice from cooldownCandidates is always preserved as the source of the
+		// never-fail-closed race guard at the bottom (endpoints[0]), because tryOrder
+		// can be empty (e.g. all models weight-0 under SelectionWeighted).
+		tryOrder := endpoints
+		switch c.selectionStrategy {
+		case SelectionRandom:
+			// When skipCooled=true (≥1 healthy candidate exists), build the
+			// eligible (non-cooled) subset and shuffle it. When skipCooled=false
+			// (cooldown disabled OR all-cooled last-resort path), endpoints is
+			// either the full chain (no cooldown) or endpoints[:1] (all-cooled);
+			// shuffle the full list in the no-cooldown case, preserve order in
+			// the last-resort case.
+			if skipCooled {
+				// eligibleEndpoints is Guard A: filter to non-cooled subset before
+				// shuffling so a cooled model is never placed in the try-order.
+				// Guard B (the per-ep cooling() check in the loop below) is the
+				// race-safety backstop for the concurrent-cooldown window where a
+				// model may be cooled between this snapshot and the loop iteration.
+				tryOrder = shuffleEndpoints(eligibleEndpoints(endpoints, c.cooldown), c.rander)
+			} else if c.cooldown == nil {
+				// No cooldown configured: all endpoints are eligible; shuffle all.
+				tryOrder = shuffleEndpoints(endpoints, c.rander)
+			}
+			// else: all-cooled last-resort (endpoints[:1]): keep priority order.
+		case SelectionWeighted:
+			if skipCooled {
+				// eligibleEndpoints is Guard A for weighted path: filter non-cooled
+				// subset first, then apply weighted exclusion + ordering.
+				tryOrder = weightedShuffleEndpoints(eligibleEndpoints(endpoints, c.cooldown), c.modelWeights, c.rander)
+			} else if c.cooldown == nil {
+				// No cooldown: all endpoints eligible for weighted shuffle.
+				tryOrder = weightedShuffleEndpoints(endpoints, c.modelWeights, c.rander)
+			}
+			// else: all-cooled last-resort (endpoints[:1]): keep priority order.
+		}
+		for _, ep := range tryOrder {
 			// Skip a model in quota cooldown, but only while a healthier
 			// candidate remains — degraded > dead.
 			if skipCooled && c.cooldown.cooling(ep.Model) {
@@ -212,12 +309,15 @@ func (c *Client) executeInner(ctx context.Context, req *ChatRequest) (*ChatRespo
 			}
 			lastErr = err
 
-			// A per-attempt DeadlineExceeded where the outer ctx is still alive
-			// means this endpoint was slow (not a genuine give-up by the caller).
-			// Treat it as retryable-advance: continue to the next endpoint.
-			// If the outer ctx is also done, fall through to the asRetryable gate,
-			// which will return non-retryable → abort the chain (correct).
-			if c.perAttemptTimeout > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			// A DeadlineExceeded where the outer ctx is still alive means this
+			// endpoint was slow (not a genuine give-up by the caller). The
+			// deadline could come from either the per-attempt timeout (when
+			// configured) or the HTTP client's own timeout (default 90s). In
+			// both cases the endpoint is too slow — treat it as retryable-
+			// advance: continue to the next endpoint.
+			// If the outer ctx is also done, fall through to the asRetryable
+			// gate, which will return non-retryable → abort the chain (correct).
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 				continue
 			}
 

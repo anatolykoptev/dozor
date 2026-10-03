@@ -103,6 +103,13 @@ type ChatRequest struct {
 	Tools          []Tool    `json:"tools,omitempty"`
 	ToolChoice     any       `json:"tool_choice,omitempty"`
 	ResponseFormat any       `json:"response_format,omitempty"`
+	// ReasoningEffort controls chain-of-thought computation.
+	// "none" disables reasoning on supported models (cerebras-glm-4.7),
+	// freeing the token budget for content instead of thinking tokens.
+	// Other values: "low", "medium", "high". Empty = not sent (provider default).
+	// WARNING: send only to models that support it; unsupported models return 400.
+	// Use model-prefix guards at the call site.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // Usage holds token usage from the API response.
@@ -194,6 +201,7 @@ type chatConfig struct {
 	maxTokens         *int
 	model             string
 	timestampMessages bool
+	reasoningEffort   string
 }
 
 func (cfg *chatConfig) apply(req *ChatRequest) {
@@ -219,6 +227,9 @@ func (cfg *chatConfig) apply(req *ChatRequest) {
 	if cfg.timestampMessages {
 		applyMessageTimestamps(req.Messages)
 	}
+	if cfg.reasoningEffort != "" {
+		req.ReasoningEffort = cfg.reasoningEffort
+	}
 }
 
 // WithTools sets the available tools for the request.
@@ -239,6 +250,18 @@ func WithChatTemperature(t float64) ChatOption {
 // WithChatMaxTokens overrides the max tokens for a single call.
 func WithChatMaxTokens(n int) ChatOption {
 	return func(c *chatConfig) { c.maxTokens = &n }
+}
+
+// WithReasoningEffort sets the reasoning_effort for a single call.
+// Valid values: "none", "low", "medium", "high".
+// "none" disables chain-of-thought on supported models (cerebras-glm-4.7),
+// freeing the full token budget for content output.
+//
+// WARNING: not all models support this parameter. Sending it to groq,
+// some OpenRouter endpoints, or DeepSeek (zen-*) providers returns HTTP 400.
+// Guard at the call site with a model-prefix check before using.
+func WithReasoningEffort(effort string) ChatOption {
+	return func(c *chatConfig) { c.reasoningEffort = effort }
 }
 
 // WithChatModel overrides the model id for a single call. Empty string —
