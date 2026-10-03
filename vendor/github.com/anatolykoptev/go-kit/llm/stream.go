@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -115,11 +116,23 @@ func (c *Client) Stream(ctx context.Context, messages []Message, opts ...ChatOpt
 	if len(c.endpoints) > 0 {
 		var lastErr error
 		for _, ep := range c.endpoints {
-			epReq := *req
-			if ep.Model != "" {
-				epReq.Model = ep.Model
+			epReq := c.prepareEndpointRequest(ep, req)
+
+			// Per-attempt timeout (mirrors attemptEndpoint in transport.go):
+			// derive a child ctx bounded by d. The outer ctx remains the
+			// absolute ceiling.
+			attemptCtx := ctx
+			var cancelAttempt context.CancelFunc
+			if c.perAttemptTimeout > 0 {
+				attemptCtx, cancelAttempt = context.WithTimeout(ctx, c.perAttemptTimeout)
 			}
-			sr, err := c.doStreamRequest(ctx, ep.URL, ep.Key, &epReq)
+
+			sr, err := c.doStreamRequest(attemptCtx, ep.URL, ep.Key, &epReq)
+
+			if cancelAttempt != nil {
+				cancelAttempt()
+			}
+
 			if c.endpointObserver != nil {
 				c.endpointObserver(ep, err)
 			}
@@ -127,6 +140,11 @@ func (c *Client) Stream(ctx context.Context, messages []Message, opts ...ChatOpt
 				return sr, nil
 			}
 			lastErr = err
+			// A per-attempt DeadlineExceeded where the outer ctx is still
+			// alive means this endpoint was slow — advance to the next.
+			if c.perAttemptTimeout > 0 && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				continue
+			}
 			// "Request too large for this model" (413 / context_length_exceeded) is
 			// non-retryable on THIS endpoint but the next model may fit — advance
 			// instead of aborting the chain (mirrors executeInner in transport.go).

@@ -51,10 +51,15 @@ func (cb *circuitBreaker) clock() time.Time {
 	return time.Now()
 }
 
+// All methods are nil-safe: a nil *circuitBreaker allows everything.
+//
 // allow returns true if a request is allowed through the circuit breaker.
 // In half-open state, exactly one request (the probe) is allowed; all others
 // are rejected until the probe completes and transitions the state.
 func (cb *circuitBreaker) allow() bool {
+	if cb == nil {
+		return true
+	}
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	switch cb.state {
@@ -83,6 +88,9 @@ func (cb *circuitBreaker) allow() bool {
 // recordSuccess resets the failure counter. In half-open state, a successful
 // probe closes the circuit.
 func (cb *circuitBreaker) recordSuccess() {
+	if cb == nil {
+		return
+	}
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	if cb.state == cbHalfOpen {
@@ -99,6 +107,9 @@ func (cb *circuitBreaker) recordSuccess() {
 // failures reach maxFails. In half-open state, a failed probe re-opens the
 // circuit with a fresh cooldown.
 func (cb *circuitBreaker) recordFailure() {
+	if cb == nil {
+		return
+	}
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	if cb.state == cbHalfOpen {
@@ -132,15 +143,13 @@ func doWithRetry[T any](ctx context.Context, rc *retryConfig, cb *circuitBreaker
 		// Check the circuit breaker before every attempt, not just once before the loop.
 		// This ensures a breaker that opens mid-retry (by this loop or a concurrent
 		// request) blocks subsequent attempts instead of stampeding through.
-		if cb != nil && !cb.allow() {
+		if !cb.allow() {
 			return zero, &Error{StatusCode: http.StatusServiceUnavailable, Message: "circuit breaker open"}
 		}
 
 		result, err := fn()
 		if err == nil {
-			if cb != nil {
-				cb.recordSuccess()
-			}
+			cb.recordSuccess()
 			return result, nil
 		}
 
@@ -148,16 +157,12 @@ func doWithRetry[T any](ctx context.Context, rc *retryConfig, cb *circuitBreaker
 
 		var sttErr *Error
 		if !errors.As(err, &sttErr) || !sttErr.IsTransient() {
-			if cb != nil {
-				cb.recordFailure()
-			}
+			cb.recordFailure()
 			return zero, err
 		}
 
 		// Transient error: record failure, then backoff unless last attempt.
-		if cb != nil {
-			cb.recordFailure()
-		}
+		cb.recordFailure()
 
 		if attempt == rc.maxAttempts-1 {
 			break

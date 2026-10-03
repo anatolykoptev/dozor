@@ -289,4 +289,3 @@ func isSafeHref(href string) bool {
 	}
 	return false
 }
-

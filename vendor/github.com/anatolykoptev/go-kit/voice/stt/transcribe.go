@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Transcribe sends the audio file to the STT service and returns the transcription.
@@ -38,12 +39,9 @@ func (c *Client) TranscribeVerbose(ctx context.Context, audioPath string) (*Verb
 	snapshot := body.Bytes()
 
 	do := func() (*VerboseResponse, error) {
-		respBody, status, err := c.postTranscription(ctx, bytes.NewReader(snapshot), ct)
+		respBody, err := c.postTranscription(ctx, bytes.NewReader(snapshot), ct, maxVerboseResponse)
 		if err != nil {
 			return nil, err
-		}
-		if status != http.StatusOK {
-			return nil, &Error{StatusCode: status, Message: string(respBody)}
 		}
 		var result VerboseResponse
 		if err := json.Unmarshal(respBody, &result); err != nil {
@@ -77,14 +75,7 @@ func (c *Client) TranscribeRaw(ctx context.Context, audioPath string) ([]byte, e
 	snapshot := body.Bytes()
 
 	do := func() ([]byte, error) {
-		respBody, status, err := c.postTranscription(ctx, bytes.NewReader(snapshot), ct)
-		if err != nil {
-			return nil, err
-		}
-		if status != http.StatusOK {
-			return nil, &Error{StatusCode: status, Message: string(respBody)}
-		}
-		return respBody, nil
+		return c.postTranscription(ctx, bytes.NewReader(snapshot), ct, responseLimit(c.format))
 	}
 
 	if c.retry != nil {
@@ -100,6 +91,13 @@ func (c *Client) TranscribeReader(ctx context.Context, r io.Reader, filename str
 
 // transcribeFromReader is the shared implementation for Transcribe and TranscribeReader.
 func (c *Client) transcribeFromReader(ctx context.Context, r io.Reader, filename, formatOverride string) (*Response, error) {
+	format := c.format
+	if formatOverride != "" {
+		format = formatOverride
+	}
+	if format == "srt" || format == "vtt" {
+		return nil, ErrUnsupportedFormat
+	}
 	var body bytes.Buffer
 	ct, err := c.buildMultipart(&body, r, filename, formatOverride)
 	if err != nil {
@@ -108,12 +106,13 @@ func (c *Client) transcribeFromReader(ctx context.Context, r io.Reader, filename
 	snapshot := body.Bytes()
 
 	do := func() (*Response, error) {
-		respBody, status, err := c.postTranscription(ctx, bytes.NewReader(snapshot), ct)
+		respBody, err := c.postTranscription(ctx, bytes.NewReader(snapshot), ct, responseLimit(format))
 		if err != nil {
 			return nil, err
 		}
-		if status != http.StatusOK {
-			return nil, &Error{StatusCode: status, Message: string(respBody)}
+		if format == "text" {
+			// A plain-text body is the transcript itself, not JSON.
+			return &Response{Text: strings.TrimSpace(string(respBody)), Language: c.language}, nil
 		}
 		var result Response
 		if err := json.Unmarshal(respBody, &result); err != nil {
@@ -136,22 +135,19 @@ func (c *Client) Models(ctx context.Context) (*ModelList, error) {
 	do := func() (*ModelList, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/models", nil)
 		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
+			return nil, fmt.Errorf("create request: %w", stripURLError(err))
 		}
 		c.setAuth(req)
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("send request: %w", err)
+			return nil, fmt.Errorf("send request: %w", stripURLError(err))
 		}
 		defer resp.Body.Close()
 
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := c.readResponse(resp, maxModelsResponse)
 		if err != nil {
-			return nil, fmt.Errorf("read response: %w", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, &Error{StatusCode: resp.StatusCode, Message: string(respBody)}
+			return nil, err
 		}
 
 		var result ModelList

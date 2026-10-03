@@ -18,8 +18,8 @@ var ErrLimiterZero = errors.New("ratelimit: zero rate and insufficient burst —
 type Limiter struct {
 	mu         sync.Mutex
 	tokens     float64
-	rate       float64   // tokens per second
-	burst      float64   // max capacity
+	rate       float64 // tokens per second
+	burst      float64 // max capacity
 	lastRefill time.Time
 	now        func() time.Time // test override
 }

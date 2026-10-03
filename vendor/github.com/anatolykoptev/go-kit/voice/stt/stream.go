@@ -3,9 +3,11 @@ package stt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,13 +73,13 @@ func (sc *StreamClient) SetAPIKey(key string) {
 
 // convertWebSocketScheme converts an HTTP/HTTPS base URL to a WebSocket URL
 // using net/url. Unlike a naive strings.NewReplacer, it correctly handles
-// schemeless loopback addresses (e.g. "127.0.0.1:8092"), ws/wss passthrough,
+// schemeless loopback addresses (e.g. "127.0.0.1:8000"), ws/wss passthrough,
 // trailing slashes, and preserved query strings. It requires an explicit
 // http/https/ws/wss scheme and rejects anything else.
 func convertWebSocketScheme(baseURL string) (string, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil {
-		return "", fmt.Errorf("invalid stream URL %q: %w", baseURL, err)
+		return "", fmt.Errorf("invalid stream URL: %w", stripURLError(err))
 	}
 	switch u.Scheme {
 	case "http":
@@ -87,7 +89,7 @@ func convertWebSocketScheme(baseURL string) (string, error) {
 	case "ws", "wss":
 		// passthrough — already a WebSocket scheme
 	default:
-		return "", fmt.Errorf("invalid stream URL %q: missing or unsupported scheme %q (want http/https/ws/wss)", baseURL, u.Scheme)
+		return "", fmt.Errorf("invalid stream URL: missing or unsupported scheme %q (want http/https/ws/wss)", u.Scheme)
 	}
 	// Strip a trailing slash so appending "/v1/listen" doesn't produce a
 	// double slash ("host//v1/listen").
@@ -128,12 +130,12 @@ func buildStreamURL(baseURL string, p StreamParams) (string, error) {
 
 	q := url.Values{}
 	q.Set("language", lang)
-	q.Set("vad", fmt.Sprintf("%t", vad))
-	q.Set("interim_results", fmt.Sprintf("%t", p.InterimResults))
-	q.Set("smart_format", fmt.Sprintf("%t", p.SmartFormat))
-	q.Set("punctuate", fmt.Sprintf("%t", punctuate))
+	q.Set("vad", strconv.FormatBool(vad))
+	q.Set("interim_results", strconv.FormatBool(p.InterimResults))
+	q.Set("smart_format", strconv.FormatBool(p.SmartFormat))
+	q.Set("punctuate", strconv.FormatBool(punctuate))
 	q.Set("encoding", enc)
-	q.Set("sample_rate", fmt.Sprintf("%d", sr))
+	q.Set("sample_rate", strconv.Itoa(sr))
 
 	return wsBase + "/v1/listen?" + q.Encode(), nil
 }
@@ -151,7 +153,7 @@ func (sc *StreamClient) Connect(ctx context.Context) error {
 	sc.mu.Lock()
 	if sc.conn != nil {
 		sc.mu.Unlock()
-		return fmt.Errorf("stream already connected")
+		return errors.New("stream already connected")
 	}
 	sc.mu.Unlock()
 
@@ -162,7 +164,7 @@ func (sc *StreamClient) Connect(ctx context.Context) error {
 		header = http.Header{}
 		header.Set("Authorization", "Bearer "+sc.apiKey)
 	}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, sc.wsURL, header)
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, sc.wsURL, header) //nolint:bodyclose // gorilla owns the upgrade response body
 	if err != nil {
 		return fmt.Errorf("ws dial: %w", err)
 	}
@@ -175,7 +177,7 @@ func (sc *StreamClient) Connect(ctx context.Context) error {
 	if sc.conn != nil {
 		sc.mu.Unlock()
 		_ = conn.Close() //nolint:errcheck // discard the extra connection
-		return fmt.Errorf("stream already connected")
+		return errors.New("stream already connected")
 	}
 	sc.conn = conn
 	sc.closed.Store(false)
@@ -225,7 +227,7 @@ func (sc *StreamClient) Send(data []byte) error {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	if sc.conn == nil {
-		return fmt.Errorf("stream not connected")
+		return errors.New("stream not connected")
 	}
 	if err := sc.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		return fmt.Errorf("ws send: %w", err)
@@ -287,7 +289,7 @@ func (sc *StreamClient) sendControl(typeName string) error {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	if sc.conn == nil {
-		return fmt.Errorf("stream not connected")
+		return errors.New("stream not connected")
 	}
 	msg, err := json.Marshal(map[string]string{"type": typeName})
 	if err != nil {

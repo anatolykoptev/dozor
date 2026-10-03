@@ -6,7 +6,10 @@ package llm
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"math/rand"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -23,19 +26,23 @@ const (
 
 // Client is an OpenAI-compatible LLM client with retry and fallback key support.
 type Client struct {
-	baseURL           string
-	apiKey            string
-	model             string
-	maxTokens         int
-	temperature       *float64 // nil = omit from request (some models reject it)
-	httpClient        *http.Client
-	fallbackKeys      []string
-	maxRetries        int
-	endpoints         []Endpoint
-	middleware        []Middleware
-	endpointObserver  EndpointAttemptObserver
-	perAttemptTimeout time.Duration  // 0 = disabled; per-attempt wrapping skipped, behavior byte-identical to pre-feature
-	cooldown          *modelCooldown // nil = disabled; no per-model cooldown, behavior byte-identical to pre-feature
+	baseURL               string
+	apiKey                string
+	model                 string
+	maxTokens             int
+	temperature           *float64 // nil = omit from request (some models reject it)
+	httpClient            *http.Client
+	fallbackKeys          []string
+	maxRetries            int
+	endpoints             []Endpoint
+	middleware            []Middleware
+	endpointObserver      EndpointAttemptObserver
+	perAttemptTimeout     time.Duration     // 0 = disabled; per-attempt wrapping skipped, behavior byte-identical to pre-feature
+	cooldown              *modelCooldown    // nil = disabled; no per-model cooldown, behavior byte-identical to pre-feature
+	selectionStrategy     SelectionStrategy // default SelectionPriority
+	rander                *rand.Rand        // nil = global source; injectable for deterministic tests
+	modelWeights          map[string]int    // nil = all models default weight 1 (SelectionWeighted)
+	reasoningEffortModels []string          // nil = pass-through; non-empty = per-endpoint allowlist gating in attemptEndpoint
 }
 
 // Option configures the Client.
@@ -191,6 +198,68 @@ func WithModelCooldownObserver(fn func(model string, cooling bool, d time.Durati
 	}
 }
 
+// WithSelectionStrategy sets the endpoint selection strategy for WithEndpoints chains.
+// SelectionPriority (default) tries endpoints in configured order (primary first).
+// SelectionRandom shuffles eligible (non-cooled) endpoints on each request,
+// distributing load across the pool so no single provider is always tried first.
+//
+// NewClient reads LLM_SELECTION_STRATEGY from the environment automatically; this
+// option lets callers override or test-inject the strategy programmatically.
+func WithSelectionStrategy(s SelectionStrategy) Option {
+	return func(c *Client) { c.selectionStrategy = s }
+}
+
+// WithRander sets the random source used for SelectionRandom strategy.
+// The injected *rand.Rand is intended for deterministic testing only and
+// MUST NOT be shared across concurrent requests: *rand.Rand is not safe
+// for concurrent use. Leave nil in production to use the locked global
+// rand.Shuffle.
+func WithRander(r *rand.Rand) Option {
+	return func(c *Client) { c.rander = r }
+}
+
+// WithModelWeights sets per-model weights for SelectionWeighted strategy.
+// Models with weight 0 are structurally excluded from the try-order.
+// Models absent from the map default to weight 1. Negative weights are
+// skipped (same contract as the env parser) with a warning — a negative
+// weight inverts the Efraimidis-Spirakis key, promoting rather than
+// suppressing a model, which is never the caller's intent. The map is
+// copied defensively. Has no effect unless SelectionWeighted is used.
+//
+// If EVERY eligible model is weight 0 (after filtering), the last-resort
+// guard in weightedShuffleEndpoints attempts the priority-primary endpoint
+// rather than failing closed — so "weight-0 never attempted" holds only
+// while ≥1 positive-weight eligible model exists.
+func WithModelWeights(weights map[string]int) Option {
+	return func(c *Client) {
+		m := make(map[string]int, len(weights))
+		for k, v := range weights {
+			if v < 0 {
+				slog.Warn("llm: WithModelWeights: negative weight treated as 0 (excluded); use 0 explicitly to suppress a model", "model", k, "weight", v)
+				m[k] = 0
+				continue
+			}
+			m[k] = v
+		}
+		c.modelWeights = m
+	}
+}
+
+// WithReasoningEffortModels sets the allowlist of exact model IDs that receive
+// reasoning_effort in a WithEndpoints chain. When the allowlist is non-empty,
+// attemptEndpoint strips reasoning_effort from any endpoint whose model is NOT
+// in the list — preventing HTTP 400 from providers that reject the parameter.
+//
+// Empty (default) = pass-through for all endpoints (existing behavior preserved
+// for callers not using this option).
+//
+// NewClient also reads LLM_REASONING_EFFORT_MODELS env (comma-separated model
+// IDs) on construction; an explicit WithReasoningEffortModels option applied
+// after NewClient wins over the env var.
+func WithReasoningEffortModels(models []string) Option {
+	return func(c *Client) { c.reasoningEffortModels = models }
+}
+
 // Middleware wraps chat completion calls. Use for logging, metrics, caching.
 // The next function sends the request to the API (or the next middleware).
 // First added middleware is the outermost wrapper.
@@ -264,16 +333,28 @@ func isCircuitTrippingError(err error) bool {
 
 // NewClient creates a new LLM client.
 // For callers that want to gracefully disable LLM when apiKey is empty, see NewOptional.
+//
+// LLM_SELECTION_STRATEGY env var is read on construction: "random" → SelectionRandom;
+// empty/missing → SelectionPriority (default, no log); any other non-empty value →
+// SelectionPriority + slog.Warn. An explicit WithSelectionStrategy option always wins
+// over the env var (options are applied after the env default is set).
 func NewClient(baseURL, apiKey, model string, opts ...Option) *Client {
 	// Temperature is intentionally nil — see ChatRequest.Temperature comment.
 	// Callers who want non-default sampling pass WithTemperature(t).
 	c := &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		apiKey:     apiKey,
-		model:      model,
-		maxTokens:  defaultMaxTokens,
-		maxRetries: defaultMaxRetries,
-		httpClient: &http.Client{Timeout: defaultTimeout},
+		baseURL:           strings.TrimRight(baseURL, "/"),
+		apiKey:            apiKey,
+		model:             model,
+		maxTokens:         defaultMaxTokens,
+		maxRetries:        defaultMaxRetries,
+		httpClient:        &http.Client{Timeout: defaultTimeout},
+		selectionStrategy: parseSelectionStrategy(os.Getenv("LLM_SELECTION_STRATEGY")),
+	}
+	if raw := os.Getenv("LLM_MODEL_WEIGHTS"); raw != "" {
+		c.modelWeights = parseModelWeights(raw)
+	}
+	if raw := os.Getenv("LLM_REASONING_EFFORT_MODELS"); raw != "" {
+		c.reasoningEffortModels = parseCSV(raw)
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -282,6 +363,10 @@ func NewClient(baseURL, apiKey, model string, opts ...Option) *Client {
 }
 
 // Complete sends a text completion request with optional system prompt.
+// When using WithEndpoints, a model response with empty content and no tool calls
+// is treated as a non-retryable failure on that endpoint; the chain advances to
+// the next model. If all models return empty content, the call returns a terminal
+// empty_completion APIError.
 // If system is empty, only the user message is sent.
 // Optional ChatOptions (e.g. WithChatTemperature, WithChatMaxTokens) override client defaults for this call.
 func (c *Client) Complete(ctx context.Context, system, user string, opts ...ChatOption) (string, error) {
@@ -319,6 +404,10 @@ func (c *Client) CompleteMultimodal(ctx context.Context, prompt string, images [
 }
 
 // CompleteRaw sends a chat completion with explicit messages.
+// When using WithEndpoints, a model response with empty content and no tool calls
+// is treated as a non-retryable failure on that endpoint; the chain advances to
+// the next model. If all models return empty content, the call returns a terminal
+// empty_completion APIError.
 // Retries on 429/5xx, cycles through fallback keys.
 // Optional ChatOptions (e.g. WithChatTemperature, WithChatMaxTokens) override client defaults for this call.
 func (c *Client) CompleteRaw(ctx context.Context, messages []Message, opts ...ChatOption) (string, error) {
