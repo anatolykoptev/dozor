@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.16.5](https://github.com/anatolykoptev/dozor/compare/v1.16.4...v1.16.5) (2026-10-03)
+
+
+### Fixed
+
+* **security:** send Gemini API key in header, strip URL from errors ([#222](https://github.com/anatolykoptev/dozor/issues/222)) ([b0ce07c](https://github.com/anatolykoptev/dozor/commit/b0ce07cac21378b05a0aad651f542bbfda50b9fb))
+* **telegram:** keep bot token and transcripts out of logs; STT from go-kit voice/stt ([#221](https://github.com/anatolykoptev/dozor/issues/221)) ([df28a12](https://github.com/anatolykoptev/dozor/commit/df28a128a9fba9230710481a1d52534344ccf772))
+
 ## [1.16.4](https://github.com/anatolykoptev/dozor/compare/v1.16.3...v1.16.4) (2026-09-28)
 
 
