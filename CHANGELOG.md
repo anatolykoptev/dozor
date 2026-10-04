@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.6](https://github.com/anatolykoptev/dozor/compare/v1.16.5...v1.16.6) (2026-10-04)
+
+
+### Fixed
+
+* **security:** scrub the Telegram bot token from API errors and SDK logs ([#225](https://github.com/anatolykoptev/dozor/issues/225)) ([95849ee](https://github.com/anatolykoptev/dozor/commit/95849ee6550b107066569c445a3034a8205c4a6c))
+
 ## [1.16.5](https://github.com/anatolykoptev/dozor/compare/v1.16.4...v1.16.5) (2026-10-03)
 
 
