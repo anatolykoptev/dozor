@@ -15,6 +15,7 @@ import (
 	"github.com/anatolykoptev/dozor/internal/bus"
 	"github.com/anatolykoptev/dozor/internal/engine"
 	tgfmt "github.com/anatolykoptev/go-kit/telegram"
+	"github.com/anatolykoptev/go-kit/telegram/tgsafe"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
@@ -23,9 +24,9 @@ type Channel struct {
 	bus     *bus.Bus
 	allowed map[int64]bool // whitelisted user IDs
 	ctx     context.Context
-	sttURL  string       // STT service base URL
-	sttLang string       // STT transcription language
-	dl      *http.Client // voice-file download client (nil = http.DefaultClient)
+	sttURL  string   // STT service base URL
+	sttLang string   // STT transcription language
+	dl      httpDoer // voice-file download client; scrubs the bot token from errors (nil = a fresh scrubbing client)
 
 	stopTyping sync.Map // chatID string → chan struct{}
 }
@@ -36,7 +37,7 @@ func New(msgBus *bus.Bus) (*Channel, error) {
 		return nil, errors.New("DOZOR_TELEGRAM_TOKEN not set")
 	}
 
-	bot, err := tgbotapi.NewBotAPI(token)
+	bot, dl, err := newBot(token, tgbotapi.APIEndpoint, &http.Client{Timeout: botHTTPTimeout})
 	if err != nil {
 		return nil, fmt.Errorf("create telegram bot: %w", err)
 	}
@@ -62,11 +63,43 @@ func New(msgBus *bus.Bus) (*Channel, error) {
 
 	return &Channel{
 		bot:     bot,
+		dl:      dl,
 		bus:     msgBus,
 		allowed: allowed,
 		sttURL:  sttURL,
 		sttLang: sttLang,
 	}, nil
+}
+
+// botHTTPTimeout bounds every Bot API request; above the 30 s long-poll.
+const botHTTPTimeout = 75 * time.Second
+
+// httpDoer is the part of *http.Client the voice download needs.
+type httpDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
+// newBot builds the bot on a client that scrubs the bot token out of every
+// error: tgbotapi's requests fail with a *url.Error whose text carries
+// bot<TOKEN>. The same client is returned for file downloads (their URL embeds
+// the token too).
+func newBot(token, endpoint string, base *http.Client) (*tgbotapi.BotAPI, *tgsafe.HTTPClient, error) {
+	hc := tgsafe.NewHTTPClient(base, token)
+	bot, err := tgbotapi.NewBotAPIWithClient(token, endpoint, hc)
+	if err != nil {
+		return nil, nil, err
+	}
+	return bot, hc, nil
+}
+
+// startUpdates installs the scrubbing SDK logger and starts long polling.
+// GetUpdatesChan prints every failed poll through the SDK's package logger
+// (stderr by default), which would carry the token.
+func (c *Channel) startUpdates() tgbotapi.UpdatesChannel {
+	_ = tgbotapi.SetLogger(tgsafe.NewLogger(slog.Default(), c.bot.Token))
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 30
+	return c.bot.GetUpdatesChan(u)
 }
 
 func (c *Channel) Start(ctx context.Context) {
@@ -76,9 +109,7 @@ func (c *Channel) Start(ctx context.Context) {
 		slog.String("username", c.bot.Self.UserName),
 		slog.Int("allowed_users", len(c.allowed)))
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 30
-	updates := c.bot.GetUpdatesChan(u)
+	updates := c.startUpdates()
 
 	go c.pollUpdates(ctx, updates)
 	go c.dispatchOutbound(ctx)
