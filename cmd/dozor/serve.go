@@ -62,6 +62,7 @@ func runServe(cfg engine.Config, eng *engine.ServerAgent) {
 		Logger:                     slog.Default(),
 		MCPLogger:                  slog.Default(),
 		JSONResponse:               true,
+		BearerAuth:                 mcpBearerAuth(),
 	}); err != nil {
 		slog.Error("MCP server failed", slog.Any("error", err))
 	}

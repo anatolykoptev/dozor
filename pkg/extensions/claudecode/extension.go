@@ -242,12 +242,18 @@ func (t *claudeCodeTool) runClaude(ctx context.Context, prompt string, args map[
 // writeMCPConfig writes a temporary MCP config JSON file pointing to Dozor's own MCP server.
 // Returns the file path and a cleanup func. Caller must call cleanup() when done.
 func writeMCPConfig(mcpURL string) (string, func(), error) {
+	server := map[string]any{
+		"type": "http",
+		"url":  mcpURL,
+	}
+	// /mcp requires a bearer token (cmd/dozor/mcp_auth.go). os.CreateTemp
+	// creates the file 0600, so the token is not readable by other users.
+	if token := os.Getenv("DOZOR_MCP_TOKEN"); token != "" {
+		server["headers"] = map[string]string{"Authorization": "Bearer " + token}
+	}
 	cfg := map[string]any{
 		"mcpServers": map[string]any{
-			"dozor": map[string]any{
-				"type": "http",
-				"url":  mcpURL,
-			},
+			"dozor": server,
 		},
 	}
 	data, err := json.Marshal(cfg)

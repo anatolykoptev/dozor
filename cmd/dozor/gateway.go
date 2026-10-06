@@ -177,6 +177,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		Logger:                     slog.Default(),
 		MCPLogger:                  slog.Default(),
 		JSONResponse:               true,
+		BearerAuth:                 mcpBearerAuth(),
 		Metrics:                    nil, // prometheus handler mounted directly below
 		Routes: func(mux *http.ServeMux) {
 			mux.Handle("/metrics", promhttp.Handler())
