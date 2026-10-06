@@ -26,6 +26,7 @@ import (
 //   - deploy_on unset (push-deployed) → target = the remote tip of the
 //     configured branch (a missed push deploys the newest tip — newest-wins,
 //     same as the queue's own coalescing).
+//   - deploy_on: on_demand → skipped; nothing automatic ever builds it.
 //
 // Detection is remote-read-only: `git ls-remote` against the source clone's
 // origin URL — no local fetch, so it works even when the clone is stale.
@@ -46,6 +47,12 @@ func ReconcileMissedReleases(ctx context.Context, cfg *Config, q *Queue) {
 		return
 	}
 	for key, rc := range cfg.Repos {
+		if rc.DeployOn == deployOnOnDemand {
+			// Never built automatically, so there is no missed delivery to
+			// re-drive. Its deployed SHA is also not its own: the receipt is
+			// keyed by bare owner/repo, shared with the release lane.
+			continue
+		}
 		repo := stripBranchSuffix(key)
 		dir := sourceDirForConfig(rc)
 		if dir == "" {
