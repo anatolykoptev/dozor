@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.0](https://github.com/anatolykoptev/dozor/compare/v1.16.6...v1.17.0) (2026-10-06)
+
+
+### Added
+
+* **deploy:** deploy_on: on_demand — a lane only server_deploy builds ([#228](https://github.com/anatolykoptev/dozor/issues/228)) ([e889467](https://github.com/anatolykoptev/dozor/commit/e88946718a317c1f4b29e54118a5918ec82267b9))
+
 ## [1.16.6](https://github.com/anatolykoptev/dozor/compare/v1.16.5...v1.16.6) (2026-10-04)
 
 
