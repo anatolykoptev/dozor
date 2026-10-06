@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/anatolykoptev/dozor/internal/mcpself"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -242,12 +243,10 @@ func (t *claudeCodeTool) runClaude(ctx context.Context, prompt string, args map[
 // writeMCPConfig writes a temporary MCP config JSON file pointing to Dozor's own MCP server.
 // Returns the file path and a cleanup func. Caller must call cleanup() when done.
 func writeMCPConfig(mcpURL string) (string, func(), error) {
+	// os.CreateTemp creates the file 0600; it may carry the /mcp token.
 	cfg := map[string]any{
 		"mcpServers": map[string]any{
-			"dozor": map[string]any{
-				"type": "http",
-				"url":  mcpURL,
-			},
+			"dozor": mcpself.ServerEntry(mcpURL),
 		},
 	}
 	data, err := json.Marshal(cfg)

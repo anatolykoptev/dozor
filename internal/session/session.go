@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/anatolykoptev/dozor/internal/mcpself"
 	"io"
 	"log/slog"
 	"os"
@@ -51,7 +52,13 @@ type Session struct {
 func Start(ctx context.Context, chatID, prompt string, cfg Config, notify NotifyFn) (*Session, error) {
 	cmdCtx, cancel := context.WithCancel(ctx)
 
-	args := buildCLIArgs(cfg)
+	args, cleanupMCP := buildCLIArgs(cfg)
+	started := false
+	defer func() {
+		if !started {
+			cleanupMCP()
+		}
+	}()
 
 	cmd := exec.CommandContext(cmdCtx, cfg.Binary, args...) //nolint:gosec // binary validated upstream
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -101,8 +108,12 @@ func Start(ctx context.Context, chatID, prompt string, cfg Config, notify Notify
 		return nil, fmt.Errorf("send initial prompt: %w", err)
 	}
 
-	// Read loop in background.
-	go s.readLoop(stdoutPipe, cmd)
+	// Read loop in background; it removes the MCP config once the process exits.
+	started = true
+	go func() {
+		s.readLoop(stdoutPipe, cmd)
+		cleanupMCP()
+	}()
 
 	return s, nil
 }
@@ -268,8 +279,11 @@ func (s *Session) resetIdle() {
 	s.idleTimer.Reset(s.idleTimeout)
 }
 
-// buildCLIArgs constructs the Claude Code CLI arguments for an interactive session.
-func buildCLIArgs(cfg Config) []string {
+// buildCLIArgs constructs the Claude Code CLI arguments for an interactive
+// session. The returned cleanup removes the temp MCP config (it may hold the
+// /mcp token) and must run once the process has exited.
+func buildCLIArgs(cfg Config) ([]string, func()) {
+	cleanupMCP := func() {}
 	args := []string{
 		"-p", "--verbose",
 		"--input-format", "stream-json",
@@ -285,9 +299,7 @@ func buildCLIArgs(cfg Config) []string {
 			slog.Warn("session: failed to write MCP config, running without it",
 				slog.Any("error", err))
 		} else {
-			// Note: temp file will be cleaned up when the process exits.
-			// We don't defer cleanup here since we need the file to persist.
-			_ = cleanup
+			cleanupMCP = cleanup
 			args = append(args, "--mcp-config", cfgPath)
 		}
 	}
@@ -302,7 +314,7 @@ func buildCLIArgs(cfg Config) []string {
 		}
 	}
 
-	return args
+	return args, cleanupMCP
 }
 
 // writeMCPConfig creates a temporary MCP config for the session.
@@ -311,11 +323,8 @@ func buildCLIArgs(cfg Config) []string {
 func writeMCPConfig(mcpURL string) (string, func(), error) {
 	servers := loadUserMCPServers()
 
-	// Ensure dozor is always present with the correct URL.
-	servers["dozor"] = map[string]any{
-		"type": "http",
-		"url":  mcpURL,
-	}
+	// Ensure dozor is always present with the correct URL and its token.
+	servers["dozor"] = mcpself.ServerEntry(mcpURL)
 
 	cfg := map[string]any{"mcpServers": servers}
 	data, err := json.Marshal(cfg)
