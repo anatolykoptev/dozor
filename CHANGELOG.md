@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.0](https://github.com/anatolykoptev/dozor/compare/v1.17.0...v1.18.0) (2026-10-06)
+
+
+### Added
+
+* **security:** bearer token on /mcp (DOZOR_MCP_TOKEN), fail closed ([#232](https://github.com/anatolykoptev/dozor/issues/232)) ([e68fa65](https://github.com/anatolykoptev/dozor/commit/e68fa65c0fb1d3726ec161a441ea7e889ddc553f))
+
 ## [1.17.0](https://github.com/anatolykoptev/dozor/compare/v1.16.6...v1.17.0) (2026-10-06)
 
 
