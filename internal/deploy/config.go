@@ -51,8 +51,9 @@ const (
 // deploy_on accepted values (see RepoConfig.DeployOn). Centralised so the
 // webhook router, drift checker, and gate share one source of truth.
 const (
-	deployOnRelease = "release"
-	deployOnManual  = "manual"
+	deployOnRelease  = "release"
+	deployOnManual   = "manual"
+	deployOnOnDemand = "on_demand"
 )
 
 // RepoConfig maps a GitHub repository to its deploy strategy.
@@ -178,6 +179,12 @@ type RepoConfig struct {
 	//     released-but-never-deployed fix is visible instead of silent. Use
 	//     for production targets that must never deploy automatically — the
 	//     inverse of the opt-out no-auto-deploy label (issue #183).
+	//   - "on_demand": nothing automatic at all — no push build, no release
+	//     build, no boot-reconcile build, no pending-deploy gauge. The entry
+	//     builds and deploys only through server_deploy. Use for a pre-release
+	//     canary: under "manual" a release ALSO builds it, i.e. after the tag
+	//     it exists to gate, and then reports the canary as a withheld
+	//     production release that only a redundant heavy redeploy clears.
 	//
 	// Any other value is rejected at config load with an error naming the
 	// repo and the bad value.
@@ -536,8 +543,10 @@ type Config struct {
 // It is called once per repo by LoadConfig after profile resolution.
 // Mutates rc in-place to fill derived fields (Services from UserServices, etc.).
 func validateRepoConfig(repo string, rc *RepoConfig) error {
-	if rc.DeployOn != "" && rc.DeployOn != deployOnRelease && rc.DeployOn != deployOnManual {
-		return fmt.Errorf("repo %q has invalid deploy_on %q: want \"\", \"release\", or \"manual\"", repo, rc.DeployOn)
+	switch rc.DeployOn {
+	case "", deployOnRelease, deployOnManual, deployOnOnDemand:
+	default:
+		return fmt.Errorf("repo %q has invalid deploy_on %q: want \"\", \"release\", \"manual\", or \"on_demand\"", repo, rc.DeployOn)
 	}
 	switch rc.resolvedKind() {
 	case KindBinary:

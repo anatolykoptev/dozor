@@ -248,6 +248,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// respond ignored — the release event will ship them.
 		filtered := matches[:0]
 		for _, rc := range matches {
+			if rc.DeployOn == deployOnOnDemand {
+				slog.Info("deploy/webhook: deploy_on=on_demand, skipping push (server_deploy only)",
+					"repo", push.Repository.FullName,
+					"branch", branch,
+				)
+				continue
+			}
 			if rc.DeployOn == deployOnRelease || rc.DeployOn == deployOnManual {
 				slog.Info("deploy/webhook: deploy_on=release|manual, skipping push, waiting for release event",
 					"repo", push.Repository.FullName,

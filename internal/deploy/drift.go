@@ -167,6 +167,12 @@ func (d *DriftChecker) checkWebhookEvents(ctx context.Context) {
 	requiredByRepo := d.requiredEventsByRepo()
 	for _, repoKey := range d.sortedRepoKeys() {
 		required := requiredByRepo[repoKey]
+		if len(required) == 0 {
+			// Every entry is on_demand: no webhook is needed, so a missing
+			// one is not drift.
+			d.setGauge(repoKey, checkWebhookEvents, outcomeOK)
+			continue
+		}
 		outcome := d.checkOneRepoWebhook(ctx, repoKey, required)
 		d.setGauge(repoKey, checkWebhookEvents, outcome.outcome)
 		switch outcome.outcome {
@@ -318,7 +324,10 @@ func (d *DriftChecker) requiredEventsByRepo() map[string][]string {
 			// the release trigger), so both require the release webhook
 			// subscription. Neither requires "push".
 			need = eventRelease
-		default: // "" (validated at load to be "", "release", or "manual")
+		case deployOnOnDemand:
+			// server_deploy only — no webhook event is consumed.
+			continue
+		default: // ""
 			need = eventPush
 		}
 		result[repoKey] = appendUnique(result[repoKey], need)

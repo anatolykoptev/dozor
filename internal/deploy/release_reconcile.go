@@ -46,6 +46,12 @@ func ReconcileMissedReleases(ctx context.Context, cfg *Config, q *Queue) {
 		return
 	}
 	for key, rc := range cfg.Repos {
+		if rc.DeployOn == deployOnOnDemand {
+			// Never built automatically, so there is no missed delivery to
+			// re-drive. Its deployed SHA is also not its own: the receipt is
+			// keyed by bare owner/repo, shared with the release lane.
+			continue
+		}
 		repo := stripBranchSuffix(key)
 		dir := sourceDirForConfig(rc)
 		if dir == "" {
