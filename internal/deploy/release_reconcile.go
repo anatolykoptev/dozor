@@ -26,6 +26,7 @@ import (
 //   - deploy_on unset (push-deployed) → target = the remote tip of the
 //     configured branch (a missed push deploys the newest tip — newest-wins,
 //     same as the queue's own coalescing).
+//   - deploy_on: on_demand → skipped; nothing automatic ever builds it.
 //
 // Detection is remote-read-only: `git ls-remote` against the source clone's
 // origin URL — no local fetch, so it works even when the clone is stale.

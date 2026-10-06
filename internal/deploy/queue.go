@@ -189,7 +189,10 @@ func (q *Queue) queuedHas(key string) bool {
 func (q *Queue) Submit(req BuildRequest) bool {
 	// Every automatic build enters here (webhook, debounce, boot reconcile,
 	// queue recovery); server_deploy does not. Refusing on_demand here keeps
-	// the guarantee even for an entry point that forgets to filter.
+	// the guarantee even for an entry point that forgets to filter. Recovery
+	// replays the Config persisted with the request, so an entry queued
+	// before a lane was flipped to on_demand still carries its old value and
+	// is not caught here.
 	if req.Config.DeployOn == deployOnOnDemand {
 		slog.Info("deploy: refused automatic build for deploy_on=on_demand (server_deploy only)",
 			"repo", req.Repo,

@@ -113,8 +113,14 @@ func lookupDeployedSHA(repo string) string {
 	return deployedSHAs[stripBranchSuffix(repo)]
 }
 
-// RecordDeployedSHA is the exported entrypoint for callers outside this
-// package (internal/engine's manual-deploy path).
-func RecordDeployedSHA(repo, sha string) {
-	recordDeployedSHA(repo, sha)
+// RecordManualDeployReceipt records the receipt for a successful
+// server_deploy (internal/engine's manual-deploy path). An on_demand lane is
+// skipped: the receipt is keyed by bare owner/repo, so it belongs to the
+// repo's automatic lane, and a canary deployed at the branch tip would make
+// the boot reconciler see production "behind its tag" and rebuild it.
+func RecordManualDeployReceipt(req ManualDeployRequest, sha string) {
+	if req.Config.DeployOn == deployOnOnDemand {
+		return
+	}
+	recordDeployedSHA(req.Repo, sha)
 }

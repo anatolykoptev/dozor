@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 )
 
@@ -197,5 +198,36 @@ func TestCheckWebhookEvents_OnDemandOnly_NoWebhookIsOK(t *testing.T) {
 	}
 	if got := gaugeValue(repoKey, checkWebhookEvents, outcomeNoWebhook); got != 0 {
 		t.Errorf("no_webhook gauge = %v, want 0", got)
+	}
+}
+
+// server_deploy of an on_demand canary must not overwrite the bare-repo
+// deployed-SHA receipt the release lane owns — otherwise the next boot
+// reconcile sees production "behind its tag" and rebuilds it.
+// RED-on-revert: drop the on_demand early return in
+// RecordManualDeployReceipt (deployed_sha_persist.go) and the receipt moves.
+func TestRecordManualDeployReceipt_OnDemandLeavesReceipt(t *testing.T) {
+	ConfigureDeployedSHAPersistence(filepath.Join(t.TempDir(), "deployed.json"))
+	t.Cleanup(func() { ConfigureDeployedSHAPersistence("") })
+
+	const prodSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const tipSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	recordDeployedSHA("anatolykoptev/x", prodSHA)
+
+	RecordManualDeployReceipt(ManualDeployRequest{
+		Repo:   "anatolykoptev/x#staging",
+		Config: RepoConfig{DeployOn: deployOnOnDemand},
+	}, tipSHA)
+	if got := lookupDeployedSHA("anatolykoptev/x"); got != prodSHA {
+		t.Fatalf("on_demand server_deploy moved the receipt to %q", got)
+	}
+
+	// The manual production lane still records — the guard is not a blanket no-op.
+	RecordManualDeployReceipt(ManualDeployRequest{
+		Repo:   "anatolykoptev/x",
+		Config: RepoConfig{DeployOn: deployOnManual},
+	}, tipSHA)
+	if got := lookupDeployedSHA("anatolykoptev/x"); got != tipSHA {
+		t.Fatalf("manual server_deploy did not record: receipt = %q", got)
 	}
 }

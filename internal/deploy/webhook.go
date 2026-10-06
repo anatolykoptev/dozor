@@ -245,7 +245,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// keeps the release trigger but gates the deploy). Per-match (not
 		// all-or-nothing) so a monorepo with mixed targets still builds the
 		// push-based ones. If every matched target is release/manual-only,
-		// respond ignored — the release event will ship them.
+		// respond ignored — the release event will ship them. on_demand
+		// targets are skipped too; only server_deploy ships those.
 		filtered := matches[:0]
 		for _, rc := range matches {
 			if rc.DeployOn == deployOnOnDemand {
