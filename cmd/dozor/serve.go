@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"time"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/anatolykoptev/dozor/internal/tools"
@@ -51,19 +50,7 @@ func runServe(cfg engine.Config, eng *engine.ServerAgent) {
 			slog.String("hint", "set DOZOR_BIND_HOST=127.0.0.1 for loopback-only binding"))
 	}
 
-	if err := mcpserver.Run(server, mcpserver.Config{
-		Name:                       "dozor",
-		Version:                    version,
-		Host:                       bindHost,
-		Port:                       port,
-		KeepAlive:                  30 * time.Second,
-		SchemaCache:                mcp.NewSchemaCache(),
-		DisableLocalhostProtection: true,
-		Logger:                     slog.Default(),
-		MCPLogger:                  slog.Default(),
-		JSONResponse:               true,
-		BearerAuth:                 mcpBearerAuth(),
-	}); err != nil {
+	if err := mcpserver.Run(server, baseMCPConfig(bindHost, port)); err != nil {
 		slog.Error("MCP server failed", slog.Any("error", err))
 	}
 }

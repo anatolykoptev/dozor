@@ -1,16 +1,19 @@
 package main
 
 import (
+	"time"
+
+	"github.com/anatolykoptev/dozor/internal/mcpself"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"log/slog"
 	"os"
 
 	"github.com/anatolykoptev/go-mcpserver"
 )
 
-// mcpTokenEnv names the pre-shared bearer token for the /mcp endpoint. The
-// same variable is read by the claudecode extension so the Claude Code it
-// spawns can call back into this server.
-const mcpTokenEnv = "DOZOR_MCP_TOKEN"
+// mcpTokenEnv names the pre-shared bearer token for the /mcp endpoint;
+// mcpself.ServerEntry sends it from the Claude Code processes dozor spawns.
+const mcpTokenEnv = mcpself.TokenEnv
 
 // mcpBearerAuth returns the auth config for /mcp.
 //
@@ -34,4 +37,23 @@ func mcpBearerAuth() *mcpserver.BearerAuth {
 	}
 	// StaticTokenVerifier rejects every token when the expected one is empty.
 	return &mcpserver.BearerAuth{Verifier: mcpserver.StaticTokenVerifier(token)}
+}
+
+// baseMCPConfig is the HTTP MCP server config shared by `gateway` and `serve`.
+// It is the single place BearerAuth is attached, so the auth test exercises
+// exactly what both commands run.
+func baseMCPConfig(host, port string) mcpserver.Config {
+	return mcpserver.Config{
+		Name:                       "dozor",
+		Version:                    version,
+		Host:                       host,
+		Port:                       port,
+		KeepAlive:                  30 * time.Second,
+		SchemaCache:                mcp.NewSchemaCache(),
+		DisableLocalhostProtection: true,
+		Logger:                     slog.Default(),
+		MCPLogger:                  slog.Default(),
+		JSONResponse:               true,
+		BearerAuth:                 mcpBearerAuth(),
+	}
 }

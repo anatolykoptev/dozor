@@ -12,19 +12,13 @@ import (
 
 const initBody = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
 
-// buildAuthTestHandler builds the real /mcp handler stack with the same
-// BearerAuth the gateway passes, so the test exercises go-mcpserver's
-// wiring rather than the verifier alone.
+// buildAuthTestHandler builds the real /mcp handler stack from
+// baseMCPConfig — the config `gateway` and `serve` both run — so dropping
+// BearerAuth there, or bypassing baseMCPConfig, is what these tests catch.
 func buildAuthTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 	server := mcp.NewServer(&mcp.Implementation{Name: "dozor-test", Version: "0"}, nil)
-	h, err := mcpserver.Build(server, mcpserver.Config{
-		Name:                       "dozor-test",
-		Version:                    "0",
-		DisableLocalhostProtection: true,
-		JSONResponse:               true,
-		BearerAuth:                 mcpBearerAuth(),
-	})
+	h, err := mcpserver.Build(server, baseMCPConfig("", ""))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -43,9 +37,8 @@ func postInit(h http.Handler, auth string) int {
 	return w.Code
 }
 
-// Pins mcpBearerAuth against go-mcpserver's real handler stack. The
-// gateway.go / serve.go call sites are covered by the post-deploy probe
-// (POST /mcp without a token must return 401), not by this test.
+// RED-on-revert: delete BearerAuth from baseMCPConfig (mcp_auth.go) and the
+// no-token and wrong-token cases return 200.
 func TestMCPBearerAuth_TokenSet(t *testing.T) {
 	t.Setenv(mcpTokenEnv, "s3cret-token")
 	t.Setenv("DOZOR_MCP_ALLOW_INSECURE", "")
