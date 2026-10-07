@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.1](https://github.com/anatolykoptev/dozor/compare/v1.18.0...v1.18.1) (2026-10-07)
+
+
+### Fixed
+
+* **security:** server_web_fetch fallback refuses internal addresses ([#237](https://github.com/anatolykoptev/dozor/issues/237)) ([30fe93e](https://github.com/anatolykoptev/dozor/commit/30fe93e12c741d4a32273e7da232208f19ff5990))
+
 ## [1.18.0](https://github.com/anatolykoptev/dozor/compare/v1.17.0...v1.18.0) (2026-10-06)
 
 
