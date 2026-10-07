@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/anatolykoptev/go-kit/httputil"
 )
 
 const (
@@ -298,7 +300,9 @@ func WebFetch(ctx context.Context, fetchURL string, maxLength int) (string, erro
 
 	req.Header.Set("User-Agent", userAgent)
 
-	client := &http.Client{
+	// The URL comes from the MCP caller, so dials (redirect hops included)
+	// must not reach loopback, private or link-local addresses.
+	client := httputil.NewSSRFGuardedClient(&http.Client{
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
@@ -306,9 +310,9 @@ func WebFetch(ctx context.Context, fetchURL string, maxLength int) (string, erro
 			}
 			return nil
 		},
-	}
+	})
 
-	resp, err := client.Do(req) //nolint:gosec // requested URL to fetch content
+	resp, err := client.Do(req) //nolint:gosec // URL is caller-supplied; the client refuses internal addresses
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
