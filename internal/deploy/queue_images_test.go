@@ -80,15 +80,29 @@ func TestComposeImageName_ConfigEmptyReturnsEmpty(t *testing.T) {
 // valid image reference) does not produce a bogus image name — the resolver
 // returns "" rather than pushing under a garbage tag.
 func TestComposeImageName_GarbageOutputReturnsEmpty(t *testing.T) {
-	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[1] == "config" {
-			return []byte("not a valid image ref!!!\n"), nil
+	t.Run("unparseable output", func(t *testing.T) {
+		withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+			if len(args) >= 2 && args[1] == "config" {
+				return []byte("not a valid image ref!!!\n"), nil
+			}
+			return []byte("{}"), nil
+		})
+		if got := composeImageName(context.Background(), "/fake/compose", "svc"); got != "" {
+			t.Errorf("composeImageName: expected \"\" for garbage output, got %q", got)
 		}
-		return []byte("{}"), nil
 	})
-	if got := composeImageName(context.Background(), "/fake/compose", "svc"); got != "" {
-		t.Errorf("composeImageName: expected \"\" for garbage output, got %q", got)
-	}
+
+	t.Run("invalid image ref", func(t *testing.T) {
+		withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+			if len(args) >= 2 && args[1] == "config" {
+				return []byte(`{"name":"p","services":{"svc":{"image":"bad ref!"}}}`), nil
+			}
+			return []byte("{}"), nil
+		})
+		if got := composeImageName(context.Background(), "/fake/compose", "svc"); got != "" {
+			t.Errorf("composeImageName: expected \"\" for an image value that is not a valid image reference, got %q", got)
+		}
+	})
 }
 
 // TestComposeImageName_CommandErrorReturnsEmpty verifies that a command error
@@ -348,6 +362,50 @@ func TestComposeImageName_NoProjectNameFailsLoud(t *testing.T) {
 	})
 	if got := composeImageName(context.Background(), "/fake/compose", "svc"); got != "" {
 		t.Errorf("composeImageName: expected \"\" when project name is unresolvable, got %q", got)
+	}
+}
+
+// TestComposeImageName_InactiveProfile_PassesServiceArg is the regression
+// test for the #241 review finding: `docker compose config --format json`
+// with NO service argument omits every service whose profile is not in
+// COMPOSE_PROFILES (live on krolik: 45 of 47 services render; ox-whisper
+// and oxpulse-chat-web are profile-gated and absent). For such a lane
+// builtImageID silently skipped the no-new-image check and rollback failed
+// with "cannot determine image name". Naming the service in the config
+// invocation activates its profile, so the render includes it.
+//
+// The stub simulates compose's profile gating: the service is present in
+// the rendered model ONLY when the runner was called with <svc> as an
+// argument.
+func TestComposeImageName_InactiveProfile_PassesServiceArg(t *testing.T) {
+	const svc = "ox-whisper"
+	const ref = "krolik-server-ox-whisper:latest"
+	var configArgs []string
+	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+		if len(args) >= 2 && args[1] == "config" {
+			configArgs = append([]string(nil), args...)
+			for _, a := range args {
+				if a == svc {
+					return []byte(`{"name":"krolik-server","services":{"` + svc + `":{"image":"` + ref + `"}}}`), nil
+				}
+			}
+			return []byte(`{"name":"krolik-server","services":{}}`), nil
+		}
+		return []byte("{}"), nil
+	})
+
+	got := composeImageName(context.Background(), "/fake/compose", svc)
+	if got != ref {
+		t.Errorf("composeImageName: got %q, want %q (profile-gated service must resolve when named in the config invocation)", got, ref)
+	}
+	svcInArgs := false
+	for _, a := range configArgs {
+		if a == svc {
+			svcInArgs = true
+		}
+	}
+	if !svcInArgs {
+		t.Errorf("composeImageName: config invocation args %v do not name service %q — services under an inactive profile are omitted from the model", configArgs, svc)
 	}
 }
 

@@ -175,7 +175,7 @@ func imageIDFromNDJSON(trimmed, svc string) string {
 // happens to run". If no container-independent source can be trusted, return ""
 // and fail loudly; never guess, never fall back to a container-oriented source.
 //
-// Resolution: ONE `docker compose config --format json` render, then
+// Resolution: ONE `docker compose config --format json <svc>` render, then
 // per-service from the JSON model (serviceImageName). The previous
 // implementation ran `config --images <svc>` and took the first
 // valid-looking line — but a service argument there does NOT isolate the
@@ -187,9 +187,18 @@ func imageIDFromNDJSON(trimmed, svc string) string {
 // dependency's artifact under this repo's tree-hash tag — a wrong-artifact
 // publish). The JSON model carries each service keyed by name, so the
 // dependency tree cannot bleed into this lookup.
+//
+// The <svc> argument is load-bearing for a different reason than
+// isolation: a bare `config --format json` omits every service whose
+// profile is not in COMPOSE_PROFILES (live on krolik, 45 of 47 services
+// render — ox-whisper and oxpulse-chat-web are profile-gated and vanish,
+// which silently skipped the no-new-image check and broke rollback with
+// "cannot determine image name"). Naming the service activates its
+// profile for the render; its dependencies come through keyed by their
+// own names, so the per-service lookup stays correct.
 func composeImageName(ctx context.Context, composePath, svc string) string {
 	out, err := outputRunner(ctx, composePath,
-		"docker", "compose", "config", "--format", "json") //nolint:gosec // trusted local config, not shell
+		"docker", "compose", "config", "--format", "json", svc) //nolint:gosec // trusted local config, not shell
 	if err != nil {
 		return ""
 	}
