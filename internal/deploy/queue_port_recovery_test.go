@@ -22,9 +22,9 @@ func TestExecuteBuild_PortMappingRecoverySuccess(t *testing.T) {
 	}
 
 	// outputRunner is dispatched by command signature, not call position —
-	// the build-diff snapshot (config --images + image inspect, issue #214)
-	// interleaves with checkHealth's ps/config calls and a positional counter
-	// would misroute every response after the first snapshot.
+	// the build-diff snapshot (config --format json + image inspect,
+	// issues #214/#240) interleaves with checkHealth's ps/config calls and a
+	// positional counter would misroute every response after the first snapshot.
 	psCalls := 0
 	inspectCalls := 0
 	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
@@ -40,12 +40,11 @@ func TestExecuteBuild_PortMappingRecoverySuccess(t *testing.T) {
 				return []byte("sha256:0000buildafter\n"), nil
 			}
 			return []byte("sha256:0000buildtest\n"), nil
-		case len(args) >= 3 && args[1] == "config" && args[2] == "--images":
-			// compose model: resolved image name for the service
-			return []byte("proj-svc:latest\n"), nil
 		case len(args) >= 2 && args[1] == "config":
-			// verifyPortMapping's `config --format json`: declares ports
-			return []byte(`{"services":{"svc":{"ports":["8080:8080"]}}}`), nil
+			// `config --format json`: build-only service (default image name
+			// <project>-<svc> = "proj-svc") AND the port declaration
+			// verifyPortMapping needs.
+			return []byte(`{"name":"proj","services":{"svc":{"build":{"context":"/tmp"},"ports":["8080:8080"]}}}`), nil
 		case len(args) >= 2 && args[1] == "ps":
 			psCalls++
 			if psCalls == 1 {

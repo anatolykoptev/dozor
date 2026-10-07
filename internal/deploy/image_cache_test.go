@@ -14,21 +14,17 @@ import (
 
 // -- DI helpers for image_cache seams --
 
-// composeImagesOutputRunner stubs outputRunner for the commands used by the
-// image-cache paths: `docker compose config --images <svc>` (used by
-// composeImageName to resolve the image name WITHOUT containers) and
-// `docker compose config --format json` (used by resolveBuildOverrides). The
-// two commands return different shapes; this stub dispatches on the compose
-// subcommand + flag (args[1]/args[2]).
+// composeImagesOutputRunner stubs outputRunner for the compose config render
+// used by the image-cache paths: `docker compose config --format json` feeds
+// both composeImageName (resolves the image name WITHOUT containers — the
+// `name` field lets a build-only service resolve to its <project>-<svc>
+// default) and resolveBuildOverrides (build.context). No per-subcommand
+// dispatch needed — it is the same render either way.
 func composeImagesOutputRunner(svcName, sourcePath string) func(context.Context, string, string, ...string) ([]byte, error) {
 	return func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		// args: docker compose <subcommand> ...
-		if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
-			// `docker compose config --images <svc>` → one resolved ref per line.
-			return []byte("krolik-server-" + svcName + "\n"), nil
-		}
-		// `docker compose config --format json` → {"services":{"<svc>":{"build":{"context":"..."}}}}
-		return []byte(`{"services":{"` + svcName + `":{"build":{"context":"` + sourcePath + `"}}}}`), nil
+		// `docker compose config --format json` — resolved project name plus
+		// per-service model. Build-only svc → image name "krolik-server-<svc>".
+		return []byte(`{"name":"krolik-server","services":{"` + svcName + `":{"build":{"context":"` + sourcePath + `"}}}}`), nil
 	}
 }
 
@@ -791,10 +787,10 @@ func TestPushCachedImages_SubsetOnlyPushesCacheable(t *testing.T) {
 	})
 	// composeImageName returns a name for any service.
 	withOutputRunner(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		// `docker compose config --images <svc>` — return based on svc arg (last arg).
-		if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
-			svc := args[len(args)-1]
-			return []byte("krolik-server-" + svc + "\n"), nil
+		// `docker compose config --format json` — every requested service
+		// resolves to its <project>-<svc> default image name.
+		if len(args) >= 2 && args[1] == "config" {
+			return []byte(`{"name":"krolik-server","services":{"oxpulse-chat-staging":{"build":{"context":"/x"}},"oxpulse-chat-stagingprod":{"build":{"context":"/x"}}}}`), nil
 		}
 		return []byte("{}"), nil
 	})

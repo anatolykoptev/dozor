@@ -11,7 +11,7 @@ import (
 )
 
 // snapshotBuiltImages returns a map of service → image ID resolved through
-// the service's image NAME (`compose config --images` → `docker image
+// the service's image NAME (`compose config --format json` → `docker image
 // inspect`), never through the project's containers. Used for the
 // before/after `compose build` diff in verify-build. Deploy serialization
 // (queue + cross-lane lock) makes the tag a stable read between the two
@@ -41,10 +41,11 @@ func snapshotBuiltImages(ctx context.Context, composePath string, services []str
 func builtImageID(ctx context.Context, composePath, svc string) string {
 	name := composeImageName(ctx, composePath, svc)
 	if name == "" {
-		// `config --images` resolves a name for every defined service, so ""
-		// here means the service is missing from the compose model or the
-		// config itself failed — never a normal state; surface it rather
-		// than silently disabling the diff for this service.
+		// `config --format json` resolves a name for every defined service
+		// (explicit `image:` or the <project>-<svc> default), so "" here
+		// means the service is missing from the compose model or the config
+		// itself failed — never a normal state; surface it rather than
+		// silently disabling the diff for this service.
 		slog.Warn("deploy: cannot resolve image name for service", "service", svc)
 		return ""
 	}
@@ -174,60 +175,45 @@ func imageIDFromNDJSON(trimmed, svc string) string {
 // happens to run". If no container-independent source can be trusted, return ""
 // and fail loudly; never guess, never fall back to a container-oriented source.
 //
-// Resolution chain (every link is container-independent):
-//  1. `docker compose config --images <svc>` — compose v2 prints the resolved
-//     image ref (the default `<project>-<svc>` for build-only services, or the
-//     explicit `image:` ref) without needing any container.
-//  2. `docker compose config --format json` → services[svc].image — only
-//     non-empty for services with an explicit `image:` field (the default name
-//     for build-only services is computed by compose and is NOT exposed in the
-//     JSON model), so this link only helps explicit-image services on compose
-//     builds that lack the `--images` flag. Still container-independent.
+// Resolution: ONE `docker compose config --format json` render, then
+// per-service from the JSON model (serviceImageName). The previous
+// implementation ran `config --images <svc>` and took the first
+// valid-looking line — but a service argument there does NOT isolate the
+// service: compose renders the service WITH its depends_on tree and prints
+// one image per line in nondeterministic order, so the first line is
+// frequently a DEPENDENCY's image (issue #240: the build-diff then compared
+// e.g. ox-browser's unchanged image ID before and after a go-wowa rebuild
+// and failed the deploy; on the cache path it would have retagged/pushed a
+// dependency's artifact under this repo's tree-hash tag — a wrong-artifact
+// publish). The JSON model carries each service keyed by name, so the
+// dependency tree cannot bleed into this lookup.
 func composeImageName(ctx context.Context, composePath, svc string) string {
-	if name := composeConfigImagesName(ctx, composePath, svc); name != "" {
-		return name
-	}
-	if name := composeConfigJSONImage(ctx, composePath, svc); name != "" {
-		return name
-	}
-	return ""
-}
-
-// composeConfigImagesName runs `docker compose config --images <svc>` and
-// returns the first line that looks like a valid image reference. Compose v2
-// prints one resolved image ref per line; for a single service, one line.
-func composeConfigImagesName(ctx context.Context, composePath, svc string) string {
-	// svc is a service name from our own deploy-repos.yaml (trusted local
-	// config), passed as an individual argv slot — not interpolated into a shell.
 	out, err := outputRunner(ctx, composePath,
-		"docker", "compose", "config", "--images", svc) //nolint:gosec // trusted local config, not shell
+		"docker", "compose", "config", "--format", "json") //nolint:gosec // trusted local config, not shell
 	if err != nil {
 		return ""
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if name := strings.TrimSpace(line); looksLikeImageRef(name) {
-			return name
-		}
-	}
-	return ""
+	return serviceImageName(out, svc)
 }
 
-// composeConfigJSONImage parses `docker compose config --format json` and
-// returns the explicit `image:` field for the service. Returns "" for
-// build-only services (no explicit image) — those are handled by the
-// `--images` link above. Container-independent.
-func composeConfigJSONImage(ctx context.Context, composePath, svc string) string {
-	out, err := outputRunner(ctx, composePath,
-		"docker", "compose", "config", "--format", "json")
-	if err != nil {
-		return ""
-	}
+// serviceImageName extracts the resolved image name for svc from the JSON
+// model emitted by `docker compose config --format json`. Order of
+// precedence, mirroring what `compose build` tags:
+//  1. explicit `image:` field — used verbatim;
+//  2. build-only service (no `image:`) — the compose default
+//     `<project>-<service>`, where <project> is the model's resolved
+//     top-level `name` (COMPOSE_PROJECT_NAME / name: / dir-basename already
+//     applied by compose);
+//  3. otherwise "" — fail loudly; never guess.
+func serviceImageName(configJSON []byte, svc string) string {
 	var cfg struct {
+		Name     string `json:"name"`
 		Services map[string]struct {
-			Image string `json:"image"`
+			Image string          `json:"image"`
+			Build json.RawMessage `json:"build"`
 		} `json:"services"`
 	}
-	if json.Unmarshal(out, &cfg) != nil {
+	if json.Unmarshal(configJSON, &cfg) != nil {
 		return ""
 	}
 	svcCfg, ok := cfg.Services[svc]
@@ -237,10 +223,19 @@ func composeConfigJSONImage(ctx context.Context, composePath, svc string) string
 	if name := strings.TrimSpace(svcCfg.Image); looksLikeImageRef(name) {
 		return name
 	}
+	// `build` is present whenever the service builds (normalized to an
+	// object in the JSON model); a missing or null build means a pull-only
+	// service with no image — nothing sane to return.
+	if len(svcCfg.Build) == 0 || string(svcCfg.Build) == "null" || cfg.Name == "" {
+		return ""
+	}
+	if name := cfg.Name + "-" + svc; looksLikeImageRef(name) {
+		return name
+	}
 	return ""
 }
 
-// looksLikeImageRef is a minimal guard against malformed `config --images`
+// looksLikeImageRef is a minimal guard against malformed `config` model
 // output producing a bogus tag. It rejects empty strings, internal whitespace,
 // and characters not allowed in a Docker image reference. It is intentionally
 // permissive (not a full grammar) — the goal is to catch garbage, not to
