@@ -26,6 +26,7 @@ github.com/a2aproject/a2a-go/log
 github.com/anatolykoptev/go-kit/breaker
 github.com/anatolykoptev/go-kit/env
 github.com/anatolykoptev/go-kit/hedge
+github.com/anatolykoptev/go-kit/httputil
 github.com/anatolykoptev/go-kit/llm
 github.com/anatolykoptev/go-kit/pacing
 github.com/anatolykoptev/go-kit/ratelimit
