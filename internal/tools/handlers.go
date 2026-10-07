@@ -249,7 +249,11 @@ func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.D
 			if branch == "" {
 				branch = "main"
 			}
-			kindDesc = fmt.Sprintf("compose SHA-pinned from origin/%s", branch)
+			// Post-#239: compose input in the deploy clone is verified
+			// content-equal to origin/<branch> before build/up (the deploy
+			// refuses otherwise), and the source build context is SHA-pinned
+			// via a detached worktree — so this claim is now literally true.
+			kindDesc = fmt.Sprintf("compose input verified vs origin/%s (source SHA-pinned)", branch)
 		}
 
 		servicesDesc := strings.Join(rc.Services, ", ")

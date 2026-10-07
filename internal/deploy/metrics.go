@@ -167,6 +167,19 @@ var (
 		Help: "Auto-pull attempts on deploy clones before compose builds, by outcome.",
 	}, []string{"repo", "outcome"})
 
+	// DeployComposeStaleBlockedTotal counts deploys refused because the deploy
+	// clone's compose input for the deployed services diverged from
+	// origin/<branch> (issue #239): the clone pull could not converge the tree
+	// (dirty/diverged/fetch error) or an untracked compose input exists, and
+	// `docker compose` would have rendered config origin never held. A tick
+	// means the deploy clone needs reconciliation — commit or revert the files
+	// named in the ERROR log / deploy-failure message:
+	//   git -C <deploy_clone_path> status
+	DeployComposeStaleBlockedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_deploy_compose_stale_blocked_total",
+		Help: "Deploys refused on stale deploy-clone compose input (worktree diverges from origin/<branch>), by repo.",
+	}, []string{"repo"})
+
 	// ManualDeployTotal counts server_deploy MCP tool invocations (not webhook-driven).
 	// Labels:
 	//   repo    — full GitHub repo name (owner/name) or "unconfigured" for ad-hoc paths

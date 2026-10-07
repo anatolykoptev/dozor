@@ -126,6 +126,24 @@ func classifyPorcelain(out string) (tracked, untracked int) {
 	return tracked, untracked
 }
 
+// resolveDeployBranch returns the branch the deploy clone actually tracks.
+// The deploy clone follows ITS OWN checked-out branch (e.g. krolik-server's
+// main), which can differ from the triggering repo's branch (e.g. an
+// oxpulse-chat `dev` deploy) — fetching the triggering repo's branch in a
+// different clone fails with "couldn't find remote ref". Prefer the clone's
+// actual branch; keep `branch` (defaulted to "main") as the fallback for a
+// detached HEAD or lookup errors. Shared by pullDeployClone and
+// staleComposeInputs so both compare the tree against the same ref.
+func resolveDeployBranch(ctx context.Context, clonePath, branch string) string {
+	if branch == "" {
+		branch = defaultBranch
+	}
+	if cur, err := gitCurrentBranchRunner(ctx, clonePath); err == nil && cur != "" && cur != "HEAD" {
+		branch = cur
+	}
+	return branch
+}
+
 // pullDeployClone auto-pulls the deploy clone at clonePath to origin/<branch>
 // before a compose build. It is a best-effort operation: failures are logged
 // and counted but never abort the build.
@@ -141,17 +159,7 @@ func pullDeployClone(ctx context.Context, repo, clonePath, branch string) pullOu
 	if clonePath == "" {
 		return pullUpToDate // no-op, nothing to do
 	}
-	if branch == "" {
-		branch = defaultBranch
-	}
-	// The deploy clone tracks ITS OWN checked-out branch (e.g. krolik-server's
-	// main), which can differ from the triggering repo's branch (e.g. an
-	// oxpulse-chat `dev` deploy). Fetching the triggering repo's branch in a
-	// different clone fails with "couldn't find remote ref". Prefer the clone's
-	// actual branch; keep `branch` as the fallback for detached HEAD / errors.
-	if cur, err := gitCurrentBranchRunner(ctx, clonePath); err == nil && cur != "" && cur != "HEAD" {
-		branch = cur
-	}
+	branch = resolveDeployBranch(ctx, clonePath, branch)
 
 	// 1. Check for local modifications — never overwrite operator edits.
 	statusOut, err := gitStatusRunner(ctx, clonePath)

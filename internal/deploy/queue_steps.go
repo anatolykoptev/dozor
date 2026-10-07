@@ -135,6 +135,35 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	}
 	pullDeployClone(ctx, req.Repo, req.Config.DeployClonePath, branch)
 
+	// Compose-input freshness guard (issue #239). `docker compose` below reads
+	// its config from the deploy clone's WORKING TREE (buildRunner/upRunner run
+	// with Dir=ComposePath) — never from the SHA-pinned source worktree, which
+	// only remaps build.context. When the pull above could not converge the
+	// tree to origin/<branch> — or an untracked compose input exists (e.g. a
+	// docker-compose.override.yml git itself cannot diff) — the recreated
+	// containers would carry config origin never held (the 2026-10-07
+	// ox-browser stale-env incident). Refuse the deploy when the deployed
+	// services' compose input diverges; divergence elsewhere proceeds with
+	// the pull's existing WARN.
+	stale, verr := staleComposeInputs(ctx, req.Config.DeployClonePath, req.Config.ComposePath, branch, req.Config.Services)
+	if verr != nil {
+		return fmt.Sprintf("compose input freshness check: %v", verr), false
+	}
+	if len(stale) > 0 {
+		slog.Error("deploy: refusing deploy — compose input diverges from origin/<branch>",
+			"repo", req.Repo,
+			"clone", req.Config.DeployClonePath,
+			"branch", branch,
+			"stale_files", stale,
+			"services", req.Config.Services,
+		)
+		DeployComposeStaleBlockedTotal.WithLabelValues(req.Repo).Inc()
+		return fmt.Sprintf(
+			"compose input diverges from origin/%s in deploy clone %s: %s — "+
+				"commit or revert the deploy-clone changes and retry",
+			branch, req.Config.DeployClonePath, strings.Join(stale, ", ")), false
+	}
+
 	// Run pre-build script if configured. Used for building web OCI artifacts
 	// that the main Dockerfile consumes via WEB_ARTIFACT_IMAGE build-arg.
 	// The script runs in SourcePath with DEPLOY_REPO_PATH and DEPLOY_SHA env

@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,6 +30,8 @@ func TestQueueN_ConcurrentBuilds(t *testing.T) {
 			entered := make(chan struct{}, 10)
 			// release: closed to unblock all running builds
 			release := make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
 
 			origBuild := buildRunner
 			origUp := upRunner
@@ -69,6 +72,9 @@ func TestQueueN_ConcurrentBuilds(t *testing.T) {
 
 			q := NewQueueN(ctx, func(string) {}, tt.concurrency)
 			defer q.Close()
+			// Runs before q.Close() on every exit — including t.Fatal/Goexit —
+			// so a worker parked at <-release can never deadlock the drain.
+			defer unblock()
 
 			// Submit two builds for different service groups (different keys).
 			// SourcePath="" skips git steps (see gitPrepare: early return on empty path).
@@ -109,7 +115,7 @@ func TestQueueN_ConcurrentBuilds(t *testing.T) {
 			}
 
 			// Unblock all builds.
-			close(release)
+			unblock()
 
 			if tt.wantOverlap {
 				if p := atomic.LoadInt64(&peak); p < 2 {
@@ -127,6 +133,8 @@ func TestQueueN_HeavySemaphore(t *testing.T) {
 	defer cancel()
 
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	entered := make(chan struct{}, 10)
 
 	origBuild := buildRunner
@@ -134,16 +142,30 @@ func TestQueueN_HeavySemaphore(t *testing.T) {
 	origHealth := healthWait
 	origRetry := upRetryDelay
 	origRecovery := portRecoveryWait
+	origLoadavg := loadavgReader
+	origAcq := ciLockAcquirer
+	origRel := ciLockReleaser
 	t.Cleanup(func() {
 		buildRunner = origBuild
 		upRunner = origUp
 		healthWait = origHealth
 		upRetryDelay = origRetry
 		portRecoveryWait = origRecovery
+		loadavgReader = origLoadavg
+		ciLockAcquirer = origAcq
+		ciLockReleaser = origRel
 	})
 	healthWait = 0
 	upRetryDelay = 0
 	portRecoveryWait = 0
+	// Heavy builds pass processBuild's real loadavg guard and box-wide ci-lock
+	// BEFORE reaching buildRunner — on a loaded box /proc/loadavg above the
+	// threshold defers the build past this test's 10s ctx (flake: the build
+	// then enters buildRunner after close(release) was skipped, deadlocking
+	// Queue.Close). Stub both seams; the heavy-path tests all do the same.
+	loadavgReader = func() (float64, error) { return 0.1, nil }
+	ciLockAcquirer = func(context.Context, []string) (bool, error) { return true, nil }
+	ciLockReleaser = func([]string) {}
 
 	buildRunner = func(ctx context.Context, dir string, args []string) ([]byte, error) {
 		entered <- struct{}{}
@@ -156,6 +178,7 @@ func TestQueueN_HeavySemaphore(t *testing.T) {
 
 	q := NewQueueN(ctx, func(string) {}, 2)
 	defer q.Close()
+	defer unblock() // runs before q.Close() on every exit — see ConcurrentBuilds
 
 	// Submit two heavy builds for different service groups.
 	for _, svc := range []string{"heavy-a", "heavy-b"} {
@@ -185,7 +208,7 @@ func TestQueueN_HeavySemaphore(t *testing.T) {
 		// Correct: serialized.
 	}
 
-	close(release)
+	unblock()
 }
 
 // TestDispatch_SkipDebounceWhenBuildActive verifies that a second webhook for
