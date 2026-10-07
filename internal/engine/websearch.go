@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -313,6 +314,12 @@ func WebFetch(ctx context.Context, fetchURL string, maxLength int) (string, erro
 	})
 
 	resp, err := client.Do(req) //nolint:gosec // URL is caller-supplied; the client refuses internal addresses
+	if errors.Is(err, httputil.ErrSSRFBlocked) {
+		// The detail names the private address a hostname resolves to; keep
+		// it in the server log, not in the caller's reply.
+		slog.Warn("web_fetch refused non-public address", slog.String("error", err.Error()))
+		return "", errors.New("refused: URL targets a non-public address")
+	}
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}

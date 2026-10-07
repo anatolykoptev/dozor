@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -11,17 +13,21 @@ import (
 // MCP caller. RED-on-revert: replace httputil.NewSSRFGuardedClient in
 // WebFetch with a plain *http.Client and the loopback fetch succeeds.
 func TestWebFetch_RefusesLoopback(t *testing.T) {
-	hit := false
+	var hit atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hit = true
+		hit.Store(true)
 		_, _ = w.Write([]byte("internal"))
 	}))
 	defer srv.Close()
 
-	if _, err := WebFetch(context.Background(), srv.URL, 100); err == nil {
+	_, err := WebFetch(context.Background(), srv.URL, 100)
+	if err == nil {
 		t.Fatal("WebFetch fetched a loopback URL; want refusal")
 	}
-	if hit {
+	if !strings.HasPrefix(err.Error(), "refused:") || strings.Contains(err.Error(), "127.0.0.1") {
+		t.Fatalf("error %q: want the generic refusal without the address", err)
+	}
+	if hit.Load() {
 		t.Fatal("loopback server was reached")
 	}
 }
