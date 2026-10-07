@@ -152,20 +152,39 @@ var (
 		Help: "Absolute-load backpressure guard outcomes for heavy builds, by outcome.",
 	}, []string{"outcome"})
 
-	// DeployClonePullTotal counts auto-pull attempts on deploy clones before
-	// each compose build. outcome label values:
-	//   "up_to_date"      — remote had no new commits, nothing to do
-	//   "fast_forward"    — clone was successfully fast-forwarded to origin/<branch>
-	//   "dirty_skipped"   — clone had local edits; pull skipped, build uses stale compose
-	//   "diverged_skipped"— ff-only pull failed (diverged history); build uses current state
-	//   "error"           — git command failed unexpectedly; build uses current state
-	//
-	// If "dirty_skipped" ticks, reconcile the deploy clone manually:
-	//   git -C <deploy_clone_path> status && git stash && git pull
+	// DeployClonePullTotal counts deploy-clone verification outcomes before
+	// each compose build. Since #239 the check is fail-closed, so only the
+	// two SUCCESS outcomes remain here — every refusal is counted under
+	// dozor_deploy_clone_refused_total instead:
+	//   "up_to_date"   — remote had no new commits, nothing to do
+	//   "fast_forward" — clone was successfully fast-forwarded to origin/<branch>
 	DeployClonePullTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_deploy_clone_pull_total",
 		Help: "Auto-pull attempts on deploy clones before compose builds, by outcome.",
 	}, []string{"repo", "outcome"})
+
+	// DeployCloneRefusedTotal counts compose deploys REFUSED because the
+	// deploy clone could not be verified clean at origin/<branch> (issue
+	// #239 — a dirty or diverged clone must never silently serve stale
+	// compose files to docker compose up again).
+	// reason label values:
+	//   "fetch_error" — git fetch origin/<branch> failed (or a git read of the
+	//                   clone failed — the clone is unverifiable; same
+	//                   fail-closed class)
+	//   "dirty"       — tracked working-tree modifications present; the refusal
+	//                   names the files and tells the operator to commit or
+	//                   revert the deploy-clone changes
+	//   "diverged"    — HEAD != origin/<branch> after the pull attempt (ff
+	//                   failed, diverged history, or local commits); the
+	//                   refusal names both SHAs
+	//
+	// Any non-zero rate means deploys are being refused — reconcile the named
+	// deploy clone: git -C <deploy_clone_path> status, commit or revert, and
+	// re-trigger the deploy.
+	DeployCloneRefusedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_deploy_clone_refused_total",
+		Help: "Compose deploys refused because the deploy clone could not be verified clean at origin/<branch> (#239), by reason.",
+	}, []string{"repo", "reason"})
 
 	// ManualDeployTotal counts server_deploy MCP tool invocations (not webhook-driven).
 	// Labels:

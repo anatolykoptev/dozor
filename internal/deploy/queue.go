@@ -34,6 +34,11 @@ type BuildRequest struct {
 	CommitSHA    string
 	ChangedPaths []string // union of changed file paths across all commits in the push; nil = unknown (force-push or oversized)
 	Config       RepoConfig
+	// FromDisk marks a manual from_disk debug deploy (server_deploy
+	// from_disk=true): the deploy-clone verification is skipped because the
+	// operator deliberately builds the on-disk trees, including possibly
+	// uncommitted compose edits (issue #239).
+	FromDisk bool
 }
 
 // BuildResult holds the outcome of a build.

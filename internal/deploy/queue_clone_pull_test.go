@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // helpers to swap injectable runners and restore on test exit.
@@ -56,6 +58,208 @@ func withGitCurrentBranch(t *testing.T, fn func(context.Context, string) (string
 	t.Cleanup(func() { gitCurrentBranchRunner = orig })
 }
 
+// ---------------------------------------------------------------------------
+// Real-git deploy-clone guard tests (issue #239).
+//
+// These exercise the PRODUCTION git runners (no seam stubs) against a bare
+// origin repo, a deploy clone, and a pusher clone under t.TempDir(). The
+// contract is fail-closed: a dirty, diverged, or unfetchable deploy clone
+// REFUSES the deploy — the compose config it serves must never silently lag
+// origin/<branch> again (the ox-browser 401 incident).
+// ---------------------------------------------------------------------------
+
+func gitConfigUser(t *testing.T, dir string) {
+	t.Helper()
+	mustRun(t, dir, "git", "config", "user.email", "test@test.com")
+	mustRun(t, dir, "git", "config", "user.name", "Test")
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// gitOut runs a git command in dir and returns trimmed stdout.
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(context.Background(), "git", args...) //nolint:gosec // test helper, trusted args
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed in %s: %v\n%s", args, dir, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// pushCommit writes name=content in pusher, commits and pushes to origin main.
+// Returns the pushed commit SHA.
+func pushCommit(t *testing.T, pusher, name, content string) string {
+	t.Helper()
+	writeFile(t, filepath.Join(pusher, name), content)
+	mustRun(t, pusher, "git", "add", ".")
+	mustRun(t, pusher, "git", "commit", "-m", "update "+name)
+	mustRun(t, pusher, "git", "push", "origin", "main")
+	return gitOut(t, pusher, "rev-parse", "HEAD")
+}
+
+// newDeployCloneFixture builds a bare origin repo, a deploy clone, and a
+// pusher clone — all real git repos under t.TempDir() — sharing one commit
+// on main.
+func newDeployCloneFixture(t *testing.T) (origin, clone, pusher string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH — skipping deploy-clone guard test")
+	}
+	origin = t.TempDir()
+	mustRun(t, origin, "git", "init", "--bare", "--initial-branch=main")
+
+	seed := t.TempDir()
+	mustRun(t, seed, "git", "clone", origin, ".")
+	gitConfigUser(t, seed)
+	writeFile(t, filepath.Join(seed, "docker-compose.yml"), "version: '3'\n")
+	mustRun(t, seed, "git", "add", ".")
+	mustRun(t, seed, "git", "commit", "-m", "init")
+	mustRun(t, seed, "git", "push", "origin", "main")
+
+	clone = t.TempDir()
+	mustRun(t, clone, "git", "clone", origin, ".")
+	gitConfigUser(t, clone)
+
+	pusher = t.TempDir()
+	mustRun(t, pusher, "git", "clone", origin, ".")
+	gitConfigUser(t, pusher)
+	return origin, clone, pusher
+}
+
+// (a) A dirty tracked file refuses the deploy, names the file, and bumps
+// dozor_deploy_clone_refused_total{reason="dirty"}.
+func TestPullDeployClone_DirtyRefused(t *testing.T) {
+	_, clone, _ := newDeployCloneFixture(t)
+	writeFile(t, filepath.Join(clone, "docker-compose.yml"), "version: '3'\n# DIRTY local edit\n")
+
+	const repo = "test/dirty-refused"
+	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "dirty"))
+
+	errMsg := pullDeployClone(context.Background(), repo, clone, "main")
+	if errMsg == "" {
+		t.Fatal("dirty deploy clone must refuse the deploy, got no error")
+	}
+	if !strings.Contains(errMsg, "docker-compose.yml") {
+		t.Errorf("refusal must name the modified file; got %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "commit or revert") {
+		t.Errorf("refusal must tell the operator to commit or revert; got %q", errMsg)
+	}
+	if delta := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "dirty")) - before; delta != 1 {
+		t.Errorf("dozor_deploy_clone_refused_total{reason=dirty} delta = %v, want 1", delta)
+	}
+}
+
+// (b) A clean clone whose fetch fails (bad remote URL) is refused with
+// reason="fetch_error" and the message names the fetch error.
+func TestPullDeployClone_FetchErrorRefused(t *testing.T) {
+	_, clone, pusher := newDeployCloneFixture(t)
+	pushCommit(t, pusher, "docker-compose.yml", "version: '3'\nservices: {}\n") // clone is now behind
+
+	mustRun(t, clone, "git", "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-remote"))
+
+	const repo = "test/fetch-refused"
+	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "fetch_error"))
+
+	errMsg := pullDeployClone(context.Background(), repo, clone, "main")
+	if errMsg == "" {
+		t.Fatal("failed fetch must refuse the deploy, got no error")
+	}
+	if !strings.Contains(errMsg, "fetch") {
+		t.Errorf("refusal must name the fetch error; got %q", errMsg)
+	}
+	if delta := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "fetch_error")) - before; delta != 1 {
+		t.Errorf("dozor_deploy_clone_refused_total{reason=fetch_error} delta = %v, want 1", delta)
+	}
+}
+
+// (c) A clean clone behind origin fetches and fast-forwards — no refusal.
+func TestPullDeployClone_BehindOriginFastForwards(t *testing.T) {
+	_, clone, pusher := newDeployCloneFixture(t)
+	newSHA := pushCommit(t, pusher, "docker-compose.yml", "version: '3'\nservices: {}\n")
+
+	if errMsg := pullDeployClone(context.Background(), "test/ff", clone, "main"); errMsg != "" {
+		t.Fatalf("clean clone behind origin must fast-forward, got refusal: %s", errMsg)
+	}
+	if head := gitOut(t, clone, "rev-parse", "HEAD"); head != newSHA {
+		t.Errorf("clone HEAD = %s, want fast-forwarded to %s", head, newSHA)
+	}
+}
+
+// (d) A local commit diverged from origin refuses the deploy with
+// reason="diverged", naming both SHAs.
+func TestPullDeployClone_DivergedRefused(t *testing.T) {
+	_, clone, pusher := newDeployCloneFixture(t)
+	remoteSHA := pushCommit(t, pusher, "docker-compose.yml", "version: '3'\nservices: {}\n")
+
+	// Local commit on the deploy clone without pulling — diverged history.
+	writeFile(t, filepath.Join(clone, "local-only.txt"), "local\n")
+	mustRun(t, clone, "git", "add", ".")
+	mustRun(t, clone, "git", "commit", "-m", "local commit")
+	localSHA := gitOut(t, clone, "rev-parse", "HEAD")
+
+	const repo = "test/diverged-refused"
+	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "diverged"))
+
+	errMsg := pullDeployClone(context.Background(), repo, clone, "main")
+	if errMsg == "" {
+		t.Fatal("diverged deploy clone must refuse the deploy, got no error")
+	}
+	if !strings.Contains(errMsg, ShortSHA(localSHA)) || !strings.Contains(errMsg, ShortSHA(remoteSHA)) {
+		t.Errorf("refusal must name both SHAs (local %s vs origin %s); got %q",
+			ShortSHA(localSHA), ShortSHA(remoteSHA), errMsg)
+	}
+	if delta := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "diverged")) - before; delta != 1 {
+		t.Errorf("dozor_deploy_clone_refused_total{reason=diverged} delta = %v, want 1", delta)
+	}
+}
+
+// (e) Untracked files only (agent-written plans/) never block the deploy.
+func TestPullDeployClone_UntrackedProceeds(t *testing.T) {
+	_, clone, _ := newDeployCloneFixture(t)
+	if err := os.MkdirAll(filepath.Join(clone, "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(clone, "plans", "scratch.md"), "notes\n")
+
+	if errMsg := pullDeployClone(context.Background(), "test/untracked", clone, "main"); errMsg != "" {
+		t.Fatalf("untracked-only clone must proceed, got refusal: %s", errMsg)
+	}
+}
+
+// (f) Dirty tree AND origin advanced — the exact #239 shape. The deploy is
+// refused, and the fetch MUST have run before the dirty check: the clone's
+// origin/main ref is advanced to the pushed SHA even though the pull was
+// refused. A guard that checks dirty-first would leave origin/main stale.
+func TestPullDeployClone_DirtyFetchRanFirst(t *testing.T) {
+	_, clone, pusher := newDeployCloneFixture(t)
+	newSHA := pushCommit(t, pusher, "docker-compose.yml", "version: '3'\nservices: {}\n")
+
+	writeFile(t, filepath.Join(clone, "unrelated.txt"), "dirty\n")
+	mustRun(t, clone, "git", "add", "unrelated.txt") // staged tracked change
+
+	const repo = "test/dirty-fetch-first"
+	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "dirty"))
+
+	errMsg := pullDeployClone(context.Background(), repo, clone, "main")
+	if errMsg == "" {
+		t.Fatal("dirty deploy clone must refuse the deploy, got no error")
+	}
+	if got := gitOut(t, clone, "rev-parse", "origin/main"); got != newSHA {
+		t.Errorf("fetch must run BEFORE the dirty refusal: origin/main = %s, want %s", got, newSHA)
+	}
+	if delta := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "dirty")) - before; delta != 1 {
+		t.Errorf("dozor_deploy_clone_refused_total{reason=dirty} delta = %v, want 1", delta)
+	}
+}
+
 // TestPullDeployClone_PrefersCloneBranch — the deploy clone's own branch must
 // win over the triggering repo's branch. Regression for the oxpulse-chat `dev`
 // → krolik-server `main` mismatch that logged "git fetch failed: couldn't find
@@ -68,13 +272,15 @@ func TestPullDeployClone_PrefersCloneBranch(t *testing.T) {
 	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "sha", nil })
 	withGitPullFF(t, func(_ context.Context, _, _ string) error { return nil })
 
-	pullDeployClone(context.Background(), "anatolykoptev/oxpulse-chat", "/fake/krolik-server", "dev")
+	if errMsg := pullDeployClone(context.Background(), "anatolykoptev/oxpulse-chat", "/fake/krolik-server", "dev"); errMsg != "" {
+		t.Fatalf("unexpected refusal: %s", errMsg)
+	}
 	if fetched != "main" {
 		t.Errorf("fetch should use the clone's branch (main), not the deploy branch (dev); got %q", fetched)
 	}
 }
 
-// TestPullDeployClone_EmptyPath is a no-op (no pull attempted).
+// TestPullDeployClone_EmptyPath is a no-op (no clone configured, nothing verified).
 func TestPullDeployClone_EmptyPath(t *testing.T) {
 	// None of the runners should be called when clonePath is empty.
 	called := false
@@ -83,16 +289,15 @@ func TestPullDeployClone_EmptyPath(t *testing.T) {
 		return nil, nil
 	})
 
-	outcome := pullDeployClone(context.Background(), "test/repo", "", "main")
-	if outcome != pullUpToDate {
-		t.Errorf("expected up_to_date for empty path, got %q", outcome)
+	if errMsg := pullDeployClone(context.Background(), "test/repo", "", "main"); errMsg != "" {
+		t.Errorf("expected no refusal for empty path, got %q", errMsg)
 	}
 	if called {
 		t.Error("gitStatusRunner must not be called when clonePath is empty")
 	}
 }
 
-// TestPullDeployClone_UpToDate — remote has nothing new.
+// TestPullDeployClone_UpToDate — remote has nothing new (HEAD == fetched ref).
 func TestPullDeployClone_UpToDate(t *testing.T) {
 	const sha = "abc1234"
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
@@ -107,9 +312,8 @@ func TestPullDeployClone_UpToDate(t *testing.T) {
 		return nil
 	})
 
-	outcome := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main")
-	if outcome != pullUpToDate {
-		t.Errorf("expected up_to_date, got %q", outcome)
+	if errMsg := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main"); errMsg != "" {
+		t.Errorf("expected no refusal for up-to-date clone, got %q", errMsg)
 	}
 }
 
@@ -138,79 +342,24 @@ func TestPullDeployClone_FastForward(t *testing.T) {
 		return nil
 	})
 
-	outcome := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main")
-	if outcome != pullFastForward {
-		t.Errorf("expected fast_forward, got %q", outcome)
+	if errMsg := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main"); errMsg != "" {
+		t.Errorf("expected no refusal for fast-forward, got %q", errMsg)
 	}
 	if !pulled {
 		t.Error("expected gitPullFFRunner to be called")
 	}
 }
 
-// TestPullDeployClone_DirtySkipped — local edits prevent pull.
-func TestPullDeployClone_DirtySkipped(t *testing.T) {
-	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
-		return []byte(" M docker-compose.yml\n"), nil // dirty
-	})
-	withGitFetch(t, func(_ context.Context, _, _ string) error {
-		t.Error("gitFetchRunner must not be called on dirty tree")
-		return nil
-	})
-
-	outcome := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main")
-	if outcome != pullDirtySkipped {
-		t.Errorf("expected dirty_skipped, got %q", outcome)
-	}
-}
-
-// TestPullDeployClone_DivergedSkipped — ff-only fails (diverged history).
-func TestPullDeployClone_DivergedSkipped(t *testing.T) {
-	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
-		return []byte(""), nil
-	})
-	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
-	withGitRevParse(t, func(_ context.Context, _, ref string) (string, error) {
-		switch ref {
-		case "FETCH_HEAD":
-			return "remote999", nil
-		default:
-			return "local111", nil
-		}
-	})
-	withGitPullFF(t, func(_ context.Context, _, _ string) error {
-		return errors.New("exit status 1: not possible to fast-forward, aborting")
-	})
-
-	outcome := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main")
-	if outcome != pullDiverged {
-		t.Errorf("expected diverged_skipped, got %q", outcome)
-	}
-}
-
-// TestPullDeployClone_FetchError — git fetch fails; build proceeds with current state.
-func TestPullDeployClone_FetchError(t *testing.T) {
-	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
-		return []byte(""), nil
-	})
-	withGitFetch(t, func(_ context.Context, _, _ string) error {
-		return errors.New("could not resolve host: github.com")
-	})
-
-	outcome := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main")
-	if outcome != pullError {
-		t.Errorf("expected error, got %q", outcome)
-	}
-}
-
-// TestPullDeployClone_GitStatusError — git status itself fails.
+// TestPullDeployClone_GitStatusError — git status itself fails: the clone's
+// cleanliness is unverifiable, so the deploy is refused (fail-closed).
 func TestPullDeployClone_GitStatusError(t *testing.T) {
+	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
 		return nil, errors.New("not a git repository")
 	})
 
-	outcome := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main")
-	if outcome != pullError {
-		t.Errorf("expected error, got %q", outcome)
+	if errMsg := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main"); errMsg == "" {
+		t.Error("unverifiable clone state must refuse the deploy, got no error")
 	}
 }
 
@@ -419,83 +568,81 @@ func TestComposeBuild_ExtraBuildArgs_SHAPlaceholder(t *testing.T) {
 	}
 }
 
-// TestPullDeployClone_Integration tests the full pull lifecycle against a real
-// local git repo, exercising the default runner implementations end-to-end.
-func TestPullDeployClone_Integration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("integration test skipped with -short")
-	}
-
-	git, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not found, skipping integration test")
-	}
-	_ = git
-
-	// Create a "remote" bare repo.
-	remote := t.TempDir()
-	mustRun(t, remote, "git", "init", "--bare", "--initial-branch=main")
-
-	// Create the local clone.
-	clone := t.TempDir()
-	mustRun(t, clone, "git", "clone", remote, ".")
-	mustRun(t, clone, "git", "config", "user.email", "test@test.com")
-	mustRun(t, clone, "git", "config", "user.name", "Test")
-	// initial commit so HEAD exists
-	f := filepath.Join(clone, "docker-compose.yml")
-	if err := os.WriteFile(f, []byte("version: '3'\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mustRun(t, clone, "git", "add", ".")
-	mustRun(t, clone, "git", "commit", "-m", "init")
-	mustRun(t, clone, "git", "push", "origin", "main")
-
-	// Subtest A: already up-to-date.
-	t.Run("up_to_date", func(t *testing.T) {
-		outcome := pullDeployClone(context.Background(), "test/repo", clone, "main")
-		if outcome != pullUpToDate {
-			t.Errorf("expected up_to_date, got %q", outcome)
-		}
+// TestComposeBuild_DirtyCloneRefused — the deploy-clone guard sits in
+// composeBuild itself so BOTH lanes (webhook executeBuild, manual
+// executeManualComposeDeploy) refuse. A refused clone aborts the build
+// before docker compose runs.
+func TestComposeBuild_DirtyCloneRefused(t *testing.T) {
+	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
+		return []byte(" M compose/search.yml\n"), nil
 	})
 
-	// Push a new commit to remote so the clone can fast-forward.
-	mustRun(t, remote, "git", "--bare", "commit-graph", "write") // harmless no-op, just ensures remote is valid
-
-	// Create another worktree to push a second commit.
-	pusher := t.TempDir()
-	mustRun(t, pusher, "git", "clone", remote, ".")
-	mustRun(t, pusher, "git", "config", "user.email", "test@test.com")
-	mustRun(t, pusher, "git", "config", "user.name", "Test")
-	f2 := filepath.Join(pusher, "docker-compose.yml")
-	if err := os.WriteFile(f2, []byte("version: '3'\nservices: {}\n"), 0o644); err != nil {
-		t.Fatal(err)
+	origBuild := buildRunner
+	defer func() { buildRunner = origBuild }()
+	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		t.Error("docker compose build must NOT run when the deploy clone is refused")
+		return nil, nil
 	}
-	mustRun(t, pusher, "git", "add", ".")
-	mustRun(t, pusher, "git", "commit", "-m", "add service")
-	mustRun(t, pusher, "git", "push", "origin", "main")
 
-	// Subtest B: fast-forward.
-	t.Run("fast_forward", func(t *testing.T) {
-		outcome := pullDeployClone(context.Background(), "test/repo", clone, "main")
-		if outcome != pullFastForward {
-			t.Errorf("expected fast_forward, got %q", outcome)
-		}
-	})
+	req := BuildRequest{
+		Repo:      "test/repo",
+		CommitSHA: "deadbeef",
+		Config: RepoConfig{
+			ComposePath:     "/fake/compose",
+			SourcePath:      "/fake/source",
+			DeployClonePath: "/fake/clone",
+			Services:        []string{"svc"},
+		},
+	}
 
-	// Subtest C: dirty — create an untracked modification.
-	t.Run("dirty_skipped", func(t *testing.T) {
-		dirt := filepath.Join(clone, "docker-compose.yml")
-		if err := os.WriteFile(dirt, []byte("DIRTY\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			mustRun(t, clone, "git", "checkout", "--", "docker-compose.yml")
-		})
-		outcome := pullDeployClone(context.Background(), "test/repo", clone, "main")
-		if outcome != pullDirtySkipped {
-			t.Errorf("expected dirty_skipped, got %q", outcome)
-		}
+	errMsg, builtNow := composeBuild(context.Background(), req, "", "")
+	if errMsg == "" {
+		t.Fatal("composeBuild must fail when the deploy clone is dirty")
+	}
+	if !strings.Contains(errMsg, "compose/search.yml") {
+		t.Errorf("error must name the modified file; got %q", errMsg)
+	}
+	if builtNow {
+		t.Error("builtNow must be false on a refused deploy")
+	}
+}
+
+// TestComposeBuild_FromDiskSkipsCloneVerify — a from_disk debug deploy builds
+// the on-disk tree deliberately; the deploy-clone guard is skipped entirely
+// (the server_deploy response says nothing was verified).
+func TestComposeBuild_FromDiskSkipsCloneVerify(t *testing.T) {
+	withGitFetch(t, func(_ context.Context, _, _ string) error {
+		t.Error("gitFetchRunner must not run under from_disk — nothing is verified")
+		return nil
 	})
+	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
+		t.Error("gitStatusRunner must not run under from_disk — nothing is verified")
+		return nil, nil
+	})
+	withGitShortSHA(t, func(_ context.Context, _ string) (string, error) { return "deadbee", nil })
+
+	origBuild := buildRunner
+	defer func() { buildRunner = origBuild }()
+	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		return nil, nil
+	}
+
+	req := BuildRequest{
+		Repo:      "test/repo",
+		CommitSHA: "deadbeef",
+		FromDisk:  true,
+		Config: RepoConfig{
+			ComposePath:     "/fake/compose",
+			SourcePath:      "/fake/source",
+			DeployClonePath: "/fake/clone",
+			Services:        []string{"svc"},
+		},
+	}
+
+	if errMsg, _ := composeBuild(context.Background(), req, "", ""); errMsg != "" {
+		t.Fatalf("from_disk build must skip clone verification, got: %s", errMsg)
+	}
 }
 
 func mustRun(t *testing.T, dir string, name string, args ...string) {
@@ -508,24 +655,8 @@ func mustRun(t *testing.T, dir string, name string, args ...string) {
 	}
 }
 
-// TestPullDeployClone_UntrackedOnlyProceeds — untracked files (agent-written
-// plans/reports) must NOT block the pull; only tracked modifications do.
-func TestPullDeployClone_UntrackedOnlyProceeds(t *testing.T) {
-	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
-		return []byte("?? plans/foo.md\n?? reports/bar.md\n"), nil
-	})
-	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
-	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) {
-		return "same-sha", nil // FETCH_HEAD == HEAD → up to date
-	})
-
-	outcome := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main")
-	if outcome != pullUpToDate {
-		t.Errorf("untracked-only tree must proceed to pull (up_to_date), got %q", outcome)
-	}
-}
-
-// TestClassifyPorcelain covers the tracked/untracked split.
+// TestClassifyPorcelain covers the tracked/untracked split (used by
+// pullDeployClone's dirty check and source_sync's collision detection).
 func TestClassifyPorcelain(t *testing.T) {
 	tracked, untracked := classifyPorcelain(" M compose.yml\n?? plans/a.md\nA  new.go\n?? x\n")
 	if tracked != 2 || untracked != 2 {

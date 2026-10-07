@@ -119,8 +119,10 @@ func detectDefaultBranch(ctx context.Context, sourcePath string) string { //noli
 // service's original subdirectory offset relative to sourcePath.
 //
 // Before building, two additional steps run:
-//  1. If DeployClonePath is set, the deploy clone is auto-pulled to
-//     origin/<branch> so the compose config is never stale.
+//  1. If DeployClonePath is set, the deploy clone is fetched and verified
+//     clean at origin/<branch> — a dirty, diverged, or unfetchable clone
+//     REFUSES the deploy (issue #239, fail-closed). Skipped for from_disk
+//     debug deploys, which intentionally build the on-disk tree.
 //  2. OXPULSE_GIT_SHA and BUILD_TIMESTAMP build-args are injected so
 //     Dockerfiles that declare these ARGs get the correct values baked in.
 func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash string) (errMsg string, builtNow bool) {
@@ -128,12 +130,14 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	// pull HIT (issue #168): pushing the just-pulled image back under the tag
 	// it came from is pure waste, and on a broken registry credential it made
 	// a fully-successful deploy end in a spurious ERROR log.
-	// Part A: auto-pull the deploy clone before reading its compose config.
-	branch := req.Config.Branch
-	if branch == "" {
-		branch = "main"
+	// Part A: verify + refresh the deploy clone before reading its compose
+	// config. A non-empty return aborts the build through the normal failure
+	// path (BuildResult.Error → Telegram notify on the webhook lane).
+	if req.Config.DeployClonePath != "" && !req.FromDisk {
+		if errMsg := pullDeployClone(ctx, req.Repo, req.Config.DeployClonePath, req.Config.Branch); errMsg != "" {
+			return errMsg, false
+		}
 	}
-	pullDeployClone(ctx, req.Repo, req.Config.DeployClonePath, branch)
 
 	// Run pre-build script if configured. Used for building web OCI artifacts
 	// that the main Dockerfile consumes via WEB_ARTIFACT_IMAGE build-arg.

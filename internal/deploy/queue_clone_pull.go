@@ -8,15 +8,15 @@ import (
 	"strings"
 )
 
-// pullOutcome classifies the result of a deploy-clone pull attempt.
+// pullOutcome classifies a successful deploy-clone pull outcome for the
+// legacy dozor_deploy_clone_pull_total counter. Failure outcomes were removed
+// in #239 — a failed verification REFUSES the deploy and counts under
+// dozor_deploy_clone_refused_total instead.
 type pullOutcome string
 
 const (
-	pullUpToDate     pullOutcome = "up_to_date"
-	pullFastForward  pullOutcome = "fast_forward"
-	pullDirtySkipped pullOutcome = "dirty_skipped"
-	pullDiverged     pullOutcome = "diverged_skipped"
-	pullError        pullOutcome = "error"
+	pullUpToDate    pullOutcome = "up_to_date"
+	pullFastForward pullOutcome = "fast_forward"
 
 	defaultBranch = "main"
 )
@@ -126,105 +126,143 @@ func classifyPorcelain(out string) (tracked, untracked int) {
 	return tracked, untracked
 }
 
-// pullDeployClone auto-pulls the deploy clone at clonePath to origin/<branch>
-// before a compose build. It is a best-effort operation: failures are logged
-// and counted but never abort the build.
-//
-// Decision table:
-//
-//	dirty working tree → pullDirtySkipped  (WARN log, build proceeds)
-//	fetch fails        → pullError         (WARN log, build proceeds)
-//	FETCH_HEAD == HEAD → pullUpToDate      (INFO log)
-//	ff-only pull ok    → pullFastForward   (INFO log)
-//	ff-only pull fails → pullDiverged      (WARN log, build proceeds)
-func pullDeployClone(ctx context.Context, repo, clonePath, branch string) pullOutcome {
-	if clonePath == "" {
-		return pullUpToDate // no-op, nothing to do
+// trackedFiles extracts the modified paths from `git status --porcelain`
+// output for the dirty-clone refusal message (porcelain v1: two status
+// columns + space, then path; "R  old -> new" keeps both names). Untracked
+// "??" entries are excluded — they never block.
+func trackedFiles(porcelain string) []string {
+	var files []string
+	for _, line := range strings.Split(porcelain, "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "??") {
+			continue
+		}
+		path := line
+		if len(line) > 3 { //nolint:mnd // porcelain v1 path offset
+			path = strings.TrimSpace(line[3:])
+		}
+		files = append(files, path)
 	}
-	if branch == "" {
-		branch = defaultBranch
+	return files
+}
+
+// resolveDeployCloneBranch returns the branch the deploy clone is actually
+// compared against: the clone's OWN checked-out branch when resolvable,
+// else the configured branch (default "main").
+//
+// The deploy clone tracks its own branch (e.g. krolik-server's main), which
+// can differ from the triggering repo's branch (e.g. an oxpulse-chat `dev`
+// deploy). Fetching the triggering repo's branch in a different clone fails
+// with "couldn't find remote ref". Keep `configured` as the fallback for
+// detached HEAD or an unreadable clone.
+func resolveDeployCloneBranch(ctx context.Context, clonePath, configured string) string {
+	if configured == "" {
+		configured = defaultBranch
 	}
-	// The deploy clone tracks ITS OWN checked-out branch (e.g. krolik-server's
-	// main), which can differ from the triggering repo's branch (e.g. an
-	// oxpulse-chat `dev` deploy). Fetching the triggering repo's branch in a
-	// different clone fails with "couldn't find remote ref". Prefer the clone's
-	// actual branch; keep `branch` as the fallback for detached HEAD / errors.
 	if cur, err := gitCurrentBranchRunner(ctx, clonePath); err == nil && cur != "" && cur != "HEAD" {
-		branch = cur
+		return cur
+	}
+	return configured
+}
+
+// pullDeployClone verifies and refreshes the deploy clone at clonePath before
+// a compose build, FAIL-CLOSED (issue #239): the build must never again read
+// compose files from a stale, dirty, or diverged tree — a skipped pull once
+// recreated ox-browser from a stale compose and served 401s for ~2 minutes.
+//
+// Order matters: the fetch runs FIRST (under withFetchLock, even on a dirty
+// tree) so the dirty check compares against fresh refs and the diverged
+// refusal can name real SHAs.
+//
+// A non-empty return is a deploy-failing error message; "" means the clone
+// was verified — clean tracked tree and HEAD == origin/<branch> post-fetch —
+// and fast-forwarded when it was behind.
+//
+// Refusal table (each bumps dozor_deploy_clone_refused_total{repo,reason}):
+//
+//	fetch fails / clone unreadable → fetch_error
+//	tracked modifications          → dirty      (message names the files)
+//	HEAD != fetched ref post-pull  → diverged   (message names both SHAs)
+func pullDeployClone(ctx context.Context, repo, clonePath, branch string) string {
+	if clonePath == "" {
+		return "" // no deploy clone configured — nothing to verify
+	}
+	branch = resolveDeployCloneBranch(ctx, clonePath, branch)
+
+	// 1. Fetch FIRST — before the dirty check — so a dirty clone still gets
+	// fresh refs. #239: the old dirty-check-first order skipped the fetch and
+	// the deploy silently used stale compose files.
+	if err := gitFetchRunner(ctx, clonePath, branch); err != nil {
+		slog.Warn("deploy: clone pull refused — git fetch failed",
+			"repo", repo, "clone", clonePath, "branch", branch, "error", err)
+		DeployCloneRefusedTotal.WithLabelValues(repo, "fetch_error").Inc()
+		return fmt.Sprintf("deploy clone %s: git fetch origin/%s failed: %v", clonePath, branch, err)
 	}
 
-	// 1. Check for local modifications — never overwrite operator edits.
+	// 2. Refuse on ANY tracked modification. Untracked files (agent-written
+	// plans/reports) never block — a ff of tracked content cannot overwrite
+	// them.
 	statusOut, err := gitStatusRunner(ctx, clonePath)
 	if err != nil {
-		slog.Warn("deploy: clone pull — git status failed",
+		slog.Warn("deploy: clone pull refused — git status failed; clone unverifiable",
 			"repo", repo, "clone", clonePath, "error", err)
-		DeployClonePullTotal.WithLabelValues(repo, string(pullError)).Inc()
-		return pullError
+		DeployCloneRefusedTotal.WithLabelValues(repo, "fetch_error").Inc()
+		return fmt.Sprintf("deploy clone %s: git status failed: %v", clonePath, err)
 	}
-	tracked, untracked := classifyPorcelain(string(statusOut))
-	if tracked > 0 {
-		slog.Warn("deploy: clone pull skipped — working tree is dirty; compose config may be stale",
-			"repo", repo,
-			"clone", clonePath,
-			"dirty_tracked", tracked,
-			"untracked", untracked,
-			"status", truncate(string(statusOut), maxOutputLen),
-		)
-		DeployClonePullTotal.WithLabelValues(repo, string(pullDirtySkipped)).Inc()
-		return pullDirtySkipped
-	}
-	if untracked > 0 {
-		// Untracked files (agent-written plans/reports) cannot be overwritten
-		// by a ff-only pull of tracked content — proceed. A rare name
-		// collision with an incoming tracked file fails the pull below and
-		// is logged as pullDiverged; the build still proceeds.
-		slog.Debug("deploy: clone pull proceeding — untracked files present",
-			"repo", repo, "untracked", untracked)
+	if tracked, _ := classifyPorcelain(string(statusOut)); tracked > 0 {
+		files := trackedFiles(string(statusOut))
+		slog.Warn("deploy: clone pull refused — working tree is dirty",
+			"repo", repo, "clone", clonePath, "branch", branch, "files", files)
+		DeployCloneRefusedTotal.WithLabelValues(repo, "dirty").Inc()
+		return fmt.Sprintf("deploy clone %s has uncommitted changes (%s) — commit or revert the deploy-clone changes, then re-deploy",
+			clonePath, strings.Join(files, ", "))
 	}
 
-	// 2. Fetch latest refs.
-	if err := gitFetchRunner(ctx, clonePath, branch); err != nil {
-		slog.Warn("deploy: clone pull — git fetch failed; proceeding with current state",
-			"repo", repo, "clone", clonePath, "branch", branch, "error", err)
-		DeployClonePullTotal.WithLabelValues(repo, string(pullError)).Inc()
-		return pullError
-	}
-
-	// 3. Compare FETCH_HEAD with HEAD to detect no-op.
-	fetchHead, err := gitRevParseRunner(ctx, clonePath, "FETCH_HEAD")
+	// 3. Compare the fetched ref with HEAD; fast-forward when behind. The
+	// post-pull HEAD == FETCH_HEAD comparison is the verdict — it catches a
+	// failed ff, diverged history AND local commits the remote lacks.
+	remote, err := gitRevParseRunner(ctx, clonePath, "FETCH_HEAD")
 	if err != nil {
-		slog.Warn("deploy: clone pull — cannot resolve FETCH_HEAD; proceeding",
+		slog.Warn("deploy: clone pull refused — cannot resolve FETCH_HEAD",
 			"repo", repo, "clone", clonePath, "error", err)
-		DeployClonePullTotal.WithLabelValues(repo, string(pullError)).Inc()
-		return pullError
+		DeployCloneRefusedTotal.WithLabelValues(repo, "fetch_error").Inc()
+		return fmt.Sprintf("deploy clone %s: cannot resolve FETCH_HEAD: %v", clonePath, err)
 	}
 	head, err := gitRevParseRunner(ctx, clonePath, "HEAD")
 	if err != nil {
-		slog.Warn("deploy: clone pull — cannot resolve HEAD; proceeding",
+		slog.Warn("deploy: clone pull refused — cannot resolve HEAD",
 			"repo", repo, "clone", clonePath, "error", err)
-		DeployClonePullTotal.WithLabelValues(repo, string(pullError)).Inc()
-		return pullError
+		DeployCloneRefusedTotal.WithLabelValues(repo, "fetch_error").Inc()
+		return fmt.Sprintf("deploy clone %s: cannot resolve HEAD: %v", clonePath, err)
 	}
-	if fetchHead == head {
+
+	outcome := pullUpToDate
+	if head != remote {
+		oldHead := head
+		if perr := gitPullFFRunner(ctx, clonePath, branch); perr != nil {
+			slog.Warn("deploy: clone pull — ff-only pull failed (diverged history or local commits)",
+				"repo", repo, "clone", clonePath, "branch", branch, "error", perr)
+		}
+		if head, err = gitRevParseRunner(ctx, clonePath, "HEAD"); err != nil {
+			DeployCloneRefusedTotal.WithLabelValues(repo, "fetch_error").Inc()
+			return fmt.Sprintf("deploy clone %s: cannot resolve HEAD after pull: %v", clonePath, err)
+		}
+		if head != remote {
+			slog.Warn("deploy: clone pull refused — HEAD is not at origin/<branch>",
+				"repo", repo, "clone", clonePath, "branch", branch,
+				"head", short(head), "origin", short(remote))
+			DeployCloneRefusedTotal.WithLabelValues(repo, "diverged").Inc()
+			return fmt.Sprintf("deploy clone %s diverged: HEAD=%s but origin/%s=%s — reconcile the clone (commit or revert local commits), then re-deploy",
+				clonePath, short(head), branch, short(remote))
+		}
+		slog.Info("deploy: clone pull — fast-forwarded",
+			"repo", repo, "clone", clonePath, "from", short(oldHead), "to", short(head))
+		outcome = pullFastForward
+	} else {
 		slog.Info("deploy: clone pull — already up to date",
 			"repo", repo, "clone", clonePath, "sha", short(head))
-		DeployClonePullTotal.WithLabelValues(repo, string(pullUpToDate)).Inc()
-		return pullUpToDate
 	}
-
-	// 4. Fast-forward pull.
-	if err := gitPullFFRunner(ctx, clonePath, branch); err != nil {
-		slog.Warn("deploy: clone pull — ff-only failed (diverged?); proceeding with current state",
-			"repo", repo, "clone", clonePath, "branch", branch, "error", err)
-		DeployClonePullTotal.WithLabelValues(repo, string(pullDiverged)).Inc()
-		return pullDiverged
-	}
-
-	newHead, _ := gitRevParseRunner(ctx, clonePath, "HEAD")
-	slog.Info("deploy: clone pull — fast-forwarded",
-		"repo", repo, "clone", clonePath, "from", short(head), "to", short(newHead))
-	DeployClonePullTotal.WithLabelValues(repo, string(pullFastForward)).Inc()
-	return pullFastForward
+	DeployClonePullTotal.WithLabelValues(repo, string(outcome)).Inc()
+	return ""
 }
 
 // resolveGitSHA returns the short SHA of HEAD in dir.

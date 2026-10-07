@@ -245,11 +245,11 @@ func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.D
 		case deploy.KindBinary:
 			kindDesc = fmt.Sprintf("binary build + systemd restart (%s)", strings.Join(rc.UserServices, ", "))
 		default:
-			branch := rc.Branch
-			if branch == "" {
-				branch = "main"
-			}
-			kindDesc = fmt.Sprintf("compose SHA-pinned from origin/%s", branch)
+			// #239: state exactly what is pinned and verified — the source
+			// worktree SHA and the deploy-clone check — instead of the old
+			// false "compose SHA-pinned from origin/<branch>" claim (only the
+			// source worktree was pinned; the compose files were not).
+			kindDesc = deploy.ComposeDeployDescription(ctx, rc, input.FromDisk)
 		}
 
 		servicesDesc := strings.Join(rc.Services, ", ")

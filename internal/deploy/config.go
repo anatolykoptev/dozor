@@ -259,17 +259,22 @@ type RepoConfig struct {
 
 	// DeployClonePath is the absolute path to the deploy clone whose
 	// docker-compose files dozor reads (compose_path lives here).
-	// When set, dozor auto-pulls this clone to origin/<branch> before every
-	// build, ensuring the compose config is never stale.
+	// When set, dozor fetches origin/<branch> and verifies the clone before
+	// every compose build — fail-closed since issue #239:
 	//
-	// If the clone is dirty (uncommitted local edits) the pull is skipped with
-	// a WARN log and the build proceeds with the current state — operator is
-	// notified via the deploy_clone_pull_total{outcome="dirty_skipped"} counter.
+	//   - fetch failure → deploy refused, naming the fetch error (the clone
+	//     cannot be verified fresh)
+	//   - tracked working-tree modifications → deploy refused, naming the
+	//     files — commit or revert the deploy-clone changes and re-deploy
+	//     (untracked files never block)
+	//   - HEAD != origin/<branch> after the pull (diverged history or local
+	//     commits) → deploy refused, naming both SHAs
 	//
-	// If --ff-only pull fails (e.g. diverged) the pull is skipped with a WARN
-	// log; the build proceeds with the current state.
+	// Refusals bump dozor_deploy_clone_refused_total{repo,reason} and flow
+	// through the normal deploy-failure path. from_disk debug deploys skip
+	// the verification entirely.
 	//
-	// If omitted, no auto-pull is performed (backward-compatible default).
+	// If omitted, no verification is performed (backward-compatible default).
 	//
 	// Example (krolik-server deploy clone):
 	//   deploy_clone_path: /home/krolik/deploy/krolik-server

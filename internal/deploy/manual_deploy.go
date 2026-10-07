@@ -148,6 +148,7 @@ func executeManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 			Repo:      req.Repo,
 			CommitSHA: resolveGitFullSHA(ctx, sourcePath), // full SHA so DEPLOY_SHA and ${SHA} are valid
 			Config:    req.Config,
+			FromDisk:  true,
 		}
 		if req.Config.Heavy {
 			waitForLoadBelowThreshold(ctx)
@@ -431,6 +432,41 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 	ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "success").Inc()
 	result.Success = true
 	return result
+}
+
+// ComposeDeployDescription summarises for the server_deploy response what a
+// compose-kind manual deploy actually pins and verifies (issue #239): the
+// source worktree is pinned to origin/<branch>, and — when a deploy clone is
+// configured — the clone must be clean at origin/<clone-branch> or the deploy
+// is refused. The SHAs are the currently-known remote-tracking values (the
+// deploy re-fetches before building). When fromDisk is set or no deploy clone
+// is configured, nothing about the compose files is verified — the message
+// says so explicitly instead of repeating the old false "SHA-pinned" claim.
+func ComposeDeployDescription(ctx context.Context, rc RepoConfig, fromDisk bool) string {
+	if fromDisk {
+		return "compose build of the on-disk working tree (from_disk) — nothing pinned, nothing verified"
+	}
+	branch := rc.Branch
+	if branch == "" {
+		branch = defaultBranch
+	}
+	srcSHA := "unknown"
+	if rc.SourcePath != "" {
+		if s, err := gitManualOriginSHARunner(ctx, rc.SourcePath, branch); err == nil {
+			srcSHA = ShortSHA(s)
+		}
+	}
+	if rc.DeployClonePath == "" {
+		return fmt.Sprintf("compose: source worktree pinned to origin/%s@%s; no deploy_clone_path configured — compose files NOT verified",
+			branch, srcSHA)
+	}
+	cloneBranch := resolveDeployCloneBranch(ctx, rc.DeployClonePath, branch)
+	cloneSHA := "unknown"
+	if s, err := gitManualOriginSHARunner(ctx, rc.DeployClonePath, cloneBranch); err == nil {
+		cloneSHA = ShortSHA(s)
+	}
+	return fmt.Sprintf("compose: source worktree pinned to origin/%s@%s; deploy clone verified clean at origin/%s@%s (deploy refused if dirty or diverged)",
+		branch, srcSHA, cloneBranch, cloneSHA)
 }
 
 // gitPrepareBranch creates a detached worktree at origin/<branch> in the
