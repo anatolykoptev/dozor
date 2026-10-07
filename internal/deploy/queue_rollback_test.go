@@ -22,8 +22,8 @@ func TestRollback_HealthCheckFail_RollbackSucceeds(t *testing.T) {
 		if len(args) >= 2 && args[1] == "ps" {
 			return []byte(`[{"State":"exited","Status":"Exited (1)","Publishers":[]}]`), nil
 		}
-		if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
-			return []byte("myrepo:latest\n"), nil
+		if len(args) >= 2 && args[1] == "config" {
+			return []byte(`{"name":"proj","services":{"svc":{"image":"myrepo:latest"}}}`), nil
 		}
 		return []byte("{}"), nil
 	}
@@ -54,8 +54,8 @@ func TestRollback_RollbackAlsoFails(t *testing.T) {
 
 	// composeImageName (via outputRunner) returns empty → "cannot determine image name"
 	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
-			return []byte("\n"), nil // empty → composeImageName returns ""
+		if len(args) >= 2 && args[1] == "config" {
+			return []byte(`{"name":"proj","services":{}}`), nil // svc absent → composeImageName returns ""
 		}
 		return []byte("{}"), nil
 	}
@@ -89,8 +89,8 @@ func TestRollback_ComposeUpFail_RollbackAttempted(t *testing.T) {
 	defer func() { outputRunner = origOut }()
 
 	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
-			return []byte("myrepo:latest\n"), nil
+		if len(args) >= 2 && args[1] == "config" {
+			return []byte(`{"name":"proj","services":{"svc":{"image":"myrepo:latest"}}}`), nil
 		}
 		return []byte("{}"), nil
 	}
@@ -124,10 +124,7 @@ func TestRollback_AllSucceeds_NoRollback(t *testing.T) {
 			return []byte(psRunning), nil
 		}
 		if len(args) >= 3 && args[1] == "config" && args[2] == "--format" {
-			return []byte(`{"services":{}}`), nil
-		}
-		if len(args) >= 3 && args[1] == "config" && args[2] == "--images" {
-			return []byte("myrepo:latest\n"), nil
+			return []byte(`{"name":"proj","services":{"svc":{"image":"myrepo:latest"}}}`), nil
 		}
 		return []byte("{}"), nil
 	}
