@@ -14,6 +14,26 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
+// clonePullReq builds the BuildRequest pullDeployClone consumes in tests —
+// the clone path/branch live on RepoConfig now, not in the call signature.
+func clonePullReq(repo, clonePath string) BuildRequest {
+	return BuildRequest{
+		Repo: repo,
+		Config: RepoConfig{
+			DeployClonePath: clonePath,
+			Services:        []string{"svc"},
+		},
+	}
+}
+
+// withAttachedClone stubs gitCurrentBranchRunner to report an attached HEAD
+// on "main" — needed by every stubbed-runner pull test now that
+// pullDeployClone refuses detached clones before the dirty check.
+func withAttachedClone(t *testing.T) {
+	t.Helper()
+	withGitCurrentBranch(t, func(_ context.Context, _ string) (string, error) { return "main", nil })
+}
+
 // helpers to swap injectable runners and restore on test exit.
 
 func withGitStatus(t *testing.T, fn func(context.Context, string) ([]byte, error)) {
@@ -142,7 +162,7 @@ func TestPullDeployClone_DirtyRefused(t *testing.T) {
 	const repo = "test/dirty-refused"
 	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "dirty"))
 
-	errMsg := pullDeployClone(context.Background(), repo, clone, "main")
+	_, errMsg := pullDeployClone(context.Background(), clonePullReq(repo, clone))
 	if errMsg == "" {
 		t.Fatal("dirty deploy clone must refuse the deploy, got no error")
 	}
@@ -168,7 +188,7 @@ func TestPullDeployClone_FetchErrorRefused(t *testing.T) {
 	const repo = "test/fetch-refused"
 	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "fetch_error"))
 
-	errMsg := pullDeployClone(context.Background(), repo, clone, "main")
+	_, errMsg := pullDeployClone(context.Background(), clonePullReq(repo, clone))
 	if errMsg == "" {
 		t.Fatal("failed fetch must refuse the deploy, got no error")
 	}
@@ -185,7 +205,7 @@ func TestPullDeployClone_BehindOriginFastForwards(t *testing.T) {
 	_, clone, pusher := newDeployCloneFixture(t)
 	newSHA := pushCommit(t, pusher, "docker-compose.yml", "version: '3'\nservices: {}\n")
 
-	if errMsg := pullDeployClone(context.Background(), "test/ff", clone, "main"); errMsg != "" {
+	if _, errMsg := pullDeployClone(context.Background(), clonePullReq("test/ff", clone)); errMsg != "" {
 		t.Fatalf("clean clone behind origin must fast-forward, got refusal: %s", errMsg)
 	}
 	if head := gitOut(t, clone, "rev-parse", "HEAD"); head != newSHA {
@@ -208,7 +228,7 @@ func TestPullDeployClone_DivergedRefused(t *testing.T) {
 	const repo = "test/diverged-refused"
 	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "diverged"))
 
-	errMsg := pullDeployClone(context.Background(), repo, clone, "main")
+	_, errMsg := pullDeployClone(context.Background(), clonePullReq(repo, clone))
 	if errMsg == "" {
 		t.Fatal("diverged deploy clone must refuse the deploy, got no error")
 	}
@@ -229,7 +249,7 @@ func TestPullDeployClone_UntrackedProceeds(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(clone, "plans", "scratch.md"), "notes\n")
 
-	if errMsg := pullDeployClone(context.Background(), "test/untracked", clone, "main"); errMsg != "" {
+	if _, errMsg := pullDeployClone(context.Background(), clonePullReq("test/untracked", clone)); errMsg != "" {
 		t.Fatalf("untracked-only clone must proceed, got refusal: %s", errMsg)
 	}
 }
@@ -248,7 +268,7 @@ func TestPullDeployClone_DirtyFetchRanFirst(t *testing.T) {
 	const repo = "test/dirty-fetch-first"
 	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "dirty"))
 
-	errMsg := pullDeployClone(context.Background(), repo, clone, "main")
+	_, errMsg := pullDeployClone(context.Background(), clonePullReq(repo, clone))
 	if errMsg == "" {
 		t.Fatal("dirty deploy clone must refuse the deploy, got no error")
 	}
@@ -260,19 +280,22 @@ func TestPullDeployClone_DirtyFetchRanFirst(t *testing.T) {
 	}
 }
 
-// TestPullDeployClone_PrefersCloneBranch — the deploy clone's own branch must
-// win over the triggering repo's branch. Regression for the oxpulse-chat `dev`
-// → krolik-server `main` mismatch that logged "git fetch failed: couldn't find
-// remote ref dev" on every dev-branch deploy.
+// TestPullDeployClone_PrefersCloneBranch — the deploy clone's OWN configured
+// branch (deploy_clone_branch, default main) must win over the triggering
+// repo's Branch. Regression for the oxpulse-chat `dev` → krolik-server `main`
+// mismatch that logged "git fetch failed: couldn't find remote ref dev" on
+// every dev-branch deploy.
 func TestPullDeployClone_PrefersCloneBranch(t *testing.T) {
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
-	withGitCurrentBranch(t, func(_ context.Context, _ string) (string, error) { return "main", nil })
+	withAttachedClone(t)
 	var fetched string
 	withGitFetch(t, func(_ context.Context, _, branch string) error { fetched = branch; return nil })
 	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "sha", nil })
 	withGitPullFF(t, func(_ context.Context, _, _ string) error { return nil })
 
-	if errMsg := pullDeployClone(context.Background(), "anatolykoptev/oxpulse-chat", "/fake/krolik-server", "dev"); errMsg != "" {
+	req := clonePullReq("anatolykoptev/oxpulse-chat", "/fake/krolik-server")
+	req.Config.Branch = "dev" // service repo branch — must NOT be used for the clone
+	if _, errMsg := pullDeployClone(context.Background(), req); errMsg != "" {
 		t.Fatalf("unexpected refusal: %s", errMsg)
 	}
 	if fetched != "main" {
@@ -289,7 +312,7 @@ func TestPullDeployClone_EmptyPath(t *testing.T) {
 		return nil, nil
 	})
 
-	if errMsg := pullDeployClone(context.Background(), "test/repo", "", "main"); errMsg != "" {
+	if _, errMsg := pullDeployClone(context.Background(), clonePullReq("test/repo", "")); errMsg != "" {
 		t.Errorf("expected no refusal for empty path, got %q", errMsg)
 	}
 	if called {
@@ -304,6 +327,7 @@ func TestPullDeployClone_UpToDate(t *testing.T) {
 		return []byte(""), nil // clean
 	})
 	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withAttachedClone(t)
 	withGitRevParse(t, func(_ context.Context, _, ref string) (string, error) {
 		return sha, nil // FETCH_HEAD == HEAD
 	})
@@ -312,7 +336,7 @@ func TestPullDeployClone_UpToDate(t *testing.T) {
 		return nil
 	})
 
-	if errMsg := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main"); errMsg != "" {
+	if _, errMsg := pullDeployClone(context.Background(), clonePullReq("test/repo", "/fake/clone")); errMsg != "" {
 		t.Errorf("expected no refusal for up-to-date clone, got %q", errMsg)
 	}
 }
@@ -323,6 +347,7 @@ func TestPullDeployClone_FastForward(t *testing.T) {
 		return []byte(""), nil
 	})
 	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withAttachedClone(t)
 	calls := 0
 	withGitRevParse(t, func(_ context.Context, _, ref string) (string, error) {
 		calls++
@@ -342,7 +367,7 @@ func TestPullDeployClone_FastForward(t *testing.T) {
 		return nil
 	})
 
-	if errMsg := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main"); errMsg != "" {
+	if _, errMsg := pullDeployClone(context.Background(), clonePullReq("test/repo", "/fake/clone")); errMsg != "" {
 		t.Errorf("expected no refusal for fast-forward, got %q", errMsg)
 	}
 	if !pulled {
@@ -354,18 +379,61 @@ func TestPullDeployClone_FastForward(t *testing.T) {
 // cleanliness is unverifiable, so the deploy is refused (fail-closed).
 func TestPullDeployClone_GitStatusError(t *testing.T) {
 	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withAttachedClone(t)
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
 		return nil, errors.New("not a git repository")
 	})
 
-	if errMsg := pullDeployClone(context.Background(), "test/repo", "/fake/clone", "main"); errMsg == "" {
+	if _, errMsg := pullDeployClone(context.Background(), clonePullReq("test/repo", "/fake/clone")); errMsg == "" {
 		t.Error("unverifiable clone state must refuse the deploy, got no error")
 	}
 }
 
-// TestPullDeployClone_DefaultBranchMain verifies that branch="" resolves to "main".
+// TestPullDeployClone_DetachedRefused — a detached HEAD in the clone has no
+// branch head to compare; refuse with reason="detached" (issue #239).
+func TestPullDeployClone_DetachedRefused(t *testing.T) {
+	_, clone, _ := newDeployCloneFixture(t)
+	sha := gitOut(t, clone, "rev-parse", "HEAD")
+	mustRun(t, clone, "git", "checkout", sha) // detach HEAD
+
+	const repo = "test/detached-refused"
+	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "detached"))
+
+	_, errMsg := pullDeployClone(context.Background(), clonePullReq(repo, clone))
+	if errMsg == "" {
+		t.Fatal("detached deploy clone must refuse the deploy, got no error")
+	}
+	if delta := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "detached")) - before; delta != 1 {
+		t.Errorf("dozor_deploy_clone_refused_total{reason=detached} delta = %v, want 1", delta)
+	}
+}
+
+// TestPullDeployClone_DeployCloneBranchConfig — deploy_clone_branch selects
+// the clone's comparison branch even when it differs from the service branch.
+func TestPullDeployClone_DeployCloneBranchConfig(t *testing.T) {
+	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
+	withAttachedClone(t)
+	var fetched string
+	withGitFetch(t, func(_ context.Context, _, branch string) error { fetched = branch; return nil })
+	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "sha", nil })
+	withGitPullFF(t, func(_ context.Context, _, _ string) error { return nil })
+
+	req := clonePullReq("test/repo", "/fake/clone")
+	req.Config.Branch = "dev"
+	req.Config.DeployCloneBranch = "release"
+	if _, errMsg := pullDeployClone(context.Background(), req); errMsg != "" {
+		t.Fatalf("unexpected refusal: %s", errMsg)
+	}
+	if fetched != "release" {
+		t.Errorf("fetch should use deploy_clone_branch=release, got %q", fetched)
+	}
+}
+
+// TestPullDeployClone_DefaultBranchMain verifies that deploy_clone_branch=""
+// resolves to "main".
 func TestPullDeployClone_DefaultBranchMain(t *testing.T) {
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
+	withAttachedClone(t)
 	var gotBranch string
 	withGitFetch(t, func(_ context.Context, _, branch string) error {
 		gotBranch = branch
@@ -373,7 +441,7 @@ func TestPullDeployClone_DefaultBranchMain(t *testing.T) {
 	})
 	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "abc", nil })
 
-	pullDeployClone(context.Background(), "test/repo", "/fake/clone", "")
+	_, _ = pullDeployClone(context.Background(), clonePullReq("test/repo", "/fake/clone"))
 	if gotBranch != "main" {
 		t.Errorf("expected branch=main, got %q", gotBranch)
 	}
@@ -445,7 +513,7 @@ func TestComposeBuild_InjectsBuildArgs(t *testing.T) {
 		},
 	}
 
-	errMsg, _ := composeBuild(context.Background(), req, "/fake/worktree", "")
+	errMsg, _, _ := composeBuild(context.Background(), req, "/fake/worktree", "")
 	if errMsg != "" {
 		t.Fatalf("composeBuild: unexpected error: %s", errMsg)
 	}
@@ -504,7 +572,7 @@ func TestComposeBuild_InjectsBuildArgs_NoWorktree(t *testing.T) {
 	}
 
 	// worktreePath = "" → no override generation
-	errMsg, _ := composeBuild(context.Background(), req, "", "")
+	errMsg, _, _ := composeBuild(context.Background(), req, "", "")
 	if errMsg != "" {
 		t.Fatalf("composeBuild no-worktree: unexpected error: %s", errMsg)
 	}
@@ -551,7 +619,7 @@ func TestComposeBuild_ExtraBuildArgs_SHAPlaceholder(t *testing.T) {
 		},
 	}
 
-	errMsg, _ := composeBuild(context.Background(), req, "/fake/worktree", "")
+	errMsg, _, _ := composeBuild(context.Background(), req, "/fake/worktree", "")
 	if errMsg != "" {
 		t.Fatalf("composeBuild: unexpected error: %s", errMsg)
 	}
@@ -574,6 +642,7 @@ func TestComposeBuild_ExtraBuildArgs_SHAPlaceholder(t *testing.T) {
 // before docker compose runs.
 func TestComposeBuild_DirtyCloneRefused(t *testing.T) {
 	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withAttachedClone(t)
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
 		return []byte(" M compose/search.yml\n"), nil
 	})
@@ -596,7 +665,7 @@ func TestComposeBuild_DirtyCloneRefused(t *testing.T) {
 		},
 	}
 
-	errMsg, builtNow := composeBuild(context.Background(), req, "", "")
+	errMsg, builtNow, _ := composeBuild(context.Background(), req, "", "")
 	if errMsg == "" {
 		t.Fatal("composeBuild must fail when the deploy clone is dirty")
 	}
@@ -640,7 +709,7 @@ func TestComposeBuild_FromDiskSkipsCloneVerify(t *testing.T) {
 		},
 	}
 
-	if errMsg, _ := composeBuild(context.Background(), req, "", ""); errMsg != "" {
+	if errMsg, _, _ := composeBuild(context.Background(), req, "", ""); errMsg != "" {
 		t.Fatalf("from_disk build must skip clone verification, got: %s", errMsg)
 	}
 }
@@ -652,6 +721,303 @@ func mustRun(t *testing.T, dir string, name string, args ...string) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command %q %v failed in %s: %v\n%s", name, args, dir, err, out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pre-up re-verification tests (issue #239, second stopgap layer).
+//
+// composeBuild's clone verification can be up to 45 minutes old when
+// `docker compose up` actually runs — deploy-clone-sync or a human can
+// dirty/move/detach the clone in between. verifyDeployCloneForUp re-checks
+// the clone (local only, never re-fetching) right before EVERY up. These
+// tests exercise the real-git path: pullDeployClone proves the clone good,
+// the test then breaks it, and the up must refuse WITHOUT invoking docker.
+// ---------------------------------------------------------------------------
+
+// upCallCount installs an upRunner stub that counts invocations and returns
+// its counter — a refused up must never reach docker.
+func upCallCount(t *testing.T) *int {
+	t.Helper()
+	calls := new(int)
+	orig := upRunner
+	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		*calls++
+		return nil, nil
+	}
+	t.Cleanup(func() { upRunner = orig })
+	return calls
+}
+
+// (g) The clone is dirtied BETWEEN build and up: the build-time verification
+// passed, then a tracked file was edited. composeUp must refuse with
+// reason="dirty" and docker must never run — this is the ~45-minute window
+// the build-time-only check left open.
+func TestComposeUp_DirtyBetweenBuildAndUpRefused(t *testing.T) {
+	_, clone, _ := newDeployCloneFixture(t)
+
+	const repo = "test/up-dirty-refused"
+	req := clonePullReq(repo, clone)
+	cv, errMsg := pullDeployClone(context.Background(), req)
+	if errMsg != "" {
+		t.Fatalf("clean clone must verify at build time, got refusal: %s", errMsg)
+	}
+
+	// The clone goes dirty after the build verified it.
+	writeFile(t, filepath.Join(clone, "docker-compose.yml"), "version: '3'\n# sneaked in post-build\n")
+
+	calls := upCallCount(t)
+	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "dirty"))
+
+	upErr, composeSHA := composeUp(context.Background(), req, cv)
+	if upErr == "" {
+		t.Fatal("composeUp must refuse when the clone was dirtied between build and up")
+	}
+	if *calls != 0 {
+		t.Errorf("docker compose up ran %d times despite a refused clone — the up must never reach docker", *calls)
+	}
+	if !strings.Contains(upErr, "docker-compose.yml") {
+		t.Errorf("refusal must name the dirty file; got %q", upErr)
+	}
+	if composeSHA != "" {
+		t.Errorf("a refused up must not report a compose SHA, got %q", composeSHA)
+	}
+	if delta := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "dirty")) - before; delta != 1 {
+		t.Errorf("dozor_deploy_clone_refused_total{reason=dirty} delta = %v, want 1", delta)
+	}
+}
+
+// (h) The clone's HEAD moves BETWEEN build and up (deploy-clone-sync pulled
+// a newer origin, or a local commit landed). The up must refuse with
+// reason="moved", naming both SHAs — the build verified one origin state and
+// the up must never silently render another.
+func TestComposeUp_MovedBetweenBuildAndUpRefused(t *testing.T) {
+	_, clone, _ := newDeployCloneFixture(t)
+
+	const repo = "test/up-moved-refused"
+	req := clonePullReq(repo, clone)
+	cv, errMsg := pullDeployClone(context.Background(), req)
+	if errMsg != "" {
+		t.Fatalf("clean clone must verify at build time, got refusal: %s", errMsg)
+	}
+	atBuild := gitOut(t, clone, "rev-parse", "HEAD")
+
+	// HEAD advances after the build-time verification (local commit keeps
+	// the tree clean so ONLY the moved check can fire).
+	writeFile(t, filepath.Join(clone, "advanced.txt"), "post-build\n")
+	mustRun(t, clone, "git", "add", "advanced.txt")
+	mustRun(t, clone, "git", "commit", "-m", "advanced after build")
+	now := gitOut(t, clone, "rev-parse", "HEAD")
+
+	calls := upCallCount(t)
+	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "moved"))
+
+	upErr, _ := composeUp(context.Background(), req, cv)
+	if upErr == "" {
+		t.Fatal("composeUp must refuse when clone HEAD moved between build and up")
+	}
+	if *calls != 0 {
+		t.Errorf("docker compose up ran %d times despite a moved clone", *calls)
+	}
+	if !strings.Contains(upErr, ShortSHA(atBuild)) || !strings.Contains(upErr, ShortSHA(now)) {
+		t.Errorf("moved refusal must name both SHAs (at-build %s, now %s); got %q",
+			ShortSHA(atBuild), ShortSHA(now), upErr)
+	}
+	if delta := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "moved")) - before; delta != 1 {
+		t.Errorf("dozor_deploy_clone_refused_total{reason=moved} delta = %v, want 1", delta)
+	}
+}
+
+// (i) The clone is detached BETWEEN build and up. The up must refuse with
+// reason="detached" — a detached HEAD has no branch line to compare.
+func TestComposeUp_DetachedBetweenBuildAndUpRefused(t *testing.T) {
+	_, clone, _ := newDeployCloneFixture(t)
+
+	const repo = "test/up-detached-refused"
+	req := clonePullReq(repo, clone)
+	cv, errMsg := pullDeployClone(context.Background(), req)
+	if errMsg != "" {
+		t.Fatalf("clean clone must verify at build time, got refusal: %s", errMsg)
+	}
+
+	sha := gitOut(t, clone, "rev-parse", "HEAD")
+	mustRun(t, clone, "git", "checkout", sha) // detach HEAD post-build
+
+	calls := upCallCount(t)
+	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "detached"))
+
+	upErr, _ := composeUp(context.Background(), req, cv)
+	if upErr == "" {
+		t.Fatal("composeUp must refuse when the clone detached between build and up")
+	}
+	if *calls != 0 {
+		t.Errorf("docker compose up ran %d times despite a detached clone", *calls)
+	}
+	if delta := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "detached")) - before; delta != 1 {
+		t.Errorf("dozor_deploy_clone_refused_total{reason=detached} delta = %v, want 1", delta)
+	}
+}
+
+// (j) A verified clone lets the up proceed and reports the clone's HEAD as
+// the compose@<sha> the up ran against — the receipt/notify value.
+func TestComposeUp_VerifiedCloneProceedsAndReportsSHA(t *testing.T) {
+	_, clone, _ := newDeployCloneFixture(t)
+
+	const repo = "test/up-verified"
+	req := clonePullReq(repo, clone)
+	cv, errMsg := pullDeployClone(context.Background(), req)
+	if errMsg != "" {
+		t.Fatalf("clean clone must verify at build time, got refusal: %s", errMsg)
+	}
+
+	calls := upCallCount(t)
+	upErr, composeSHA := composeUp(context.Background(), req, cv)
+	if upErr != "" {
+		t.Fatalf("verified clone must let the up proceed, got refusal: %s", upErr)
+	}
+	if *calls != 1 {
+		t.Errorf("expected exactly one docker compose up, got %d", *calls)
+	}
+	if want := gitOut(t, clone, "rev-parse", "HEAD"); composeSHA != want {
+		t.Errorf("composeSHA = %q, want clone HEAD %q", composeSHA, want)
+	}
+}
+
+// (k) The rollback up re-verifies too: a clone dirtied between build and a
+// failed deploy's rollback must NOT drive a stale rollback — the current
+// container is left running (no tag, no recreate).
+func TestRollbackImages_CloneDirtiedBetweenBuildAndRollbackRefused(t *testing.T) {
+	_, clone, _ := newDeployCloneFixture(t)
+
+	const repo = "test/rollback-refused"
+	req := clonePullReq(repo, clone)
+	req.Config.ComposePath = clone
+	cv, errMsg := pullDeployClone(context.Background(), req)
+	if errMsg != "" {
+		t.Fatalf("clean clone must verify at build time, got refusal: %s", errMsg)
+	}
+
+	// The container's current image differs from the rollback target so the
+	// rollback WOULD act — the clone check is what stops it.
+	withOutputRunner(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+		if composeSub(args) == "images" {
+			return []byte(`[{"ID":"curimg00000","ContainerName":"svc"}]`), nil
+		}
+		return []byte("{}"), nil
+	})
+	withCmdRunner(t, func(_ context.Context, _ string, _ string, args ...string) error {
+		t.Errorf("rollback must not run docker %v on a refused clone — leave the current container", args)
+		return nil
+	})
+
+	// Dirty AFTER the build-time verification.
+	writeFile(t, filepath.Join(clone, "docker-compose.yml"), "version: '3'\n# post-build dirt\n")
+
+	err := rollbackImages(context.Background(), req, map[string]string{"svc": "previmg1234567"}, cv)
+	if err == nil {
+		t.Fatal("rollbackImages must refuse when the clone was dirtied after the build")
+	}
+	if !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Errorf("rollback refusal must carry the clone refusal reason; got %q", err)
+	}
+}
+
+// (l) allow_stale_config is the emergency escape: clone verification is
+// skipped entirely (no fetch, no status), the deploy proceeds, and the
+// override is LOUD — dozor_deploy_clone_refused_total{reason="override"}.
+func TestComposeBuild_AllowStaleConfigSkipsVerify(t *testing.T) {
+	withGitFetch(t, func(_ context.Context, _, _ string) error {
+		t.Error("gitFetchRunner must NOT run under allow_stale_config — nothing is verified")
+		return nil
+	})
+	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
+		t.Error("gitStatusRunner must NOT run under allow_stale_config — nothing is verified")
+		return nil, nil
+	})
+	withGitShortSHA(t, func(_ context.Context, _ string) (string, error) { return "deadbee", nil })
+
+	origBuild := buildRunner
+	defer func() { buildRunner = origBuild }()
+	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		return nil, nil
+	}
+
+	const repo = "test/stale-override"
+	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "override"))
+
+	req := BuildRequest{
+		Repo:             repo,
+		CommitSHA:        "deadbeef",
+		AllowStaleConfig: true,
+		Config: RepoConfig{
+			ComposePath:     "/fake/compose",
+			SourcePath:      "/fake/source",
+			DeployClonePath: "/fake/clone",
+			Services:        []string{"svc"},
+		},
+	}
+
+	errMsg, _, cv := composeBuild(context.Background(), req, "", "")
+	if errMsg != "" {
+		t.Fatalf("allow_stale_config must let the build proceed, got: %s", errMsg)
+	}
+	if cv != nil {
+		t.Error("allow_stale_config must produce no verification record — pre-up checks must skip too")
+	}
+	if delta := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "override")) - before; delta != 1 {
+		t.Errorf("dozor_deploy_clone_refused_total{reason=override} delta = %v, want 1", delta)
+	}
+}
+
+// (m) The server_deploy reply text must be truthful about what ran: the
+// override path says "STALE CONFIG OVERRIDE" instead of pretending the
+// compose was verified.
+func TestComposeDeployDescription_StaleOverrideIsTruthful(t *testing.T) {
+	withOriginSHARunner(t, func(_ context.Context, _ string, _ string) (string, error) {
+		return "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee", nil
+	})
+
+	desc := ComposeDeployDescription(context.Background(), ManualDeployRequest{
+		Repo: "test/repo",
+		Config: RepoConfig{
+			SourcePath:      "/fake/source",
+			DeployClonePath: "/fake/clone",
+		},
+		AllowStaleConfig: true,
+	})
+	if !strings.Contains(desc, "STALE CONFIG OVERRIDE") {
+		t.Errorf("reply must say STALE CONFIG OVERRIDE under allow_stale_config; got %q", desc)
+	}
+	if strings.Contains(desc, "compose verified") {
+		t.Errorf("reply must NOT claim verification under allow_stale_config; got %q", desc)
+	}
+}
+
+// (n) The deployed-SHA receipt records the compose SHA the `up` ran against —
+// compose@<sha> alongside the source SHA.
+func TestRecordDeployedSHA_ComposeReceipt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deployed-sha.json")
+	ConfigureDeployedSHAPersistence(path)
+	t.Cleanup(func() { ConfigureDeployedSHAPersistence("") })
+
+	const repo = "test/compose-receipt"
+	const srcSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const cmpSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	recordDeployedSHA(repo, srcSHA, cmpSHA)
+
+	pendingDeployMu.Lock()
+	got := deployedComposeSHAs[repo]
+	pendingDeployMu.Unlock()
+	if got != cmpSHA {
+		t.Errorf("deployedComposeSHAs[%s] = %q, want %q", repo, got, cmpSHA)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("receipt file must persist: %v", err)
+	}
+	if !strings.Contains(string(data), cmpSHA) {
+		t.Errorf("persisted receipt must contain the compose SHA; got %s", data)
 	}
 }
 

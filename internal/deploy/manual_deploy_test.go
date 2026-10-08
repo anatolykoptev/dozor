@@ -1010,7 +1010,7 @@ func TestManualDeploy_PullHit_DoesNotRePush(t *testing.T) {
 				sawPush = true
 			}
 		}
-		if name == "docker" && len(args) > 1 && args[0] == "compose" && args[1] == "build" {
+		if name == "docker" && len(args) > 1 && composeSub(args) == "build" {
 			sawBuild = true
 		}
 		return nil
@@ -1047,5 +1047,92 @@ func TestManualDeploy_PullHit_DoesNotRePush(t *testing.T) {
 	}
 	if sawPush {
 		t.Fatal("pull-hit pushed the just-pulled image back — issue #168 regression")
+	}
+}
+
+// TestExecuteManualDeploy_NoBuild_UpNoBuild — server_deploy build=false must
+// be HONOURED on a compose repo, not silently ignored (issue #239): no
+// source fetch, no worktree, no `compose build` — only `up --no-build`
+// recreating services from the CURRENT image. The deploy clone is still
+// verified (the compose file comes from it), and no source receipt is
+// advanced (BuiltSHA empty — nothing was built).
+func TestExecuteManualDeploy_NoBuild_UpNoBuild(t *testing.T) {
+	defer zeroDelays(t)()
+
+	// The deploy clone verifies (fetch + status + compare, same as a built
+	// deploy); the SOURCE is never fetched.
+	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withAttachedClone(t)
+	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
+	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "samesha00000", nil })
+	withGitPullFF(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualFetch(t, func(_ context.Context, _, _ string) error {
+		t.Error("build=false must not fetch the source clone — there is no build")
+		return nil
+	})
+
+	var upArgs []string
+	upRunner = func(_ context.Context, _ string, args []string) ([]byte, error) {
+		upArgs = append([]string(nil), args...)
+		return nil, nil
+	}
+	origBuild := buildRunner
+	buildRunner = func(_ context.Context, _ string, args []string) ([]byte, error) {
+		t.Errorf("compose build must NOT run under build=false; argv: %v", args)
+		return nil, nil
+	}
+	defer func() { buildRunner = origBuild }()
+
+	result := ExecuteManualDeploy(context.Background(), ManualDeployRequest{
+		Repo:    "anatolykoptev/oxpulse-chat",
+		NoBuild: true,
+		Config: RepoConfig{
+			Branch:          "main",
+			SourcePath:      "/fake/source",
+			ComposePath:     "/fake/compose",
+			DeployClonePath: "/fake/clone",
+			Services:        []string{"oxpulse-chat"},
+		},
+	})
+
+	if !result.Success {
+		t.Fatalf("build=false deploy must succeed, got: %s", result.Error)
+	}
+	if upArgs == nil {
+		t.Fatal("compose up must still run under build=false")
+	}
+	joined := strings.Join(upArgs, " ")
+	if !strings.Contains(joined, "--no-build") {
+		t.Errorf("up argv must carry --no-build under build=false; got: %s", joined)
+	}
+	if !strings.Contains(joined, "-f") {
+		t.Errorf("up argv must pin the compose file with -f; got: %s", joined)
+	}
+	if result.BuiltSHA != "" {
+		t.Errorf("no-build deploy must not claim a built SHA, got %q", result.BuiltSHA)
+	}
+	if result.ComposeSHA != "samesha00000" {
+		t.Errorf("no-build deploy must still report the verified clone SHA, got %q", result.ComposeSHA)
+	}
+}
+
+// TestExecuteManualDeploy_NoBuild_NonComposeRejected — binary/static kinds
+// cannot express "deploy without building" (the build IS the deploy), so
+// build=false is rejected with a clear error instead of silently building.
+func TestExecuteManualDeploy_NoBuild_NonComposeRejected(t *testing.T) {
+	result := ExecuteManualDeploy(context.Background(), ManualDeployRequest{
+		Repo:    "anatolykoptev/go-job",
+		NoBuild: true,
+		Config: RepoConfig{
+			Kind:       KindBinary,
+			SourcePath: "/fake/source",
+			Services:   []string{"go-job"},
+		},
+	})
+	if result.Success {
+		t.Fatal("build=false on a binary repo must be rejected, not silently build")
+	}
+	if !strings.Contains(result.Error, "build=false") {
+		t.Errorf("rejection must name build=false; got %q", result.Error)
 	}
 }

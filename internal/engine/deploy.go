@@ -91,6 +91,8 @@ func (a *ServerAgent) StartManualDeploy(ctx context.Context, req deploy.ManualDe
 			"services", req.Config.Services,
 			"branch", req.Config.Branch,
 			"from_disk", req.FromDisk,
+			"allow_stale_config", req.AllowStaleConfig,
+			"no_build", req.NoBuild,
 			"deploy_id", deployID,
 			"log_file", logFile,
 		)
@@ -99,9 +101,16 @@ func (a *ServerAgent) StartManualDeploy(ctx context.Context, req deploy.ManualDe
 
 		var line string
 		if result.Success {
-			deploy.RecordManualDeployReceipt(req, result.BuiltSHA)
+			deploy.RecordManualDeployReceipt(req, result.BuiltSHA, result.ComposeSHA)
 			setManualDeployStatus(deployID, manualDeployCompleted)
-			line = fmt.Sprintf("DEPLOY COMPLETE: %s (sha=%s)\n", deployID, result.BuiltSHA)
+			shaField := result.BuiltSHA
+			if shaField == "" {
+				shaField = "-" // no-build deploy: no source SHA was built
+			}
+			line = fmt.Sprintf("DEPLOY COMPLETE: %s (sha=%s)\n", deployID, shaField)
+			if result.ComposeSHA != "" {
+				line = fmt.Sprintf("DEPLOY COMPLETE: %s (sha=%s compose@%s)\n", deployID, shaField, deploy.ShortSHA(result.ComposeSHA))
+			}
 		} else {
 			setManualDeployStatus(deployID, manualDeployFailed)
 			line = fmt.Sprintf("DEPLOY FAILED: %s: %s\n", deployID, result.Error)
@@ -141,10 +150,13 @@ func (a *ServerAgent) StartDeploy(ctx context.Context, projectPath string, servi
 	parts = append(parts, "cd "+path)
 
 	if pull {
-		parts = append(parts, "docker compose pull")
+		parts = append(parts, "docker compose -f docker-compose.yml pull")
 	}
 
-	composeUp := "docker compose up -d"
+	// -f pins the compose file: without it compose auto-loads an untracked
+	// docker-compose.override.yml / compose.override.yml in the project dir
+	// (issue #239).
+	composeUp := "docker compose -f docker-compose.yml up -d"
 	if build {
 		composeUp += " --build"
 	}

@@ -228,9 +228,22 @@ func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.D
 	repoName, rc, configured := resolveConfiguredRepo(input)
 	if configured {
 		req := deploy.ManualDeployRequest{
-			Repo:     repoName,
-			Config:   rc,
-			FromDisk: input.FromDisk,
+			Repo:             repoName,
+			Config:           rc,
+			FromDisk:         input.FromDisk,
+			AllowStaleConfig: input.AllowStaleConfig,
+		}
+		// build=false used to be silently ignored on this path — honour it as
+		// `up --no-build` with the current image (compose repos only), or
+		// reject it clearly for the kinds that cannot express "no build".
+		if input.Build != nil && !*input.Build {
+			if input.FromDisk {
+				return "", errors.New("build=false cannot be combined with from_disk — from_disk already means \"build the on-disk tree\"")
+			}
+			if rc.ResolvedKind() != deploy.KindCompose {
+				return "", fmt.Errorf("build=false is not supported for kind=%q repos — only compose repos can recreate from the current image", rc.ResolvedKind())
+			}
+			req.NoBuild = true
 		}
 		result := agent.StartManualDeploy(ctx, req)
 		if !result.Success {
@@ -249,7 +262,7 @@ func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.D
 			// worktree SHA and the deploy-clone check — instead of the old
 			// false "compose SHA-pinned from origin/<branch>" claim (only the
 			// source worktree was pinned; the compose files were not).
-			kindDesc = deploy.ComposeDeployDescription(ctx, rc, input.FromDisk)
+			kindDesc = deploy.ComposeDeployDescription(ctx, req)
 		}
 
 		servicesDesc := strings.Join(rc.Services, ", ")
@@ -261,6 +274,9 @@ func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.D
 			result.DeployID, result.LogFile, result.DeployID)
 		if input.FromDisk {
 			msg = "[DEBUG] " + msg + "\nWARN: from_disk=true — not SHA-pinned; building on-disk working tree."
+		}
+		if input.AllowStaleConfig && !input.FromDisk {
+			msg = "[WARN] " + msg + "\nSTALE CONFIG OVERRIDE — deploy-clone verification skipped (allow_stale_config); compose used as-is on disk."
 		}
 		return msg, nil
 	}

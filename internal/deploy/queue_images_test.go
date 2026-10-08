@@ -34,12 +34,12 @@ func TestComposeImageName_ResolvesViaConfigNotContainers(t *testing.T) {
 	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
 		// `docker compose images --format json <svc>` — container-oriented,
 		// reports the PREVIOUS container's (stale) image. Must be ignored.
-		if len(args) >= 2 && args[1] == "images" {
+		if len(args) >= 2 && composeSub(args) == "images" {
 			return []byte(`[{"Repository":"` + staleRepo + `","Tag":"` + staleTag + `","ContainerName":"oxpulse-chat-stagingprod"}]`), nil
 		}
 		// `docker compose config --format json` — container-independent;
 		// build-only service resolves to the <project>-<svc> default name.
-		if len(args) >= 2 && args[1] == "config" {
+		if len(args) >= 2 && composeSub(args) == "config" {
 			return []byte(`{"name":"krolik-server","services":{"oxpulse-chat-stagingprod":{"build":{"context":"/x"}}}}`), nil
 		}
 		return []byte("{}"), nil
@@ -60,11 +60,11 @@ func TestComposeImageName_ResolvesViaConfigNotContainers(t *testing.T) {
 // back to a container-oriented source that could return a stale image.
 func TestComposeImageName_ConfigEmptyReturnsEmpty(t *testing.T) {
 	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[1] == "images" {
+		if len(args) >= 2 && composeSub(args) == "images" {
 			// A stale container image exists — must NOT be used as a fallback.
 			return []byte(`[{"Repository":"stale-fallback","Tag":"latest","ContainerName":"svc"}]`), nil
 		}
-		if len(args) >= 2 && args[1] == "config" {
+		if len(args) >= 2 && composeSub(args) == "config" {
 			return []byte(`{"name":"krolik-server","services":{}}`), nil // svc absent
 		}
 		return []byte("{}"), nil
@@ -82,7 +82,7 @@ func TestComposeImageName_ConfigEmptyReturnsEmpty(t *testing.T) {
 func TestComposeImageName_GarbageOutputReturnsEmpty(t *testing.T) {
 	t.Run("unparseable output", func(t *testing.T) {
 		withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-			if len(args) >= 2 && args[1] == "config" {
+			if len(args) >= 2 && composeSub(args) == "config" {
 				return []byte("not a valid image ref!!!\n"), nil
 			}
 			return []byte("{}"), nil
@@ -94,7 +94,7 @@ func TestComposeImageName_GarbageOutputReturnsEmpty(t *testing.T) {
 
 	t.Run("invalid image ref", func(t *testing.T) {
 		withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-			if len(args) >= 2 && args[1] == "config" {
+			if len(args) >= 2 && composeSub(args) == "config" {
 				return []byte(`{"name":"p","services":{"svc":{"image":"bad ref!"}}}`), nil
 			}
 			return []byte("{}"), nil
@@ -110,7 +110,7 @@ func TestComposeImageName_GarbageOutputReturnsEmpty(t *testing.T) {
 // loudly, never guess.
 func TestComposeImageName_CommandErrorReturnsEmpty(t *testing.T) {
 	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[1] == "config" {
+		if len(args) >= 2 && composeSub(args) == "config" {
 			return nil, errComposeBoom
 		}
 		return []byte("{}"), nil
@@ -126,7 +126,7 @@ func TestComposeImageName_CommandErrorReturnsEmpty(t *testing.T) {
 func TestComposeImageName_ExplicitImageWithTag(t *testing.T) {
 	const ref = "ghcr.io/anatolykoptev/oxpulse-chat:v1.2.3"
 	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[1] == "config" {
+		if len(args) >= 2 && composeSub(args) == "config" {
 			return []byte(`{"name":"krolik-server","services":{"svc":{"image":"` + ref + `"}}}`), nil
 		}
 		return []byte("{}"), nil
@@ -156,7 +156,7 @@ func TestSnapshotBuiltImages_IgnoresRunningContainer(t *testing.T) {
 	const imgName = "krolik-server-oxpulse-chat-stagingprod:latest"
 
 	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[1] == "config" {
+		if len(args) >= 2 && composeSub(args) == "config" {
 			return []byte(`{"name":"krolik-server","services":{"oxpulse-chat-stagingprod":{"image":"` + imgName + `"}}}`), nil
 		}
 		if len(args) >= 2 && args[0] == "image" && args[1] == "inspect" {
@@ -208,11 +208,11 @@ func TestComposeBuild_ConfigImagesListsDeps_NoFalseFail(t *testing.T) {
 	var inspectedRefs []string
 	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
 		switch {
-		case len(args) >= 3 && args[1] == "config" && args[2] == "--images":
+		case len(args) >= 3 && composeSub(args) == "config" && args[4] == "--images":
 			// Real compose v5.1 output shape for `config --images go-wowa`:
 			// the service's depends_on tree, dep line first.
 			return []byte(depImage + "\n" + svcImage + "\n"), nil
-		case len(args) >= 2 && args[1] == "config":
+		case len(args) >= 2 && composeSub(args) == "config":
 			return []byte(`{"name":"krolik-server","services":{"go-wowa":{"build":{"context":"/home/krolik/src/go-wowa"}},"ox-browser":{"build":{"context":"/home/krolik/src/ox-browser"}}}}`), nil
 		case len(args) >= 2 && args[0] == "image" && args[1] == "inspect":
 			ref := args[len(args)-1]
@@ -247,7 +247,7 @@ func TestComposeBuild_ConfigImagesListsDeps_NoFalseFail(t *testing.T) {
 			Services:    []string{svcName},
 		},
 	}
-	errMsg, builtNow := composeBuild(context.Background(), req, "", "")
+	errMsg, builtNow, _ := composeBuild(context.Background(), req, "", "")
 	if errMsg != "" {
 		t.Fatalf("ISSUE #240 REGRESSION: composeBuild failed a deploy whose image DID change: %s", errMsg)
 	}
@@ -275,9 +275,9 @@ func TestComposeBuild_GenuinelyUnchangedImage_StillFails(t *testing.T) {
 	)
 	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
 		switch {
-		case len(args) >= 3 && args[1] == "config" && args[2] == "--images":
+		case len(args) >= 3 && composeSub(args) == "config" && args[4] == "--images":
 			return []byte(depImage + "\n" + svcImage + "\n"), nil
-		case len(args) >= 2 && args[1] == "config":
+		case len(args) >= 2 && composeSub(args) == "config":
 			return []byte(`{"name":"krolik-server","services":{"go-wowa":{"build":{"context":"/home/krolik/src/go-wowa"}}}}`), nil
 		case len(args) >= 2 && args[0] == "image" && args[1] == "inspect":
 			if args[len(args)-1] == svcImage {
@@ -303,7 +303,7 @@ func TestComposeBuild_GenuinelyUnchangedImage_StillFails(t *testing.T) {
 			Services:    []string{svcName},
 		},
 	}
-	errMsg, builtNow := composeBuild(context.Background(), req, "", "")
+	errMsg, builtNow, _ := composeBuild(context.Background(), req, "", "")
 	if !strings.Contains(errMsg, "no new image") {
 		t.Fatalf("expected 'no new image' failure for a genuinely unchanged image, got errMsg=%q", errMsg)
 	}
@@ -322,9 +322,9 @@ func TestComposeBuild_GenuinelyUnchangedImage_StillFails(t *testing.T) {
 func TestComposeImageName_DepsNoise_ReturnsOwnName(t *testing.T) {
 	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
 		switch {
-		case len(args) >= 3 && args[1] == "config" && args[2] == "--images":
+		case len(args) >= 3 && composeSub(args) == "config" && args[4] == "--images":
 			return []byte("krolik-server-ox-browser\nkrolik-server-go-wowa\n"), nil
-		case len(args) >= 2 && args[1] == "config":
+		case len(args) >= 2 && composeSub(args) == "config":
 			return []byte(`{"name":"krolik-server","services":{"go-wowa":{"build":{"context":"/src/go-wowa"}}}}`), nil
 		}
 		return []byte("{}"), nil
@@ -340,7 +340,7 @@ func TestComposeImageName_DepsNoise_ReturnsOwnName(t *testing.T) {
 func TestComposeImageName_ExplicitImageWinsOverDefault(t *testing.T) {
 	const ref = "ghcr.io/anatolykoptev/oxpulse-chat:v1.2.3"
 	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[1] == "config" {
+		if len(args) >= 2 && composeSub(args) == "config" {
 			return []byte(`{"name":"krolik-server","services":{"svc":{"image":"` + ref + `","build":{"context":"/x"}}}}`), nil
 		}
 		return []byte("{}"), nil
@@ -355,7 +355,7 @@ func TestComposeImageName_ExplicitImageWinsOverDefault(t *testing.T) {
 // than guess a tag (a wrong guess silently inspects a foreign image).
 func TestComposeImageName_NoProjectNameFailsLoud(t *testing.T) {
 	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[1] == "config" {
+		if len(args) >= 2 && composeSub(args) == "config" {
 			return []byte(`{"services":{"svc":{"build":{"context":"/x"}}}}`), nil
 		}
 		return []byte("{}"), nil
@@ -382,7 +382,7 @@ func TestComposeImageName_InactiveProfile_PassesServiceArg(t *testing.T) {
 	const ref = "krolik-server-ox-whisper:latest"
 	var configArgs []string
 	withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[1] == "config" {
+		if len(args) >= 2 && composeSub(args) == "config" {
 			configArgs = append([]string(nil), args...)
 			for _, a := range args {
 				if a == svc {
@@ -415,7 +415,7 @@ func TestComposeImageName_InactiveProfile_PassesServiceArg(t *testing.T) {
 func TestBuiltImageID_MissingImageReturnsEmpty(t *testing.T) {
 	t.Run("name unresolvable", func(t *testing.T) {
 		withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-			if len(args) >= 2 && args[1] == "config" {
+			if len(args) >= 2 && composeSub(args) == "config" {
 				return nil, errComposeBoom
 			}
 			return []byte("{}"), nil
@@ -427,7 +427,7 @@ func TestBuiltImageID_MissingImageReturnsEmpty(t *testing.T) {
 
 	t.Run("tag absent", func(t *testing.T) {
 		withOutputRunnerFn(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-			if len(args) >= 2 && args[1] == "config" {
+			if len(args) >= 2 && composeSub(args) == "config" {
 				return []byte(`{"name":"krolik-server","services":{"svc":{"build":{"context":"/x"}}}}`), nil
 			}
 			if len(args) >= 2 && args[0] == "image" && args[1] == "inspect" {

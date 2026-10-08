@@ -302,7 +302,7 @@ func TestDeployedSHAReceipt_PersistAndLookup(t *testing.T) {
 	ConfigureDeployedSHAPersistence(path)
 	t.Cleanup(func() { ConfigureDeployedSHAPersistence("") })
 
-	recordDeployedSHA("anatolykoptev/x#staging", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	recordDeployedSHA("anatolykoptev/x#staging", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "")
 	if got := lookupDeployedSHA("anatolykoptev/x"); got != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Fatalf("lookup under bare key = %q", got)
 	}

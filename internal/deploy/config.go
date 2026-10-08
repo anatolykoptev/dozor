@@ -259,26 +259,38 @@ type RepoConfig struct {
 
 	// DeployClonePath is the absolute path to the deploy clone whose
 	// docker-compose files dozor reads (compose_path lives here).
-	// When set, dozor fetches origin/<branch> and verifies the clone before
-	// every compose build — fail-closed since issue #239:
+	// When set, dozor fetches origin/<deploy_clone_branch> and verifies the
+	// clone before every compose build — fail-closed since issue #239 — and
+	// re-verifies it (no fetch) before every `docker compose up` so the clone
+	// cannot be dirtied or moved between build and up:
 	//
 	//   - fetch failure → deploy refused, naming the fetch error (the clone
 	//     cannot be verified fresh)
+	//   - detached HEAD → deploy refused (reason "detached")
 	//   - tracked working-tree modifications → deploy refused, naming the
 	//     files — commit or revert the deploy-clone changes and re-deploy
 	//     (untracked files never block)
 	//   - HEAD != origin/<branch> after the pull (diverged history or local
 	//     commits) → deploy refused, naming both SHAs
+	//   - HEAD changed between build and up → deploy refused (reason "moved")
 	//
-	// Refusals bump dozor_deploy_clone_refused_total{repo,reason} and flow
-	// through the normal deploy-failure path. from_disk debug deploys skip
-	// the verification entirely.
+	// Refusals bump dozor_deploy_clone_refused_total{repo,reason}, set
+	// dozor_pending_deploy=1 for the repo, and flow through the normal
+	// deploy-failure path. from_disk debug deploys skip the verification
+	// entirely; server_deploy's allow_stale_config skips it with a WARN +
+	// STALE CONFIG OVERRIDE marker.
 	//
 	// If omitted, no verification is performed (backward-compatible default).
 	//
 	// Example (krolik-server deploy clone):
 	//   deploy_clone_path: /home/krolik/deploy/krolik-server
 	DeployClonePath string `yaml:"deploy_clone_path,omitempty"`
+
+	// DeployCloneBranch is the branch the deploy clone is fetched from and
+	// compared against — default "main". This is NEVER the service repo's
+	// Branch: the deploy clone (e.g. krolik-server) is a different repository
+	// whose branch does not track the triggering repo's branch.
+	DeployCloneBranch string `yaml:"deploy_clone_branch,omitempty"`
 
 	// ImageCache enables build-once-promote: the production image is built
 	// once, tagged by git tree hash, pushed to a registry, and pulled
@@ -431,6 +443,18 @@ func (rc RepoConfig) DebounceWindow() time.Duration {
 	default:
 		return time.Duration(rc.DebounceSeconds) * time.Second
 	}
+}
+
+// deployCloneBranch resolves the branch the deploy clone is fetched from and
+// compared against — DeployCloneBranch or "main". It deliberately ignores the
+// service repo's Branch: the deploy clone is a different repository and its
+// branch does not track the triggering repo's branch (the oxpulse-chat dev →
+// krolik-server main mismatch).
+func (rc RepoConfig) deployCloneBranch() string {
+	if rc.DeployCloneBranch != "" {
+		return rc.DeployCloneBranch
+	}
+	return defaultBranch
 }
 
 // resolvedKind returns the effective deploy kind (defaulting to KindCompose).

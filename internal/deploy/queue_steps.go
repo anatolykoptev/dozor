@@ -120,12 +120,16 @@ func detectDefaultBranch(ctx context.Context, sourcePath string) string { //noli
 //
 // Before building, two additional steps run:
 //  1. If DeployClonePath is set, the deploy clone is fetched and verified
-//     clean at origin/<branch> — a dirty, diverged, or unfetchable clone
-//     REFUSES the deploy (issue #239, fail-closed). Skipped for from_disk
-//     debug deploys, which intentionally build the on-disk tree.
+//     clean at origin/<deploy_clone_branch> — a dirty, detached, diverged, or
+//     unfetchable clone REFUSES the deploy (issue #239, fail-closed). The
+//     verification record (cv) is returned so the caller can re-verify the
+//     clone right before `docker compose up`. Skipped for from_disk debug
+//     deploys, which intentionally build the on-disk tree, and for
+//     allow_stale_config overrides, which log WARN + count a
+//     refused_total{reason="override"} instead.
 //  2. OXPULSE_GIT_SHA and BUILD_TIMESTAMP build-args are injected so
 //     Dockerfiles that declare these ARGs get the correct values baked in.
-func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash string) (errMsg string, builtNow bool) {
+func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash string) (errMsg string, builtNow bool, cv *cloneVerify) {
 	// builtNow reports whether a build actually ran — false on an image-cache
 	// pull HIT (issue #168): pushing the just-pulled image back under the tag
 	// it came from is pure waste, and on a broken registry credential it made
@@ -134,8 +138,18 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	// config. A non-empty return aborts the build through the normal failure
 	// path (BuildResult.Error → Telegram notify on the webhook lane).
 	if req.Config.DeployClonePath != "" && !req.FromDisk {
-		if errMsg := pullDeployClone(ctx, req.Repo, req.Config.DeployClonePath, req.Config.Branch); errMsg != "" {
-			return errMsg, false
+		if req.AllowStaleConfig {
+			// Emergency escape: deploy from the clone as it sits on disk —
+			// no fetch, no pull, no verification. Loud by design.
+			slog.Warn("deploy: STALE CONFIG OVERRIDE — deploy-clone verification skipped by allow_stale_config",
+				"repo", req.Repo, "clone", req.Config.DeployClonePath)
+			DeployCloneRefusedTotal.WithLabelValues(req.Repo, "override").Inc()
+		} else {
+			var refuseMsg string
+			cv, refuseMsg = pullDeployClone(ctx, req)
+			if refuseMsg != "" {
+				return refuseMsg, false, nil
+			}
 		}
 	}
 
@@ -154,7 +168,7 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 			"commit", short(req.CommitSHA),
 		)
 		if errMsg := runPreBuildScript(ctx, req.Config.PreBuildScript, shaDir, req.CommitSHA); errMsg != "" {
-			return errMsg, false
+			return errMsg, false, nil
 		}
 	}
 
@@ -171,13 +185,16 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	// status quo.
 	if treeHash != "" && allServicesCacheable(req) {
 		if tryPullCachedImage(ctx, req, treeHash) {
-			return "", false // cache HIT — nothing built; callers must not re-push
+			return "", false, cv // cache HIT — nothing built; callers must not re-push
 		}
 	}
 
 	imagesBefore := snapshotBuiltImages(ctx, req.Config.ComposePath, req.Config.Services)
 
-	buildArgs := []string{"compose"}
+	// -f <compose file> pins the project file explicitly: compose must never
+	// auto-load an untracked docker-compose.override.yml / compose.override.yml
+	// dropped into the deploy clone (#239).
+	buildArgs := composeArgv(req.Config.ComposePath)
 
 	// Generate a temporary override file that remaps build.context to the worktree.
 	if worktreePath != "" {
@@ -189,14 +206,14 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 			worktreePath,
 		)
 		if err != nil {
-			return fmt.Sprintf("resolve overrides: %v", err), false
+			return fmt.Sprintf("resolve overrides: %v", err), false, nil
 		}
 		overridePath, err := writeBuildContextOverride(overrides)
 		if err != nil {
-			return fmt.Sprintf("compose override: %v", err), false
+			return fmt.Sprintf("compose override: %v", err), false, nil
 		}
 		defer os.Remove(overridePath)
-		buildArgs = append(buildArgs, "-f", "docker-compose.yml", "-f", overridePath)
+		buildArgs = append(buildArgs, "-f", overridePath)
 
 		slog.Info("deploy: build context override",
 			"services", req.Config.Services,
@@ -239,7 +256,7 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	if len(req.Config.BuildArgs) > 0 {
 		tag, err := artifactTagSHA(req.CommitSHA)
 		if err != nil {
-			return fmt.Sprintf("artifact tag derivation: %v", err), false
+			return fmt.Sprintf("artifact tag derivation: %v", err), false, nil
 		}
 		shortSHA12 = tag
 	}
@@ -251,14 +268,14 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	buildArgs = append(buildArgs, req.Config.Services...)
 
 	if errMsg := runBuildWithFullLog(ctx, req, buildArgs); errMsg != "" {
-		return errMsg, false
+		return errMsg, false, nil
 	}
 
 	imagesAfter := snapshotBuiltImages(ctx, req.Config.ComposePath, req.Config.Services)
 	if errMsg := logImageDiff(imagesBefore, imagesAfter, req.Config.Services, req.CommitSHA); errMsg != "" {
-		return errMsg, false
+		return errMsg, false, nil
 	}
-	return "", true
+	return "", true, cv
 }
 
 // buildRunner invokes `docker build` and returns the full combined output.
@@ -324,7 +341,8 @@ func resolveBuildOverrides(
 	services []string,
 	worktreePath string,
 ) ([]BuildOverride, error) {
-	out, err := outputRunner(ctx, composePath, "docker", "compose", "config", "--format", "json")
+	out, err := outputRunner(ctx, composePath, "docker",
+		composeArgv(composePath, "config", "--format", "json")...)
 	if err != nil {
 		return nil, fmt.Errorf("docker compose config: %w", err)
 	}
@@ -412,9 +430,15 @@ func writeBuildContextOverride(overrides []BuildOverride) (string, error) {
 // runCmd truncates output to maxUpOutputLen, which previously masked Docker's
 // real error (e.g. "Container name already in use") behind env-var warnings.
 func runUpWithFullLog(ctx context.Context, req BuildRequest, deployID string) string {
-	upArgs := append(
-		[]string{"compose", "up", "-d", "--no-deps", "--force-recreate"},
-		req.Config.Services...)
+	// -f pins the compose file — an untracked override in the deploy clone
+	// must never silently extend the deploy (#239). --no-build honours
+	// server_deploy's build=false: recreate from the CURRENT image only.
+	upArgs := composeArgv(req.Config.ComposePath, "up", "-d", "--no-deps")
+	if req.NoBuild {
+		upArgs = append(upArgs, "--no-build")
+	}
+	upArgs = append(upArgs, "--force-recreate")
+	upArgs = append(upArgs, req.Config.Services...)
 
 	output, err := upRunner(ctx, req.Config.ComposePath, upArgs)
 	if err == nil {
@@ -444,14 +468,30 @@ func runUpWithFullLog(ctx context.Context, req BuildRequest, deployID string) st
 // composeUp runs docker compose up with retry on transient failure.
 // Each failed attempt dumps the full stderr to a /tmp/dozor-up-*.log file
 // so operators can see the real error (e.g. container conflict) past warnings.
-func composeUp(ctx context.Context, req BuildRequest) string {
+//
+// The deploy clone is RE-VERIFIED before every up attempt (cv comes from
+// composeBuild's pullDeployClone): the build may have finished up to 45
+// minutes ago and deploy-clone-sync can dirty/move the clone in between.
+// A refusal aborts before docker is invoked and returns the refusal message.
+//
+// On success the second return is the deploy clone's verified HEAD SHA — the
+// compose@<sha> the up actually used, for the receipt and notify line. It is
+// empty when no clone verification applies (no deploy_clone_path, from_disk,
+// or allow_stale_config).
+func composeUp(ctx context.Context, req BuildRequest, cv *cloneVerify) (errMsg, composeSHA string) {
 	deployID := short(req.CommitSHA)
 
 	var lastErrMsg string
 	for attempt := 1; attempt <= upMaxRetries; attempt++ {
+		if refuseMsg := verifyDeployCloneForUp(ctx, req.Repo, req.Config.Services, cv); refuseMsg != "" {
+			return refuseMsg, ""
+		}
 		lastErrMsg = runUpWithFullLog(ctx, req, deployID)
 		if lastErrMsg == "" {
-			return ""
+			if cv != nil {
+				return "", cv.headSHA
+			}
+			return "", ""
 		}
 		slog.Warn("deploy: docker up failed, retrying",
 			"attempt", attempt,
@@ -461,16 +501,16 @@ func composeUp(ctx context.Context, req BuildRequest) string {
 		)
 		if attempt < upMaxRetries {
 			if ctx.Err() != nil {
-				return fmt.Sprintf("docker up: context cancelled during retry: %v", lastErrMsg)
+				return fmt.Sprintf("docker up: context cancelled during retry: %v", lastErrMsg), ""
 			}
 			select {
 			case <-ctx.Done():
-				return fmt.Sprintf("docker up: context cancelled during retry: %v", lastErrMsg)
+				return fmt.Sprintf("docker up: context cancelled during retry: %v", lastErrMsg), ""
 			case <-time.After(upRetryDelay):
 			}
 		}
 	}
-	return fmt.Sprintf("docker up (after %d attempts): %v", upMaxRetries, lastErrMsg)
+	return fmt.Sprintf("docker up (after %d attempts): %v", upMaxRetries, lastErrMsg), ""
 }
 
 // pruneOldImages removes dangling images and build cache older than 24h.

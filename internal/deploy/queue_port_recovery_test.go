@@ -40,12 +40,12 @@ func TestExecuteBuild_PortMappingRecoverySuccess(t *testing.T) {
 				return []byte("sha256:0000buildafter\n"), nil
 			}
 			return []byte("sha256:0000buildtest\n"), nil
-		case len(args) >= 2 && args[1] == "config":
+		case len(args) >= 2 && composeSub(args) == "config":
 			// `config --format json`: build-only service (default image name
 			// <project>-<svc> = "proj-svc") AND the port declaration
 			// verifyPortMapping needs.
 			return []byte(`{"name":"proj","services":{"svc":{"build":{"context":"/tmp"},"ports":["8080:8080"]}}}`), nil
-		case len(args) >= 2 && args[1] == "ps":
+		case len(args) >= 2 && composeSub(args) == "ps":
 			psCalls++
 			if psCalls == 1 {
 				// first checkHealth — running, no publishers
@@ -93,7 +93,7 @@ func TestExecuteBuild_PortMappingRecoveryFails(t *testing.T) {
 	// to be explicit). Port mapping recovery uses runCmd → cmdRunner, not upRunner.
 	// So we leave upRunner as the zeroDelays no-op and only fail the cmdRunner recovery call.
 	cmdRunner = func(_ context.Context, _ string, name string, args ...string) error {
-		if name == "docker" && len(args) > 1 && args[1] == "up" {
+		if name == "docker" && composeSub(args) == "up" {
 			// This is the port-mapping recovery force-recreate (not the initial up).
 			return errors.New("recreate failed")
 		}
@@ -102,7 +102,7 @@ func TestExecuteBuild_PortMappingRecoveryFails(t *testing.T) {
 
 	// outputRunner: ps returns running/no publishers; config declares ports → triggers port mapping error
 	outputRunner = func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) > 1 && args[1] == "ps" {
+		if len(args) > 1 && composeSub(args) == "ps" {
 			return []byte(`[{"State":"running","Status":"Up","Publishers":[]}]`), nil
 		}
 		return []byte(`{"services":{"svc":{"ports":["8080:8080"]}}}`), nil

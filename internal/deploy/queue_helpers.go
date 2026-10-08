@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 )
 
 const (
@@ -62,6 +63,23 @@ func defaultUpRunner(ctx context.Context, dir string, args []string) ([]byte, er
 	cmd := exec.CommandContext(ctx, "docker", args...) //nolint:gosec // trusted local config, not shell
 	cmd.Dir = dir
 	return cmd.CombinedOutput()
+}
+
+// composeFilePath returns the absolute path of the compose file every
+// `docker compose` invocation is pinned to.
+func composeFilePath(composePath string) string {
+	return filepath.Join(composePath, "docker-compose.yml")
+}
+
+// composeArgv returns `docker compose` argv explicitly pinned to the deploy
+// clone's compose file: {"compose", "-f", <composePath>/docker-compose.yml,
+// args...}. Passing -f is the guard against Docker Compose's default
+// override-file discovery: an untracked docker-compose.override.yml /
+// compose.override.yml dropped into the clone must never silently extend a
+// verified deploy (issue #239).
+func composeArgv(composePath string, args ...string) []string {
+	argv := []string{"compose", "-f", composeFilePath(composePath)}
+	return append(argv, args...)
 }
 
 func serviceKey(services []string) string {

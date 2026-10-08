@@ -39,6 +39,17 @@ type BuildRequest struct {
 	// operator deliberately builds the on-disk trees, including possibly
 	// uncommitted compose edits (issue #239).
 	FromDisk bool
+	// AllowStaleConfig is the server_deploy allow_stale_config escape
+	// (issue #239): deploy-clone verification (fetch, pull, and every pre-up
+	// re-check) is skipped entirely and the compose files are used as they
+	// sit on disk — WARN-logged and counted under
+	// dozor_deploy_clone_refused_total{reason="override"}. The webhook path
+	// never sets it; it only exists on the explicit manual deploy lane.
+	AllowStaleConfig bool
+	// NoBuild honours server_deploy build=false (compose repos only):
+	// composeUp runs `up --no-build` so the CURRENT image is recreated
+	// instead of building a new one.
+	NoBuild bool
 }
 
 // BuildResult holds the outcome of a build.
@@ -51,6 +62,9 @@ type BuildResult struct {
 	RolledBack     bool              // true if rollback was attempted and succeeded
 	PreviousImages map[string]string // service → image ID before compose up
 	ManualGated    bool              // true when deploy_on=manual held the deploy (artifact ready, not deployed)
+	// ComposeSHA is the deploy clone's verified HEAD — the compose@<sha> the
+	// `up` actually used (#239). Empty when no clone verification applied.
+	ComposeSHA string
 }
 
 // Queue serializes Docker builds: at most ONE build runs at a time across all
@@ -500,11 +514,17 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 	}
 
 	// Durable deployed-SHA receipt for the boot reconciler (issue #174):
-	// record what actually shipped, not what was attempted. ManualGated
+	// record what actually shipped, not what was attempted — including the
+	// deploy-clone SHA the `up` ran against (issue #239). ManualGated
 	// builds are withheld — the pending gauge carries that state, and the
 	// manual deploy path records the SHA itself when it deploys.
 	if result.Success && !result.ManualGated {
-		recordDeployedSHA(req.Repo, req.CommitSHA)
+		recordDeployedSHA(req.Repo, req.CommitSHA, result.ComposeSHA)
+	}
+	// A successful deploy clears the refusal-set pending marker — a refused
+	// deploy stays pending until something actually ships.
+	if result.Success {
+		clearDeployRefusal(req.Repo, req.Config.Services)
 	}
 
 	// Best-effort source-checkout sync, OFF the critical path: advance this
@@ -541,8 +561,12 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 				"⏸️ [%s] Deploy withheld (deploy_on: manual) — run server_deploy to deploy (%s)",
 				services, result.Duration.Round(time.Second)))
 		} else {
-			q.notify(fmt.Sprintf(
-				"✅ [%s] Deployed (%s)", services, result.Duration.Round(time.Second)))
+			msg := fmt.Sprintf(
+				"✅ [%s] Deployed (%s)", services, result.Duration.Round(time.Second))
+			if result.ComposeSHA != "" {
+				msg += fmt.Sprintf(" compose@%s", short(result.ComposeSHA))
+			}
+			q.notify(msg)
 		}
 	} else if result.RolledBack {
 		q.notify(fmt.Sprintf(

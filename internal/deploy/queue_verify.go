@@ -41,7 +41,7 @@ func defaultOutputRunner(ctx context.Context, dir, name string, args ...string) 
 // checkHealth verifies the container is running and its port bindings are present.
 func checkHealth(ctx context.Context, composePath, service string) error {
 	output, err := outputRunner(ctx, composePath,
-		"docker", "compose", "ps", "--format", "json", service)
+		"docker", composeArgv(composePath, "ps", "--format", "json", service)...)
 	if err != nil {
 		return fmt.Errorf("check status: %w", err)
 	}
@@ -78,7 +78,7 @@ func checkHealth(ctx context.Context, composePath, service string) error {
 // block deploys unnecessarily.
 func verifyPortMapping(ctx context.Context, composePath, service string, publishers []portPublisher) error {
 	cfgOut, cfgErr := outputRunner(ctx, composePath,
-		"docker", "compose", "config", "--format", "json")
+		"docker", composeArgv(composePath, "config", "--format", "json")...)
 	if cfgErr != nil {
 		return nil // can't verify — don't block deploy
 	}

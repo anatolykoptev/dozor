@@ -124,10 +124,16 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 	}
 	defer worktreeCleanup()
 
-	if errMsg, builtNow := composeBuild(ctx, req, worktreePath, treeHash); errMsg != "" {
+	// cv carries the build-time deploy-clone verification record to the
+	// pre-up re-check: the clone must not be dirty/detached/moved when the
+	// up actually runs (#239 — the check in composeBuild alone left a
+	// ~45-minute window for the clone to go stale under the deploy).
+	errMsg, builtNow, cv := composeBuild(ctx, req, worktreePath, treeHash)
+	if errMsg != "" {
 		result.Error = errMsg
 		return result
-	} else if treeHash != "" && builtNow {
+	}
+	if treeHash != "" && builtNow {
 		pushCachedImages(ctx, req, treeHash)
 	}
 
@@ -155,11 +161,13 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 
 	result.PreviousImages = snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
 
-	if errMsg := composeUp(ctx, req); errMsg != "" {
-		result.Error = errMsg
-		q.tryRollback(ctx, &result, req.Config.ComposePath)
+	upErr, composeSHA := composeUp(ctx, req, cv)
+	if upErr != "" {
+		result.Error = upErr
+		q.tryRollback(ctx, &result, req, cv)
 		return result
 	}
+	result.ComposeSHA = composeSHA
 
 	// Step 4: health check (brief wait + verify running + port mapping)
 	time.Sleep(healthWait)
@@ -170,30 +178,38 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 					"service", svc,
 					"error", err,
 				)
-				// One targeted force-recreate attempt
-				recreateArgs := []string{"compose", "up", "-d", "--no-deps", "--force-recreate", svc}
+				// The port-recovery `up` is a compose up — re-verify the
+				// clone first, same as the main up (#239).
+				if refuseMsg := verifyDeployCloneForUp(ctx, req.Repo, req.Config.Services, cv); refuseMsg != "" {
+					result.Error = refuseMsg
+					q.tryRollback(ctx, &result, req, cv)
+					return result
+				}
+				// One targeted force-recreate attempt — -f pins the compose
+				// file against override auto-load (#239).
+				recreateArgs := composeArgv(req.Config.ComposePath, "up", "-d", "--no-deps", "--force-recreate", svc)
 				if rerr := runCmd(ctx, req.Config.ComposePath, "docker", recreateArgs...); rerr != nil {
 					result.Error = fmt.Sprintf("port recovery %s: %v (original: %v)", svc, rerr, err)
-					q.tryRollback(ctx, &result, req.Config.ComposePath)
+					q.tryRollback(ctx, &result, req, cv)
 					return result
 				}
 				time.Sleep(portRecoveryWait)
 				if err2 := checkHealth(ctx, req.Config.ComposePath, svc); err2 != nil {
 					result.Error = fmt.Sprintf("health check %s after port recovery: %v", svc, err2)
-					q.tryRollback(ctx, &result, req.Config.ComposePath)
+					q.tryRollback(ctx, &result, req, cv)
 					return result
 				}
 				continue // recovery succeeded
 			}
 			result.Error = fmt.Sprintf("health check %s: %v", svc, err)
-			q.tryRollback(ctx, &result, req.Config.ComposePath)
+			q.tryRollback(ctx, &result, req, cv)
 			return result
 		}
 	}
 
 	if err := smokeTest(ctx, req.Config.SmokeURL); err != nil {
 		result.Error = fmt.Sprintf("smoke test: %v", err)
-		q.tryRollback(ctx, &result, req.Config.ComposePath)
+		q.tryRollback(ctx, &result, req, cv)
 		return result
 	}
 
@@ -205,11 +221,14 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 }
 
 // tryRollback attempts to restore services to previous images on deploy failure.
-func (q *Queue) tryRollback(ctx context.Context, result *BuildResult, composePath string) {
+// cv threads the build-time clone verification into the rollback's own
+// `docker compose up` — a refused clone means the rollback itself must not
+// run from stale config; the current container is left running.
+func (q *Queue) tryRollback(ctx context.Context, result *BuildResult, req BuildRequest, cv *cloneVerify) {
 	if len(result.PreviousImages) == 0 {
 		return
 	}
-	if err := rollbackImages(ctx, composePath, result.Services, result.PreviousImages); err != nil {
+	if err := rollbackImages(ctx, req, result.PreviousImages, cv); err != nil {
 		result.Error += fmt.Sprintf(" | rollback also failed: %v", err)
 		return
 	}

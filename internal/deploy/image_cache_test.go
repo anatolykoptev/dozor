@@ -365,7 +365,7 @@ func TestComposeBuild_PullHitSkipsBuild(t *testing.T) {
 		},
 	}
 
-	errMsg, _ := composeBuild(context.Background(), req, "/fake/worktree", treeHash)
+	errMsg, _, _ := composeBuild(context.Background(), req, "/fake/worktree", treeHash)
 	if errMsg != "" {
 		t.Fatalf("composeBuild: unexpected error: %s", errMsg)
 	}
@@ -408,7 +408,7 @@ func TestComposeBuild_PullMissBuilds(t *testing.T) {
 		},
 	}
 
-	errMsg, _ := composeBuild(context.Background(), req, "/fake/worktree", treeHash)
+	errMsg, _, _ := composeBuild(context.Background(), req, "/fake/worktree", treeHash)
 	if errMsg != "" {
 		t.Fatalf("composeBuild: unexpected error: %s", errMsg)
 	}
@@ -448,7 +448,7 @@ func TestComposeBuild_NoImageCache_BuildsAsBefore(t *testing.T) {
 		},
 	}
 
-	errMsg, _ := composeBuild(context.Background(), req, "/fake/worktree", "someTreeHash")
+	errMsg, _, _ := composeBuild(context.Background(), req, "/fake/worktree", "someTreeHash")
 	if errMsg != "" {
 		t.Fatalf("composeBuild: unexpected error: %s", errMsg)
 	}
@@ -789,7 +789,7 @@ func TestPushCachedImages_SubsetOnlyPushesCacheable(t *testing.T) {
 	withOutputRunner(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
 		// `docker compose config --format json` — every requested service
 		// resolves to its <project>-<svc> default image name.
-		if len(args) >= 2 && args[1] == "config" {
+		if len(args) >= 2 && composeSub(args) == "config" {
 			return []byte(`{"name":"krolik-server","services":{"oxpulse-chat-staging":{"build":{"context":"/x"}},"oxpulse-chat-stagingprod":{"build":{"context":"/x"}}}}`), nil
 		}
 		return []byte("{}"), nil

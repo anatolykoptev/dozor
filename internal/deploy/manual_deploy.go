@@ -23,13 +23,28 @@ type ManualDeployRequest struct {
 	// on-disk source clone as-is. Intended for local debugging only.
 	// Always log a WARN when this flag is set so operators can tell it apart.
 	FromDisk bool
+	// AllowStaleConfig, when true, skips deploy-clone verification entirely
+	// (server_deploy allow_stale_config — issue #239): no fetch, no pull, no
+	// pre-up re-check; the compose files are used as they sit on disk. The
+	// deploy proceeds with a WARN + override counter + a
+	// "STALE CONFIG OVERRIDE" marker in the reply.
+	AllowStaleConfig bool
+	// NoBuild honours server_deploy build=false (compose repos only): skip
+	// the worktree build entirely and run `up --no-build`, recreating
+	// services from the CURRENT image — the compose file still comes from
+	// the (verified) deploy clone, so this is the fast path for a
+	// config-only change. No receipt SHA is advanced.
+	NoBuild bool
 }
 
 // ManualDeployResult is returned synchronously from ExecuteManualDeploy.
 type ManualDeployResult struct {
 	Success  bool
-	BuiltSHA string // short SHA of the commit that was actually built
+	BuiltSHA string // short SHA of the commit that was actually built; empty on a no-build deploy
 	Error    string
+	// ComposeSHA is the deploy clone's verified HEAD the `up` ran against
+	// (compose@<sha>, #239). Empty when no clone verification applied.
+	ComposeSHA string
 }
 
 // gitManualFetchRunner wraps the git fetch step for the manual path.
@@ -109,12 +124,17 @@ func defaultGitManualOriginSHARunner(ctx context.Context, dir, branch string) (s
 // temp file — see StartManualDeploy in internal/engine/deploy.go.
 func ExecuteManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDeployResult {
 	result := executeManualDeploy(ctx, req)
-	if result.Success && req.Config.DeployOn == deployOnManual {
-		setPendingDeploy(req.Repo, req.Config.Services, 0)
-		slog.Info("deploy/manual: pending-deploy gauge cleared (server_deploy completed)",
-			"repo", req.Repo,
-			"services", req.Config.Services,
-		)
+	if result.Success {
+		if req.Config.DeployOn == deployOnManual {
+			setPendingDeploy(req.Repo, req.Config.Services, 0)
+			slog.Info("deploy/manual: pending-deploy gauge cleared (server_deploy completed)",
+				"repo", req.Repo,
+				"services", req.Config.Services,
+			)
+		}
+		// A successful manual deploy also clears a refusal-set pending marker
+		// on repos of ANY deploy_on — the refused deploy has now shipped.
+		clearDeployRefusal(req.Repo, req.Config.Services)
 	}
 	return result
 }
@@ -157,15 +177,19 @@ func executeManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 		}
 		// from_disk builds must never push to the image cache (no worktree,
 		// no treeHash) — the push stays gated on builtNow for clarity.
-		if errMsg, _ := composeBuild(ctx, buildReq, "", ""); errMsg != "" {
+		if errMsg, _, _ := composeBuild(ctx, buildReq, "", ""); errMsg != "" {
 			ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "failure").Inc()
 			result.Error = errMsg
 			return result
 		}
-		if errMsg := composeUp(ctx, buildReq); errMsg != "" {
+		// from_disk verifies nothing — the clone check is skipped by design,
+		// so no verification record exists to thread to composeUp.
+		if errMsg, composeSHA := composeUp(ctx, buildReq, nil); errMsg != "" {
 			ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "failure").Inc()
 			result.Error = errMsg
 			return result
+		} else {
+			result.ComposeSHA = composeSHA
 		}
 		result.BuiltSHA = resolveGitSHA(ctx, sourcePath)
 		ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "success").Inc()
@@ -174,6 +198,14 @@ func executeManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 	}
 
 	// --- Kind-aware dispatch (mirrors queue_build.go executeBuild) ---
+
+	if req.NoBuild {
+		if req.Config.resolvedKind() != KindCompose {
+			result.Error = "build=false is only supported for compose repos — binary/static deploys always build"
+			return result
+		}
+		return executeManualNoBuildDeploy(ctx, req)
+	}
 
 	switch req.Config.resolvedKind() {
 	case KindStatic:
@@ -184,6 +216,54 @@ func executeManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 
 	// KindCompose: SHA-pinned from origin/<branch>.
 	return executeManualComposeDeploy(ctx, req, branch, sourcePath)
+}
+
+// executeManualNoBuildDeploy handles server_deploy build=false on a compose
+// repo: skip the source fetch, worktree, and `compose build` entirely, and
+// recreate services from the CURRENT image via `up --no-build`. The compose
+// file still comes from the deploy clone, so the clone verification runs
+// exactly as for a built deploy (unless allow_stale_config opts out). No
+// deployed-SHA receipt is advanced — nothing was built.
+func executeManualNoBuildDeploy(ctx context.Context, req ManualDeployRequest) ManualDeployResult {
+	result := ManualDeployResult{}
+	ManualDeployTotal.WithLabelValues(req.Repo, "no_build", "started").Inc()
+
+	// Verify the deploy clone: the compose file `up` reads comes from it.
+	// pullDeployClone does the fetch+verify and returns the baseline record;
+	// composeUp re-verifies the clone again right before running (#239).
+	var cv *cloneVerify
+	if req.Config.DeployClonePath != "" {
+		if req.AllowStaleConfig {
+			slog.Warn("deploy: STALE CONFIG OVERRIDE — deploy-clone verification skipped by allow_stale_config",
+				"repo", req.Repo, "clone", req.Config.DeployClonePath)
+			DeployCloneRefusedTotal.WithLabelValues(req.Repo, "override").Inc()
+		} else {
+			var refuseMsg string
+			cv, refuseMsg = pullDeployClone(ctx, BuildRequest{Repo: req.Repo, Config: req.Config})
+			if refuseMsg != "" {
+				ManualDeployTotal.WithLabelValues(req.Repo, "no_build", "failure").Inc()
+				result.Error = refuseMsg
+				return result
+			}
+		}
+	}
+
+	buildReq := BuildRequest{
+		Repo:             req.Repo,
+		Config:           req.Config,
+		AllowStaleConfig: req.AllowStaleConfig,
+		NoBuild:          true,
+	}
+	errMsg, composeSHA := composeUp(ctx, buildReq, cv)
+	if errMsg != "" {
+		ManualDeployTotal.WithLabelValues(req.Repo, "no_build", "failure").Inc()
+		result.Error = errMsg
+		return result
+	}
+	result.ComposeSHA = composeSHA
+	ManualDeployTotal.WithLabelValues(req.Repo, "no_build", "success").Inc()
+	result.Success = true
+	return result
 }
 
 // executeManualStaticDeploy handles KindStatic manual deploys:
@@ -379,9 +459,10 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 	// treeHash enables the image-cache pull-before-build path (same as the
 	// webhook path's executeBuild → composeBuild).
 	buildReq := BuildRequest{
-		Repo:      req.Repo,
-		CommitSHA: resolveGitFullSHA(ctx, worktreePath), // FULL 40-char SHA — matches webhook lane's CommitSHA
-		Config:    req.Config,
+		Repo:             req.Repo,
+		CommitSHA:        resolveGitFullSHA(ctx, worktreePath), // FULL 40-char SHA — matches webhook lane's CommitSHA
+		Config:           req.Config,
+		AllowStaleConfig: req.AllowStaleConfig,
 	}
 	result.BuiltSHA = buildReq.CommitSHA
 
@@ -405,7 +486,7 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 		defer release()
 	}
 
-	errMsg, builtNow := composeBuild(ctx, buildReq, worktreePath, treeHash)
+	errMsg, builtNow, cv := composeBuild(ctx, buildReq, worktreePath, treeHash)
 	if errMsg != "" {
 		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
 		result.Error = errMsg
@@ -422,12 +503,15 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 		pushCachedImages(ctx, buildReq, treeHash)
 	}
 
-	// Step 5: bring containers up.
-	if errMsg := composeUp(ctx, buildReq); errMsg != "" {
+	// Step 5: bring containers up — the deploy clone is re-verified right
+	// before the up against the build-time baseline cv (#239).
+	upErr, composeSHA := composeUp(ctx, buildReq, cv)
+	if upErr != "" {
 		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
-		result.Error = errMsg
+		result.Error = upErr
 		return result
 	}
+	result.ComposeSHA = composeSHA
 
 	ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "success").Inc()
 	result.Success = true
@@ -437,14 +521,16 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 // ComposeDeployDescription summarises for the server_deploy response what a
 // compose-kind manual deploy actually pins and verifies (issue #239): the
 // source worktree is pinned to origin/<branch>, and — when a deploy clone is
-// configured — the clone must be clean at origin/<clone-branch> or the deploy
-// is refused. The SHAs are the currently-known remote-tracking values (the
-// deploy re-fetches before building). When fromDisk is set or no deploy clone
-// is configured, nothing about the compose files is verified — the message
-// says so explicitly instead of repeating the old false "SHA-pinned" claim.
-func ComposeDeployDescription(ctx context.Context, rc RepoConfig, fromDisk bool) string {
-	if fromDisk {
-		return "compose build of the on-disk working tree (from_disk) — nothing pinned, nothing verified"
+// configured — the clone must be clean at origin/<deploy_clone_branch> or the
+// deploy is refused. The SHAs are the currently-known remote-tracking values
+// (the deploy re-fetches before building). When from_disk is set, or no
+// deploy clone is configured, or the operator passed allow_stale_config,
+// nothing about the compose files is verified — the message says so
+// explicitly instead of repeating the old false "SHA-pinned" claim.
+func ComposeDeployDescription(ctx context.Context, req ManualDeployRequest) string {
+	rc := req.Config
+	if req.FromDisk {
+		return "compose build of the on-disk working tree (from_disk) — nothing verified (from_disk)"
 	}
 	branch := rc.Branch
 	if branch == "" {
@@ -456,17 +542,25 @@ func ComposeDeployDescription(ctx context.Context, rc RepoConfig, fromDisk bool)
 			srcSHA = ShortSHA(s)
 		}
 	}
-	if rc.DeployClonePath == "" {
-		return fmt.Sprintf("compose: source worktree pinned to origin/%s@%s; no deploy_clone_path configured — compose files NOT verified",
-			branch, srcSHA)
+	srcDesc := fmt.Sprintf("source pinned at origin/%s@%s", branch, srcSHA)
+	if req.NoBuild {
+		srcDesc = "no build (build=false) — up --no-build recreates services from the CURRENT image; no source pinned"
 	}
-	cloneBranch := resolveDeployCloneBranch(ctx, rc.DeployClonePath, branch)
-	cloneSHA := "unknown"
-	if s, err := gitManualOriginSHARunner(ctx, rc.DeployClonePath, cloneBranch); err == nil {
-		cloneSHA = ShortSHA(s)
+	cloneDesc := "no deploy_clone_path configured — compose files NOT verified"
+	if rc.DeployClonePath != "" {
+		if req.AllowStaleConfig {
+			cloneDesc = "STALE CONFIG OVERRIDE — deploy-clone verification skipped (allow_stale_config); compose used as-is on disk"
+		} else {
+			cloneBranch := rc.deployCloneBranch()
+			cloneSHA := "unknown"
+			if s, err := gitManualOriginSHARunner(ctx, rc.DeployClonePath, cloneBranch); err == nil {
+				cloneSHA = ShortSHA(s)
+			}
+			cloneDesc = fmt.Sprintf("compose verified at origin/%s@%s (deploy refused if dirty, detached, or moved)",
+				cloneBranch, cloneSHA)
+		}
 	}
-	return fmt.Sprintf("compose: source worktree pinned to origin/%s@%s; deploy clone verified clean at origin/%s@%s (deploy refused if dirty or diverged)",
-		branch, srcSHA, cloneBranch, cloneSHA)
+	return "compose: " + srcDesc + "; " + cloneDesc
 }
 
 // gitPrepareBranch creates a detached worktree at origin/<branch> in the
