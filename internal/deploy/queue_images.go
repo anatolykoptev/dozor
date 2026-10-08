@@ -290,7 +290,7 @@ func rollbackImages(ctx context.Context, req BuildRequest, previousImages map[st
 		// The rollback up is a compose up — re-verify the clone before any
 		// retag/recreate so a dirty/moved clone can never drive a stale
 		// rollback. Leave the running container untouched on refusal.
-		if refuseMsg := verifyDeployCloneForUp(ctx, req.Repo, req.Config.Services, cv); refuseMsg != "" {
+		if refuseMsg, _ := verifyDeployCloneForUp(ctx, req.Repo, req.Config.Services, cv); refuseMsg != "" {
 			slog.Error("deploy: rollback refused — deploy clone failed re-verification; current container left running",
 				"repo", req.Repo, "service", svc, "reason", refuseMsg)
 			return fmt.Errorf("rollback %s refused: %s", svc, refuseMsg)

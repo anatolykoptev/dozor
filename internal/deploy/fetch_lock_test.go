@@ -61,9 +61,12 @@ func setupFetchRaceFixture(t *testing.T) string {
 // all but the first lose the ref race ("cannot lock ref: is at X but expected
 // Y"). With the per-directory file lock, fetches are serialised and all succeed.
 //
-// This test calls defaultGitFetchRunner — the production fetch function. Before
-// the lock is applied, the ref race makes some fetches fail (RED). After the
-// lock, all succeed (GREEN).
+// The lock is caller-owned: every fetch call site wraps its sequence in
+// withFetchLock (pullDeployClone holds it over the whole fetch → rev-parse →
+// merge, the source_sync/webhook callers wrap the bare fetch). This test
+// exercises the real git fetch under that wrapper — before the lock is
+// applied, the ref race makes some fetches fail (RED); after, all succeed
+// (GREEN).
 func TestFetchLock_SerialisesConcurrentFetches(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test skipped with -short")
@@ -83,7 +86,9 @@ func TestFetchLock_SerialisesConcurrentFetches(t *testing.T) {
 			defer done.Done()
 			ready.Done()
 			<-start // barrier: all fetchers start simultaneously
-			errs[idx] = defaultGitFetchRunner(context.Background(), clone, "main")
+			errs[idx] = withFetchLock(context.Background(), clone, func() error {
+				return defaultGitFetchRunner(context.Background(), clone, "main")
+			})
 		}(i)
 	}
 	ready.Wait()

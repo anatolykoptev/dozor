@@ -168,23 +168,46 @@ var (
 	// #239 — a dirty or diverged clone must never silently serve stale
 	// compose files to docker compose up again).
 	// reason label values:
-	//   "fetch_error" — git fetch origin/<branch> failed (or a git read of the
-	//                   clone failed — the clone is unverifiable; same
-	//                   fail-closed class)
-	//   "dirty"       — tracked working-tree modifications present; the refusal
-	//                   names the files and tells the operator to commit or
-	//                   revert the deploy-clone changes
-	//   "diverged"    — HEAD != origin/<branch> after the pull attempt (ff
-	//                   failed, diverged history, or local commits); the
-	//                   refusal names both SHAs
+	//   "fetch_error"  — git fetch origin/<branch> failed, or a git read of
+	//                    the clone failed — the clone is unverifiable; same
+	//                    fail-closed class
+	//   "dirty"        — tracked working-tree modifications present; the refusal
+	//                    names the files and tells the operator to commit or
+	//                    revert the deploy-clone changes
+	//   "detached"     — HEAD is detached; no branch head to compare
+	//   "wrong_branch" — the clone's checked-out branch is not the configured
+	//                    deploy_clone_branch (a branch switch belongs to the
+	//                    operator, never silently served)
+	//   "diverged"     — HEAD != the fetched origin/<branch> sha after the
+	//                    ff-only merge attempt (diverged history, local commits,
+	//                    or an untracked-file collision); names both SHAs and
+	//                    the merge error
+	//   "moved"        — pre-up re-check: HEAD is not at the clone's local
+	//                    origin/<branch> ref, or is not a descendant of the
+	//                    build-verified commit (a legitimate forward
+	//                    fast-forward to a NEWER origin IS accepted)
+	//
+	// allow_stale_config overrides are NOT counted here — an override is not
+	// a refusal; see dozor_deploy_clone_override_total.
 	//
 	// Any non-zero rate means deploys are being refused — reconcile the named
 	// deploy clone: git -C <deploy_clone_path> status, commit or revert, and
 	// re-trigger the deploy.
 	DeployCloneRefusedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_deploy_clone_refused_total",
-		Help: "Compose deploys refused because the deploy clone could not be verified clean at origin/<branch> (#239), by reason.",
+		Help: "Compose deploys refused because the deploy clone could not be verified clean at origin/<branch> (#239), by reason (fetch_error|dirty|detached|wrong_branch|diverged|moved).",
 	}, []string{"repo", "reason"})
+
+	// DeployCloneOverrideTotal counts allow_stale_config overrides — an
+	// operator's explicit opt-out of deploy-clone verification (issue #239).
+	// An override is NOT a refusal (nothing was verified to refuse), so it
+	// keeps its own counter and out of dozor_deploy_clone_refused_total's
+	// alertable signal. A non-zero rate means someone deployed with compose
+	// files as they sat on disk — audit, not alert.
+	DeployCloneOverrideTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_deploy_clone_override_total",
+		Help: "Deploys that ran with allow_stale_config, skipping deploy-clone verification entirely (#239), by repo.",
+	}, []string{"repo"})
 
 	// ManualDeployTotal counts server_deploy MCP tool invocations (not webhook-driven).
 	// Labels:

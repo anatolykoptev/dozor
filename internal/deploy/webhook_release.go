@@ -97,7 +97,12 @@ func releaseChangedFiles(ctx context.Context, rc *RepoConfig, repo, targetCommit
 	if branch == "" {
 		branch = "main"
 	}
-	if err := gitFetchRunner(ctx, dir, branch); err != nil {
+	// gitFetchRunner itself does not lock — the caller owns the fetch-lock
+	// scope (pullDeployClone holds one across fetch→merge; a standalone fetch
+	// wraps the single call).
+	if err := withFetchLock(ctx, dir, func() error {
+		return gitFetchRunner(ctx, dir, branch)
+	}); err != nil {
 		slog.Warn("deploy/webhook: release diff source fetch failed — building conservatively",
 			"dir", dir, "branch", branch, "target", targetCommitish, "error", err)
 		ReleaseDiffResolutionTotal.WithLabelValues(repo, "fetch_failed").Inc()

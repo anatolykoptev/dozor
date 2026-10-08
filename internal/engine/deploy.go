@@ -150,13 +150,12 @@ func (a *ServerAgent) StartDeploy(ctx context.Context, projectPath string, servi
 	parts = append(parts, "cd "+path)
 
 	if pull {
-		parts = append(parts, "docker compose -f docker-compose.yml pull")
+		parts = append(parts, "docker compose pull")
 	}
 
-	// -f pins the compose file: without it compose auto-loads an untracked
-	// docker-compose.override.yml / compose.override.yml in the project dir
-	// (issue #239).
-	composeUp := "docker compose -f docker-compose.yml up -d"
+	// Legacy ad-hoc path (unconfigured repos only): keep the unpinned argv —
+	// no -f, so projects using compose.yaml or docker-compose.yaml work.
+	composeUp := "docker compose up -d"
 	if build {
 		composeUp += " --build"
 	}

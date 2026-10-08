@@ -227,23 +227,9 @@ func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.D
 	// deploy-repos.yaml config so we can use the SHA-pinned pipeline.
 	repoName, rc, configured := resolveConfiguredRepo(input)
 	if configured {
-		req := deploy.ManualDeployRequest{
-			Repo:             repoName,
-			Config:           rc,
-			FromDisk:         input.FromDisk,
-			AllowStaleConfig: input.AllowStaleConfig,
-		}
-		// build=false used to be silently ignored on this path — honour it as
-		// `up --no-build` with the current image (compose repos only), or
-		// reject it clearly for the kinds that cannot express "no build".
-		if input.Build != nil && !*input.Build {
-			if input.FromDisk {
-				return "", errors.New("build=false cannot be combined with from_disk — from_disk already means \"build the on-disk tree\"")
-			}
-			if rc.ResolvedKind() != deploy.KindCompose {
-				return "", fmt.Errorf("build=false is not supported for kind=%q repos — only compose repos can recreate from the current image", rc.ResolvedKind())
-			}
-			req.NoBuild = true
+		req, reqErr := manualDeployRequest(repoName, rc, input)
+		if reqErr != nil {
+			return "", reqErr
 		}
 		result := agent.StartManualDeploy(ctx, req)
 		if !result.Success {
@@ -303,6 +289,34 @@ func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.D
 	}
 	return fmt.Sprintf("Deploy started (legacy on-disk — path not in deploy-repos.yaml).\nID: %s\nLog: %s\n\nCheck status: server_deploy({deploy_id: %q})\nVerify health: server_deploy({action: \"health\"})",
 		result.DeployID, result.LogFile, result.DeployID), nil
+}
+
+// manualDeployRequest maps a DeployInput to the ManualDeployRequest for the
+// configured-repo path — the field wiring (from_disk, allow_stale_config,
+// build=false → NoBuild) lives here, as a pure function, so it is directly
+// testable: a dropped mapping used to stay green because nothing asserted it
+// (#239 review).
+//
+// build=false used to be silently ignored on this path — it is honoured as
+// `up --no-build` with the current image (compose repos only), or rejected
+// clearly for from_disk and the kinds that cannot express "no build".
+func manualDeployRequest(repoName string, rc deploy.RepoConfig, input engine.DeployInput) (deploy.ManualDeployRequest, error) {
+	req := deploy.ManualDeployRequest{
+		Repo:             repoName,
+		Config:           rc,
+		FromDisk:         input.FromDisk,
+		AllowStaleConfig: input.AllowStaleConfig,
+	}
+	if input.Build != nil && !*input.Build {
+		if input.FromDisk {
+			return req, errors.New("build=false cannot be combined with from_disk — from_disk already means \"build the on-disk tree\"")
+		}
+		if rc.ResolvedKind() != deploy.KindCompose {
+			return req, fmt.Errorf("build=false is not supported for kind=%q repos — only compose repos can recreate from the current image", rc.ResolvedKind())
+		}
+		req.NoBuild = true
+	}
+	return req, nil
 }
 
 // resolveConfiguredRepo attempts to find a deploy-repos.yaml entry whose

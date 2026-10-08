@@ -43,7 +43,7 @@ type BuildRequest struct {
 	// (issue #239): deploy-clone verification (fetch, pull, and every pre-up
 	// re-check) is skipped entirely and the compose files are used as they
 	// sit on disk — WARN-logged and counted under
-	// dozor_deploy_clone_refused_total{reason="override"}. The webhook path
+	// dozor_deploy_clone_override_total. The webhook path
 	// never sets it; it only exists on the explicit manual deploy lane.
 	AllowStaleConfig bool
 	// NoBuild honours server_deploy build=false (compose repos only):

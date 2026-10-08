@@ -124,7 +124,11 @@ func defaultGitManualOriginSHARunner(ctx context.Context, dir, branch string) (s
 // temp file — see StartManualDeploy in internal/engine/deploy.go.
 func ExecuteManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDeployResult {
 	result := executeManualDeploy(ctx, req)
-	if result.Success {
+	if result.Success && result.BuiltSHA != "" {
+		// The clears are gated on a SHA having been BUILT: a build=false
+		// (up --no-build) deploy ships no new image, so the "deploy owed"
+		// signal must stay set — clearing it would silently declare the
+		// owed release deployed when only the CURRENT image was recreated.
 		if req.Config.DeployOn == deployOnManual {
 			setPendingDeploy(req.Repo, req.Config.Services, 0)
 			slog.Info("deploy/manual: pending-deploy gauge cleared (server_deploy completed)",
@@ -184,7 +188,7 @@ func executeManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDep
 		}
 		// from_disk verifies nothing — the clone check is skipped by design,
 		// so no verification record exists to thread to composeUp.
-		if errMsg, composeSHA := composeUp(ctx, buildReq, nil); errMsg != "" {
+		if errMsg, composeSHA, _ := composeUp(ctx, buildReq, nil); errMsg != "" {
 			ManualDeployTotal.WithLabelValues(req.Repo, "from_disk", "failure").Inc()
 			result.Error = errMsg
 			return result
@@ -236,7 +240,7 @@ func executeManualNoBuildDeploy(ctx context.Context, req ManualDeployRequest) Ma
 		if req.AllowStaleConfig {
 			slog.Warn("deploy: STALE CONFIG OVERRIDE — deploy-clone verification skipped by allow_stale_config",
 				"repo", req.Repo, "clone", req.Config.DeployClonePath)
-			DeployCloneRefusedTotal.WithLabelValues(req.Repo, "override").Inc()
+			DeployCloneOverrideTotal.WithLabelValues(req.Repo).Inc()
 		} else {
 			var refuseMsg string
 			cv, refuseMsg = pullDeployClone(ctx, BuildRequest{Repo: req.Repo, Config: req.Config})
@@ -254,7 +258,7 @@ func executeManualNoBuildDeploy(ctx context.Context, req ManualDeployRequest) Ma
 		AllowStaleConfig: req.AllowStaleConfig,
 		NoBuild:          true,
 	}
-	errMsg, composeSHA := composeUp(ctx, buildReq, cv)
+	errMsg, composeSHA, _ := composeUp(ctx, buildReq, cv)
 	if errMsg != "" {
 		ManualDeployTotal.WithLabelValues(req.Repo, "no_build", "failure").Inc()
 		result.Error = errMsg
@@ -505,7 +509,7 @@ func executeManualComposeDeploy(ctx context.Context, req ManualDeployRequest, br
 
 	// Step 5: bring containers up — the deploy clone is re-verified right
 	// before the up against the build-time baseline cv (#239).
-	upErr, composeSHA := composeUp(ctx, buildReq, cv)
+	upErr, composeSHA, _ := composeUp(ctx, buildReq, cv)
 	if upErr != "" {
 		ManualDeployTotal.WithLabelValues(req.Repo, "sha_pinned", "failure").Inc()
 		result.Error = upErr
@@ -556,7 +560,9 @@ func ComposeDeployDescription(ctx context.Context, req ManualDeployRequest) stri
 			if s, err := gitManualOriginSHARunner(ctx, rc.DeployClonePath, cloneBranch); err == nil {
 				cloneSHA = ShortSHA(s)
 			}
-			cloneDesc = fmt.Sprintf("compose verified at origin/%s@%s (deploy refused if dirty, detached, or moved)",
+			// The verification runs asynchronously inside the deploy — this
+			// synchronous reply must not claim it already happened.
+			cloneDesc = fmt.Sprintf("compose will be verified against origin/%s@%s (deploy refused if dirty, detached, moved, or on the wrong branch)",
 				cloneBranch, cloneSHA)
 		}
 	}

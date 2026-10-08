@@ -43,7 +43,7 @@ type DeployInput struct {
 	// cannot be reconciled (issue #239): it skips ALL deploy-clone
 	// verification — the build-time fetch/pull and every pre-up re-check —
 	// and the compose files are used exactly as they sit on disk. Loud by
-	// design: WARN log, dozor_deploy_clone_refused_total{reason="override"},
+	// design: WARN log, dozor_deploy_clone_override_total{repo},
 	// and a "STALE CONFIG OVERRIDE" marker in the reply. The webhook path
 	// never sets it.
 	AllowStaleConfig bool `json:"allow_stale_config,omitempty" jsonschema:"Emergency: skip deploy-clone verification and deploy the on-disk compose config as-is (default false)"`

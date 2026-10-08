@@ -220,8 +220,13 @@ func (t *deployTool) Parameters() map[string]any {
 		},
 	}
 }
-func (t *deployTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-	return tools.HandleDeploy(ctx, t.agent, engine.DeployInput{
+
+// deployInputFromArgs maps the tool-call argument map to a typed DeployInput.
+// Kept as a separate pure function so the field wiring (allow_stale_config,
+// build, pull, …) is directly testable — a dropped mapping used to stay
+// green because nothing asserted it (#239 review).
+func deployInputFromArgs(args map[string]any) engine.DeployInput {
+	return engine.DeployInput{
 		Action:           getString(args, "action"),
 		DeployID:         getString(args, "deploy_id"),
 		ProjectPath:      getString(args, "project_path"),
@@ -229,7 +234,11 @@ func (t *deployTool) Execute(ctx context.Context, args map[string]any) (string, 
 		Build:            getBoolPtr(args, "build"),
 		Pull:             getBoolPtr(args, "pull"),
 		AllowStaleConfig: derefBoolPtr(getBoolPtr(args, "allow_stale_config")),
-	})
+	}
+}
+
+func (t *deployTool) Execute(ctx context.Context, args map[string]any) (string, error) {
+	return tools.HandleDeploy(ctx, t.agent, deployInputFromArgs(args))
 }
 
 // --- server_prune ---

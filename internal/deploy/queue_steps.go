@@ -125,8 +125,8 @@ func detectDefaultBranch(ctx context.Context, sourcePath string) string { //noli
 //     verification record (cv) is returned so the caller can re-verify the
 //     clone right before `docker compose up`. Skipped for from_disk debug
 //     deploys, which intentionally build the on-disk tree, and for
-//     allow_stale_config overrides, which log WARN + count a
-//     refused_total{reason="override"} instead.
+//     allow_stale_config overrides, which log WARN + count
+//     dozor_deploy_clone_override_total instead.
 //  2. OXPULSE_GIT_SHA and BUILD_TIMESTAMP build-args are injected so
 //     Dockerfiles that declare these ARGs get the correct values baked in.
 func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash string) (errMsg string, builtNow bool, cv *cloneVerify) {
@@ -140,10 +140,11 @@ func composeBuild(ctx context.Context, req BuildRequest, worktreePath, treeHash 
 	if req.Config.DeployClonePath != "" && !req.FromDisk {
 		if req.AllowStaleConfig {
 			// Emergency escape: deploy from the clone as it sits on disk —
-			// no fetch, no pull, no verification. Loud by design.
+			// no fetch, no pull, no verification. Loud by design — an
+			// override is not a refusal, so it counts under its own metric.
 			slog.Warn("deploy: STALE CONFIG OVERRIDE — deploy-clone verification skipped by allow_stale_config",
 				"repo", req.Repo, "clone", req.Config.DeployClonePath)
-			DeployCloneRefusedTotal.WithLabelValues(req.Repo, "override").Inc()
+			DeployCloneOverrideTotal.WithLabelValues(req.Repo).Inc()
 		} else {
 			var refuseMsg string
 			cv, refuseMsg = pullDeployClone(ctx, req)
@@ -472,26 +473,27 @@ func runUpWithFullLog(ctx context.Context, req BuildRequest, deployID string) st
 // The deploy clone is RE-VERIFIED before every up attempt (cv comes from
 // composeBuild's pullDeployClone): the build may have finished up to 45
 // minutes ago and deploy-clone-sync can dirty/move the clone in between.
-// A refusal aborts before docker is invoked and returns the refusal message.
+// A refusal aborts before docker is invoked and returns the refusal message
+// with refused=true — the caller must NOT attempt a rollback for it (docker
+// never ran; the current container is untouched).
 //
-// On success the second return is the deploy clone's verified HEAD SHA — the
-// compose@<sha> the up actually used, for the receipt and notify line. It is
-// empty when no clone verification applies (no deploy_clone_path, from_disk,
-// or allow_stale_config).
-func composeUp(ctx context.Context, req BuildRequest, cv *cloneVerify) (errMsg, composeSHA string) {
+// On success the second return is the deploy clone's CURRENT verified HEAD
+// SHA — the compose@<sha> the up actually used, for the receipt and notify
+// line. After a legitimate forward fast-forward this is the newer up-time
+// sha, not the build-time cv.headSHA. It is empty when no clone verification
+// applies (no deploy_clone_path, from_disk, or allow_stale_config).
+func composeUp(ctx context.Context, req BuildRequest, cv *cloneVerify) (errMsg, composeSHA string, refused bool) {
 	deployID := short(req.CommitSHA)
 
 	var lastErrMsg string
 	for attempt := 1; attempt <= upMaxRetries; attempt++ {
-		if refuseMsg := verifyDeployCloneForUp(ctx, req.Repo, req.Config.Services, cv); refuseMsg != "" {
-			return refuseMsg, ""
+		refuseMsg, upSHA := verifyDeployCloneForUp(ctx, req.Repo, req.Config.Services, cv)
+		if refuseMsg != "" {
+			return refuseMsg, "", true
 		}
 		lastErrMsg = runUpWithFullLog(ctx, req, deployID)
 		if lastErrMsg == "" {
-			if cv != nil {
-				return "", cv.headSHA
-			}
-			return "", ""
+			return "", upSHA, false
 		}
 		slog.Warn("deploy: docker up failed, retrying",
 			"attempt", attempt,
@@ -501,16 +503,16 @@ func composeUp(ctx context.Context, req BuildRequest, cv *cloneVerify) (errMsg, 
 		)
 		if attempt < upMaxRetries {
 			if ctx.Err() != nil {
-				return fmt.Sprintf("docker up: context cancelled during retry: %v", lastErrMsg), ""
+				return fmt.Sprintf("docker up: context cancelled during retry: %v", lastErrMsg), "", false
 			}
 			select {
 			case <-ctx.Done():
-				return fmt.Sprintf("docker up: context cancelled during retry: %v", lastErrMsg), ""
+				return fmt.Sprintf("docker up: context cancelled during retry: %v", lastErrMsg), "", false
 			case <-time.After(upRetryDelay):
 			}
 		}
 	}
-	return fmt.Sprintf("docker up (after %d attempts): %v", upMaxRetries, lastErrMsg), ""
+	return fmt.Sprintf("docker up (after %d attempts): %v", upMaxRetries, lastErrMsg), "", false
 }
 
 // pruneOldImages removes dangling images and build cache older than 24h.

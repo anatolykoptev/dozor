@@ -161,10 +161,16 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 
 	result.PreviousImages = snapshotImages(ctx, req.Config.ComposePath, req.Config.Services)
 
-	upErr, composeSHA := composeUp(ctx, req, cv)
+	upErr, composeSHA, refused := composeUp(ctx, req, cv)
 	if upErr != "" {
 		result.Error = upErr
-		q.tryRollback(ctx, &result, req, cv)
+		// A pre-up REFUSAL means docker never ran — there is nothing new up
+		// to roll back from. Running rollbackImages anyway would re-verify
+		// the (already refused) clone, double-count the refusal, and append
+		// a misleading "rollback also failed". Only real up failures roll back.
+		if !refused {
+			q.tryRollback(ctx, &result, req, cv)
+		}
 		return result
 	}
 	result.ComposeSHA = composeSHA
@@ -179,10 +185,13 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 					"error", err,
 				)
 				// The port-recovery `up` is a compose up — re-verify the
-				// clone first, same as the main up (#239).
-				if refuseMsg := verifyDeployCloneForUp(ctx, req.Repo, req.Config.Services, cv); refuseMsg != "" {
+				// clone first, same as the main up (#239). A refusal here is
+				// a pre-up refusal: docker is never invoked for the recovery,
+				// so there is nothing to roll back — running rollbackImages
+				// would just re-verify the refused clone a second time and
+				// double-count the refusal.
+				if refuseMsg, _ := verifyDeployCloneForUp(ctx, req.Repo, req.Config.Services, cv); refuseMsg != "" {
 					result.Error = refuseMsg
-					q.tryRollback(ctx, &result, req, cv)
 					return result
 				}
 				// One targeted force-recreate attempt — -f pins the compose
