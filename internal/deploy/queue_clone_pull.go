@@ -420,8 +420,19 @@ func pullDeployCloneLocked(ctx context.Context, req BuildRequest, clonePath stri
 //
 //	clean working tree (no tracked modifications)
 //	attached HEAD on the configured deploy_clone_branch
-//	HEAD == refs/remotes/origin/<clone branch>   (the local ref — no fetch)
-//	cv.headSHA is an ancestor of HEAD            (git merge-base --is-ancestor)
+//	HEAD unmoved since the build (== cv.headSHA) — the compose is exactly
+//	  what the build verified, so the local origin/<branch> ref is not
+//	  consulted at all (#248)
+//	or, when HEAD DID move: HEAD == refs/remotes/origin/<clone branch>
+//	  (the local ref — no fetch) AND cv.headSHA is an ancestor of HEAD
+//	  (git merge-base --is-ancestor)
+//
+// The unmoved-HEAD shortcut exists because the remote-tracking ref is not
+// part of the verified state: deploy-clone-sync fetches outside the
+// deploy's fetch lock and can advance refs/remotes/origin/<branch> without
+// fast-forwarding HEAD (its merge can no-op on an untracked-file
+// collision, or the fetch/merge window) — the compose files are still
+// exactly the verified tree, so refusing as "moved" was wrong.
 //
 // The ancestor clause is what makes legitimate forward fast-forwards pass:
 // a second queue worker, a manual server_deploy, or deploy-clone-sync can
@@ -429,12 +440,12 @@ func pullDeployCloneLocked(ctx context.Context, req BuildRequest, clonePath stri
 // up then deploys that newer (still origin-verified) tree and reports the
 // CURRENT sha. A HEAD that merely MOVED is still refused:
 //
-//	tracked modifications          → dirty      (message names the files)
-//	detached HEAD                  → detached
-//	on a different branch          → wrong_branch
-//	HEAD != local origin/<branch>  → moved      (local commit, checkout, reset)
-//	HEAD not a descendant of build → moved      (rewritten/rebased origin)
-//	git ops fail                   → fetch_error
+//	tracked modifications                   → dirty      (message names the files)
+//	detached HEAD                           → detached
+//	on a different branch                   → wrong_branch
+//	moved HEAD != local origin/<branch>     → moved      (local commit, checkout, reset)
+//	moved HEAD not a descendant of build    → moved      (rewritten/rebased origin)
+//	git ops fail                            → fetch_error
 //
 // A nil cv (no clone configured, from_disk, or allow_stale_config) skips the
 // check entirely and returns ("", "").
@@ -484,11 +495,22 @@ func verifyDeployCloneForUp(ctx context.Context, repo string, services []string,
 		return refuseDeployClone(repo, "fetch_error", services,
 			fmt.Sprintf("deploy clone %s: cannot resolve HEAD before up: %v", cv.path, err)), ""
 	}
-	// HEAD must sit exactly at the clone's local origin/<branch> ref — the
-	// state the last fetch (build-time pull, deploy-clone-sync, or another
-	// worker's pull) left verified at the remote tip. A HEAD anywhere else
-	// is a local move: a local commit, a checkout of another ref, or a
-	// reset — the compose files would not be origin-verified.
+	// A HEAD that has not moved since the build is exactly the tree the
+	// build verified — accept it without consulting the local
+	// origin/<branch> ref. That ref is not part of the verified state:
+	// deploy-clone-sync fetches outside the deploy's fetch lock and can
+	// advance refs/remotes/origin/<branch> without fast-forwarding HEAD
+	// (its merge no-ops on an untracked-file collision, or in the
+	// fetch/merge window) — #248 refused that verified tree as "moved".
+	if head == cv.headSHA {
+		return "", head
+	}
+	// HEAD moved: it must now sit exactly at the clone's local
+	// origin/<branch> ref — the state the last fetch (build-time pull,
+	// deploy-clone-sync, or another worker's pull) left verified at the
+	// remote tip. A HEAD anywhere else is a local move: a local commit, a
+	// checkout of another ref, or a reset — the compose files would not be
+	// origin-verified.
 	originRef := "refs/remotes/origin/" + cv.branch
 	remote, err := gitRevParseRunner(ctx, cv.path, originRef)
 	if err != nil {
@@ -503,24 +525,22 @@ func verifyDeployCloneForUp(ctx context.Context, repo string, services []string,
 			fmt.Sprintf("deploy clone %s: HEAD %s is not at the local origin/%s ref %s (verified at build: %s) — a local commit, checkout, or reset moved the clone; reconcile it back to origin/%s, then re-deploy",
 				cv.path, short(head), cv.branch, short(remote), short(cv.headSHA), cv.branch)), ""
 	}
-	if head != cv.headSHA {
-		// The clone sits at a NEWER origin/<branch> than the build verified.
-		// Accept only a forward fast-forward — the build-time commit must be
-		// an ancestor of the current HEAD. A rewritten/rebased origin leaves
-		// a non-descendant HEAD: refuse, the compose files no longer derive
-		// from the verified line.
-		if err := gitMergeBaseRunner(ctx, cv.path, cv.headSHA, head); err != nil {
-			slog.Warn("deploy: clone up-check refused — HEAD moved to a non-descendant of the build-verified commit",
-				"repo", repo, "clone", cv.path, "branch", cv.branch,
-				"at_build", short(cv.headSHA), "now", short(head), "error", err)
-			return refuseDeployClone(repo, "moved", services,
-				fmt.Sprintf("deploy clone %s: HEAD moved from %s to %s between build and up and is not a descendant of the build-verified commit (%v) — origin/%s was likely rewritten; reconcile the clone, then re-deploy",
-					cv.path, short(cv.headSHA), short(head), err, cv.branch)), ""
-		}
-		slog.Info("deploy: clone up-check — clone fast-forwarded to a newer origin/<branch> between build and up; accepting",
+	// The clone sits at a NEWER origin/<branch> than the build verified.
+	// Accept only a forward fast-forward — the build-time commit must be
+	// an ancestor of the current HEAD. A rewritten/rebased origin leaves
+	// a non-descendant HEAD: refuse, the compose files no longer derive
+	// from the verified line.
+	if err := gitMergeBaseRunner(ctx, cv.path, cv.headSHA, head); err != nil {
+		slog.Warn("deploy: clone up-check refused — HEAD moved to a non-descendant of the build-verified commit",
 			"repo", repo, "clone", cv.path, "branch", cv.branch,
-			"at_build", short(cv.headSHA), "now", short(head))
+			"at_build", short(cv.headSHA), "now", short(head), "error", err)
+		return refuseDeployClone(repo, "moved", services,
+			fmt.Sprintf("deploy clone %s: HEAD moved from %s to %s between build and up and is not a descendant of the build-verified commit (%v) — origin/%s was likely rewritten; reconcile the clone, then re-deploy",
+				cv.path, short(cv.headSHA), short(head), err, cv.branch)), ""
 	}
+	slog.Info("deploy: clone up-check — clone fast-forwarded to a newer origin/<branch> between build and up; accepting",
+		"repo", repo, "clone", cv.path, "branch", cv.branch,
+		"at_build", short(cv.headSHA), "now", short(head))
 	return "", head
 }
 

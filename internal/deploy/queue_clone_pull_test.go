@@ -1335,3 +1335,56 @@ func TestPullDeployClone_WrongBranchRefused(t *testing.T) {
 		t.Errorf("dozor_deploy_clone_refused_total{reason=wrong_branch} delta = %v, want 1", delta)
 	}
 }
+
+// (u) Between build and up the clone's LOCAL refs/remotes/origin/<branch>
+// ref advanced while HEAD stayed put (#248): deploy-clone-sync fetches
+// without the deploy's fetch lock, and its merge step can no-op (an
+// untracked-file collision, or the fetch/merge window). HEAD is still
+// exactly what the build verified, so the up must proceed and report
+// cv.headSHA — refusing it as "moved" was the bug.
+func TestComposeUp_OriginRefAdvancedUnmovedHeadAccepted(t *testing.T) {
+	_, clone, pusher := newDeployCloneFixture(t)
+
+	const repo = "test/up-origin-ref-advanced"
+	req := clonePullReq(repo, clone)
+	cv, errMsg := pullDeployClone(context.Background(), req)
+	if errMsg != "" {
+		t.Fatalf("clean clone must verify at build time, got refusal: %s", errMsg)
+	}
+	buildSHA := gitOut(t, clone, "rev-parse", "HEAD")
+
+	// Origin advances, then a bare fetch updates the clone's local
+	// origin/main ref while HEAD stays — the shape an unlocked
+	// deploy-clone-sync fetch leaves behind when nothing fast-forwards.
+	newSHA := pushCommit(t, pusher, "docker-compose.yml", "version: '3'\nservices: {}\n")
+	mustRun(t, clone, "git", "fetch", "origin", "main", "--no-tags", "--quiet")
+	if got := gitOut(t, clone, "rev-parse", "origin/main"); got != newSHA {
+		t.Fatalf("local origin/main must have advanced to %s, got %s", newSHA, got)
+	}
+	if got := gitOut(t, clone, "rev-parse", "HEAD"); got != buildSHA {
+		t.Fatalf("HEAD must stay at the build-verified %s, got %s", buildSHA, got)
+	}
+	if out := gitOut(t, clone, "status", "--porcelain"); out != "" {
+		t.Fatalf("clone must be clean for this test, got: %s", out)
+	}
+
+	calls := upCallCount(t)
+	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "moved"))
+
+	upErr, composeSHA, refused := composeUp(context.Background(), req, cv)
+	if upErr != "" {
+		t.Fatalf("an unmoved HEAD must be accepted even when origin/<branch> advanced — got refusal: %s", upErr)
+	}
+	if refused {
+		t.Error("an unmoved clone is not a refusal")
+	}
+	if *calls != 1 {
+		t.Errorf("expected exactly one docker compose up, got %d", *calls)
+	}
+	if composeSHA != cv.headSHA {
+		t.Errorf("composeSHA = %q, want the build-verified cv.headSHA %q", composeSHA, cv.headSHA)
+	}
+	if delta := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "moved")) - before; delta != 0 {
+		t.Errorf("dozor_deploy_clone_refused_total{reason=moved} delta = %v, want 0", delta)
+	}
+}
