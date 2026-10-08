@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.3](https://github.com/anatolykoptev/dozor/compare/v1.18.2...v1.18.3) (2026-10-08)
+
+
+### Fixed
+
+* **deploy:** accept an unmoved clone at up even if the origin ref advanced ([#248](https://github.com/anatolykoptev/dozor/issues/248)) ([#249](https://github.com/anatolykoptev/dozor/issues/249)) ([4947ed9](https://github.com/anatolykoptev/dozor/commit/4947ed9dde0f4720b862332e8edd49b24b0e389f))
+
 ## [1.18.2](https://github.com/anatolykoptev/dozor/compare/v1.18.1...v1.18.2) (2026-10-08)
 
 
