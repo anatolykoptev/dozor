@@ -185,11 +185,13 @@ func (q *Queue) executeBuild(ctx context.Context, req BuildRequest) BuildResult 
 					"error", err,
 				)
 				// The port-recovery `up` is a compose up — re-verify the
-				// clone first, same as the main up (#239). A refusal here is
-				// a pre-up refusal: docker is never invoked for the recovery,
-				// so there is nothing to roll back — running rollbackImages
-				// would just re-verify the refused clone a second time and
-				// double-count the refusal.
+				// clone first, same as the main up (#239). On a refusal the
+				// recovery never invokes docker — but the MAIN up already
+				// replaced the container, so it is not "nothing to roll
+				// back": rollbackImages is skipped because it re-verifies the
+				// clone via verifyDeployCloneForUp and would be refused by
+				// that same check — it would just double-count the refusal
+				// and append a misleading "rollback also failed".
 				if refuseMsg, _ := verifyDeployCloneForUp(ctx, req.Repo, req.Config.Services, cv); refuseMsg != "" {
 					result.Error = refuseMsg
 					return result
