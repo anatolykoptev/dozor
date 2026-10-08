@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.4](https://github.com/anatolykoptev/dozor/compare/v1.18.3...v1.18.4) (2026-10-08)
+
+
+### Fixed
+
+* **mcp:** enable stateful sessions for standalone GET stream ([#252](https://github.com/anatolykoptev/dozor/issues/252)) ([5c8f9f0](https://github.com/anatolykoptev/dozor/commit/5c8f9f0bf5213c20665951ffa8f7264f7c88315f))
+
 ## [1.18.3](https://github.com/anatolykoptev/dozor/compare/v1.18.2...v1.18.3) (2026-10-08)
 
 
