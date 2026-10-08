@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.18.2](https://github.com/anatolykoptev/dozor/compare/v1.18.1...v1.18.2) (2026-10-08)
+
+
+### Fixed
+
+* **deploy:** fail closed on a dirty, stale or moved deploy clone; re-verify before every up ([#239](https://github.com/anatolykoptev/dozor/issues/239)) ([#246](https://github.com/anatolykoptev/dozor/issues/246)) ([17e58bd](https://github.com/anatolykoptev/dozor/commit/17e58bdb86c110e4f1d1970fd95035cf86253050))
+* **deploy:** resolve the service image from the JSON model, not config --images ([#240](https://github.com/anatolykoptev/dozor/issues/240)) ([#241](https://github.com/anatolykoptev/dozor/issues/241)) ([6fb7ad5](https://github.com/anatolykoptev/dozor/commit/6fb7ad51f0fc539d831e8b4b9f494c46c04a9098))
+
 ## [1.18.1](https://github.com/anatolykoptev/dozor/compare/v1.18.0...v1.18.1) (2026-10-07)
 
 
