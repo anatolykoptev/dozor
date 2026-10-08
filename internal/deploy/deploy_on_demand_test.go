@@ -212,12 +212,12 @@ func TestRecordManualDeployReceipt_OnDemandLeavesReceipt(t *testing.T) {
 
 	const prodSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const tipSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	recordDeployedSHA("anatolykoptev/x", prodSHA)
+	recordDeployedSHA("anatolykoptev/x", prodSHA, "")
 
 	RecordManualDeployReceipt(ManualDeployRequest{
 		Repo:   "anatolykoptev/x#staging",
 		Config: RepoConfig{DeployOn: deployOnOnDemand},
-	}, tipSHA)
+	}, tipSHA, "")
 	if got := lookupDeployedSHA("anatolykoptev/x"); got != prodSHA {
 		t.Fatalf("on_demand server_deploy moved the receipt to %q", got)
 	}
@@ -226,7 +226,7 @@ func TestRecordManualDeployReceipt_OnDemandLeavesReceipt(t *testing.T) {
 	RecordManualDeployReceipt(ManualDeployRequest{
 		Repo:   "anatolykoptev/x",
 		Config: RepoConfig{DeployOn: deployOnManual},
-	}, tipSHA)
+	}, tipSHA, "")
 	if got := lookupDeployedSHA("anatolykoptev/x"); got != tipSHA {
 		t.Fatalf("manual server_deploy did not record: receipt = %q", got)
 	}

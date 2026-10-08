@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 )
 
@@ -105,9 +104,9 @@ func snapshotImages(ctx context.Context, composePath string, services []string) 
 func composeImageID(ctx context.Context, composePath, svc string) string {
 	// svc is a service name from our own deploy-repos.yaml (trusted local config),
 	// passed as an individual argv slot — not interpolated into a shell.
-	cmd := exec.CommandContext(ctx, "docker", "compose", "images", "--format", "json", svc) //nolint:gosec // trusted local config, not shell
-	cmd.Dir = composePath
-	out, err := cmd.Output()
+	// -f pins the compose file against override auto-load (#239).
+	out, err := outputRunner(ctx, composePath,
+		"docker", composeArgv(composePath, "images", "--format", "json", svc)...)
 	if err != nil || len(out) == 0 {
 		return ""
 	}
@@ -198,7 +197,7 @@ func imageIDFromNDJSON(trimmed, svc string) string {
 // own names, so the per-service lookup stays correct.
 func composeImageName(ctx context.Context, composePath, svc string) string {
 	out, err := outputRunner(ctx, composePath,
-		"docker", "compose", "config", "--format", "json", svc) //nolint:gosec // trusted local config, not shell
+		"docker", composeArgv(composePath, "config", "--format", "json", svc)...)
 	if err != nil {
 		return ""
 	}
@@ -267,11 +266,17 @@ func looksLikeImageRef(s string) bool {
 }
 
 // rollbackImages attempts to restore services to their previous image IDs.
-func rollbackImages(ctx context.Context, composePath string, services []string, previousImages map[string]string) error {
+//
+// The rollback's own `docker compose up` re-verifies the deploy clone first
+// (#239): a refused clone means the compose file the rollback would render
+// is unverified — refusing keeps the CURRENT container running rather than
+// attempting a stale rollback.
+func rollbackImages(ctx context.Context, req BuildRequest, previousImages map[string]string, cv *cloneVerify) error {
 	if len(previousImages) == 0 {
 		return errors.New("no previous images to rollback to")
 	}
-	for _, svc := range services {
+	composePath := req.Config.ComposePath
+	for _, svc := range req.Config.Services {
 		prevID := previousImages[svc]
 		if prevID == "" {
 			continue
@@ -282,6 +287,14 @@ func rollbackImages(ctx context.Context, composePath string, services []string, 
 				"service", svc, "image", prevID[:7])
 			continue
 		}
+		// The rollback up is a compose up — re-verify the clone before any
+		// retag/recreate so a dirty/moved clone can never drive a stale
+		// rollback. Leave the running container untouched on refusal.
+		if refuseMsg, _ := verifyDeployCloneForUp(ctx, req.Repo, req.Config.Services, cv); refuseMsg != "" {
+			slog.Error("deploy: rollback refused — deploy clone failed re-verification; current container left running",
+				"repo", req.Repo, "service", svc, "reason", refuseMsg)
+			return fmt.Errorf("rollback %s refused: %s", svc, refuseMsg)
+		}
 		imgName := composeImageName(ctx, composePath, svc)
 		if imgName == "" {
 			return fmt.Errorf("rollback %s: cannot determine image name", svc)
@@ -289,7 +302,7 @@ func rollbackImages(ctx context.Context, composePath string, services []string, 
 		if err := runCmd(ctx, composePath, "docker", "tag", prevID, imgName); err != nil {
 			return fmt.Errorf("rollback %s: tag %s as %s: %w", svc, prevID[:7], imgName, err)
 		}
-		upArgs := []string{"compose", "up", "-d", "--no-deps", "--no-build", "--force-recreate", svc}
+		upArgs := composeArgv(composePath, "up", "-d", "--no-deps", "--no-build", "--force-recreate", svc)
 		if err := runCmd(ctx, composePath, "docker", upArgs...); err != nil {
 			return fmt.Errorf("rollback %s: compose up: %w", svc, err)
 		}

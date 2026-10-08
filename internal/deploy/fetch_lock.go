@@ -55,10 +55,12 @@ var fetchLockTimeout = 5 * time.Minute
 // by resolving to the shared common dir, so two worktrees of the same main
 // repo serialise against each other).
 //
-// The lock is held for the fetch ONLY — never extended over the build
-// (heavySem(1) serialises deploys where that is wanted, and widening this lock
-// would deadlock against it). The lock is released on every path including
-// error and panic (deferred close/unlock).
+// The lock covers the fetch and its immediately-joined ref work — a bare
+// fetch for source_sync/webhook callers, or the whole
+// fetch → rev-parse → merge sequence for pullDeployClone — and is NEVER
+// extended over the build (heavySem(1) serialises deploys where that is
+// wanted, and widening this lock would deadlock against it). The lock is
+// released on every path including error and panic (deferred close/unlock).
 //
 // If the lock infrastructure itself fails (cannot resolve git dir, cannot open
 // lock file), the fetch proceeds unlocked — the lock is a defence against a

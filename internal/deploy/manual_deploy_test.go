@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 )
 
@@ -1010,7 +1012,7 @@ func TestManualDeploy_PullHit_DoesNotRePush(t *testing.T) {
 				sawPush = true
 			}
 		}
-		if name == "docker" && len(args) > 1 && args[0] == "compose" && args[1] == "build" {
+		if name == "docker" && len(args) > 1 && composeSub(args) == "build" {
 			sawBuild = true
 		}
 		return nil
@@ -1047,5 +1049,274 @@ func TestManualDeploy_PullHit_DoesNotRePush(t *testing.T) {
 	}
 	if sawPush {
 		t.Fatal("pull-hit pushed the just-pulled image back — issue #168 regression")
+	}
+}
+
+// TestExecuteManualDeploy_NoBuild_UpNoBuild — server_deploy build=false must
+// be HONOURED on a compose repo, not silently ignored (issue #239): no
+// source fetch, no worktree, no `compose build` — only `up --no-build`
+// recreating services from the CURRENT image. The deploy clone is still
+// verified (the compose file comes from it), and no source receipt is
+// advanced (BuiltSHA empty — nothing was built).
+func TestExecuteManualDeploy_NoBuild_UpNoBuild(t *testing.T) {
+	defer zeroDelays(t)()
+
+	// The deploy clone verifies (fetch + status + compare, same as a built
+	// deploy); the SOURCE is never fetched.
+	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withAttachedClone(t)
+	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
+	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "samesha00000", nil })
+	withGitMergeFF(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualFetch(t, func(_ context.Context, _, _ string) error {
+		t.Error("build=false must not fetch the source clone — there is no build")
+		return nil
+	})
+
+	var upArgs []string
+	upRunner = func(_ context.Context, _ string, args []string) ([]byte, error) {
+		upArgs = append([]string(nil), args...)
+		return nil, nil
+	}
+	origBuild := buildRunner
+	buildRunner = func(_ context.Context, _ string, args []string) ([]byte, error) {
+		t.Errorf("compose build must NOT run under build=false; argv: %v", args)
+		return nil, nil
+	}
+	defer func() { buildRunner = origBuild }()
+
+	result := ExecuteManualDeploy(context.Background(), ManualDeployRequest{
+		Repo:    "anatolykoptev/oxpulse-chat",
+		NoBuild: true,
+		Config: RepoConfig{
+			Branch:          "main",
+			SourcePath:      "/fake/source",
+			ComposePath:     "/fake/compose",
+			DeployClonePath: "/fake/clone",
+			Services:        []string{"oxpulse-chat"},
+		},
+	})
+
+	if !result.Success {
+		t.Fatalf("build=false deploy must succeed, got: %s", result.Error)
+	}
+	if upArgs == nil {
+		t.Fatal("compose up must still run under build=false")
+	}
+	joined := strings.Join(upArgs, " ")
+	if !strings.Contains(joined, "--no-build") {
+		t.Errorf("up argv must carry --no-build under build=false; got: %s", joined)
+	}
+	if !strings.Contains(joined, "-f") {
+		t.Errorf("up argv must pin the compose file with -f; got: %s", joined)
+	}
+	if result.BuiltSHA != "" {
+		t.Errorf("no-build deploy must not claim a built SHA, got %q", result.BuiltSHA)
+	}
+	if result.ComposeSHA != "samesha00000" {
+		t.Errorf("no-build deploy must still report the verified clone SHA, got %q", result.ComposeSHA)
+	}
+}
+
+// TestExecuteManualDeploy_NoBuild_NonComposeRejected — binary/static kinds
+// cannot express "deploy without building" (the build IS the deploy), so
+// build=false is rejected with a clear error instead of silently building.
+func TestExecuteManualDeploy_NoBuild_NonComposeRejected(t *testing.T) {
+	result := ExecuteManualDeploy(context.Background(), ManualDeployRequest{
+		Repo:    "anatolykoptev/go-job",
+		NoBuild: true,
+		Config: RepoConfig{
+			Kind:       KindBinary,
+			SourcePath: "/fake/source",
+			Services:   []string{"go-job"},
+		},
+	})
+	if result.Success {
+		t.Fatal("build=false on a binary repo must be rejected, not silently build")
+	}
+	if !strings.Contains(result.Error, "build=false") {
+		t.Errorf("rejection must name build=false; got %q", result.Error)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Production-call-site coverage for the manual lane (issue #239 review,
+// MAJOR 2): executeManualComposeDeploy's composeUp must re-verify the REAL
+// deploy clone — a clone dirtied between its build and its up is refused.
+// ---------------------------------------------------------------------------
+
+// TestExecuteManualComposeDeploy_CloneDirtiedBetweenBuildAndUp — the manual
+// sha-pinned path must refuse when the clone goes dirty between composeBuild
+// and composeUp, exactly like the webhook lane. Removing the pre-up verify
+// from composeUp turns this RED (the up would run).
+func TestExecuteManualComposeDeploy_CloneDirtiedBetweenBuildAndUp(t *testing.T) {
+	defer zeroDelays(t)()
+	_, clone, _ := newDeployCloneFixture(t)
+
+	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) { return "main", nil })
+	withCmdRunner(t, func(_ context.Context, _ string, _ string, _ ...string) error { return nil })
+	withGitTreeHashRunner(t, func(_ context.Context, _ string) (string, error) { return "", nil })
+	withFullSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil
+	})
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) { return "deadbee", nil })
+	withOutputRunner(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+		if composeSub(args) == "config" {
+			return []byte(`{"name":"proj","services":{"svc":{"image":"proj-svc:latest","build":{"context":"/fake/source"}}}}`), nil
+		}
+		return []byte("{}"), nil
+	})
+
+	// The clone goes dirty inside the build — after pullDeployClone's
+	// build-time verification, before the up.
+	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		writeFile(t, filepath.Join(clone, "docker-compose.yml"), "version: '3'\n# dirtied mid-deploy\n")
+		return nil, nil
+	}
+	upCalls := 0
+	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		upCalls++
+		return nil, nil
+	}
+
+	const repo = "test/manual-dirty-between"
+	before := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "dirty"))
+
+	result := ExecuteManualDeploy(context.Background(), ManualDeployRequest{
+		Repo: repo,
+		Config: RepoConfig{
+			Branch:          "main",
+			SourcePath:      "/fake/source",
+			ComposePath:     clone,
+			DeployClonePath: clone,
+			Services:        []string{"svc"},
+		},
+	})
+
+	if result.Success {
+		t.Fatal("manual deploy must fail when the clone is dirtied between build and up")
+	}
+	if !strings.Contains(result.Error, "docker-compose.yml") {
+		t.Errorf("refusal must name the dirty file; got %q", result.Error)
+	}
+	if upCalls != 0 {
+		t.Errorf("docker compose up ran %d times despite the refused clone", upCalls)
+	}
+	if delta := testutil.ToFloat64(DeployCloneRefusedTotal.WithLabelValues(repo, "dirty")) - before; delta != 1 {
+		t.Errorf("dozor_deploy_clone_refused_total{reason=dirty} delta = %v, want 1", delta)
+	}
+}
+
+// TestExecuteManualDeploy_SuccessClearsRefusalMarker — a successful manual
+// deploy of a BUILT image clears both the refusal marker and the pending
+// gauge (queue_clone_pull.go clearDeployRefusal wiring): removing the call
+// turns this RED (the marker would stay set forever).
+func TestExecuteManualDeploy_SuccessClearsRefusalMarker(t *testing.T) {
+	defer zeroDelays(t)()
+	_, clone, _ := newDeployCloneFixture(t)
+
+	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
+	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) { return "main", nil })
+	withCmdRunner(t, func(_ context.Context, _ string, _ string, _ ...string) error { return nil })
+	withGitTreeHashRunner(t, func(_ context.Context, _ string) (string, error) { return "", nil })
+	withFullSHARunnerManual(t, func(_ context.Context, _ string) (string, error) {
+		return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil
+	})
+	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) { return "deadbee", nil })
+	withOutputRunner(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
+		if composeSub(args) == "config" {
+			return []byte(`{"name":"proj","services":{"svc":{"image":"proj-svc:latest","build":{"context":"/fake/source"}}}}`), nil
+		}
+		return []byte("{}"), nil
+	})
+	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) { return nil, nil }
+	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) { return nil, nil }
+
+	const repo = "test/manual-clears-refusal"
+	markDeployRefused(repo, []string{"svc"})
+	t.Cleanup(func() {
+		pendingDeployMu.Lock()
+		delete(refusalPending, repo)
+		pendingDeployMu.Unlock()
+		PendingDeployGauge.WithLabelValues(repo, "svc").Set(0)
+	})
+
+	result := ExecuteManualDeploy(context.Background(), ManualDeployRequest{
+		Repo: repo,
+		Config: RepoConfig{
+			Branch:          "main",
+			DeployOn:        deployOnManual,
+			SourcePath:      "/fake/source",
+			ComposePath:     clone,
+			DeployClonePath: clone,
+			Services:        []string{"svc"},
+		},
+	})
+	if !result.Success {
+		t.Fatalf("manual deploy must succeed, got: %s", result.Error)
+	}
+	if result.BuiltSHA == "" {
+		t.Fatal("a built deploy must report BuiltSHA — the clear is gated on it")
+	}
+	pendingDeployMu.Lock()
+	marked := refusalPending[repo]
+	pendingDeployMu.Unlock()
+	if marked {
+		t.Error("a successful built deploy must clear the refusal marker")
+	}
+	if got := testutil.ToFloat64(PendingDeployGauge.WithLabelValues(repo, "svc")); got != 0 {
+		t.Errorf("dozor_pending_deploy = %v, want 0 after a successful built deploy", got)
+	}
+}
+
+// TestExecuteManualDeploy_NoBuild_KeepsDeployOwedSignal — a build=false
+// deploy ships NO new image, so the "deploy owed" signal must survive:
+// removing the BuiltSHA guard around the clears (MAJOR 3) turns this RED —
+// the gauge drops to 0 and the refusal marker vanishes while the release is
+// still undeployed.
+func TestExecuteManualDeploy_NoBuild_KeepsDeployOwedSignal(t *testing.T) {
+	defer zeroDelays(t)()
+	_, clone, _ := newDeployCloneFixture(t)
+
+	const repo = "test/no-build-keeps-signal"
+	markDeployRefused(repo, []string{"svc"})
+	t.Cleanup(func() {
+		pendingDeployMu.Lock()
+		delete(refusalPending, repo)
+		pendingDeployMu.Unlock()
+		PendingDeployGauge.WithLabelValues(repo, "svc").Set(0)
+	})
+
+	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
+		t.Error("compose build must NOT run under build=false")
+		return nil, nil
+	}
+	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) { return nil, nil }
+
+	result := ExecuteManualDeploy(context.Background(), ManualDeployRequest{
+		Repo:    repo,
+		NoBuild: true,
+		Config: RepoConfig{
+			DeployOn:        deployOnManual,
+			ComposePath:     clone,
+			DeployClonePath: clone,
+			Services:        []string{"svc"},
+		},
+	})
+	if !result.Success {
+		t.Fatalf("build=false deploy must succeed, got: %s", result.Error)
+	}
+	if result.BuiltSHA != "" {
+		t.Fatalf("a no-build deploy must not report BuiltSHA, got %q", result.BuiltSHA)
+	}
+	if got := testutil.ToFloat64(PendingDeployGauge.WithLabelValues(repo, "svc")); got != 1 {
+		t.Errorf("dozor_pending_deploy = %v, want 1 — a no-build deploy ships nothing new, the owed signal stays", got)
+	}
+	pendingDeployMu.Lock()
+	marked := refusalPending[repo]
+	pendingDeployMu.Unlock()
+	if !marked {
+		t.Error("a no-build deploy must NOT clear the refusal marker — the refused deploy is still owed")
 	}
 }

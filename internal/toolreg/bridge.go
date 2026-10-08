@@ -59,6 +59,11 @@ func getBoolPtr(args map[string]any, key string) *bool {
 	return nil
 }
 
+// derefBoolPtr unwraps an optional bool arg; nil (absent) means false.
+func derefBoolPtr(p *bool) bool {
+	return p != nil && *p
+}
+
 func getStringSlice(args map[string]any, key string) []string {
 	v, ok := args[key]
 	if !ok {
@@ -205,24 +210,35 @@ func (t *deployTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"action":       map[string]any{"type": "string", "description": "Action: deploy (default), status, health"},
-			"deploy_id":    map[string]any{"type": "string", "description": "Deploy ID to check status"},
-			"project_path": map[string]any{"type": "string", "description": "Path to docker-compose project"},
-			"services":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Specific services to deploy"},
-			"build":        map[string]any{"type": "boolean", "description": "Build images before deploy (default true)"},
-			"pull":         map[string]any{"type": "boolean", "description": "Pull images before deploy (default true)"},
+			"action":             map[string]any{"type": "string", "description": "Action: deploy (default), status, health"},
+			"deploy_id":          map[string]any{"type": "string", "description": "Deploy ID to check status"},
+			"project_path":       map[string]any{"type": "string", "description": "Path to docker-compose project"},
+			"services":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Specific services to deploy"},
+			"build":              map[string]any{"type": "boolean", "description": "Build images before deploy (default true)"},
+			"pull":               map[string]any{"type": "boolean", "description": "Pull images before deploy (default true)"},
+			"allow_stale_config": map[string]any{"type": "boolean", "description": "Emergency: skip deploy-clone verification and deploy the on-disk compose config as-is (default false)"},
 		},
 	}
 }
+
+// deployInputFromArgs maps the tool-call argument map to a typed DeployInput.
+// Kept as a separate pure function so the field wiring (allow_stale_config,
+// build, pull, …) is directly testable — a dropped mapping used to stay
+// green because nothing asserted it (#239 review).
+func deployInputFromArgs(args map[string]any) engine.DeployInput {
+	return engine.DeployInput{
+		Action:           getString(args, "action"),
+		DeployID:         getString(args, "deploy_id"),
+		ProjectPath:      getString(args, "project_path"),
+		Services:         getStringSlice(args, "services"),
+		Build:            getBoolPtr(args, "build"),
+		Pull:             getBoolPtr(args, "pull"),
+		AllowStaleConfig: derefBoolPtr(getBoolPtr(args, "allow_stale_config")),
+	}
+}
+
 func (t *deployTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-	return tools.HandleDeploy(ctx, t.agent, engine.DeployInput{
-		Action:      getString(args, "action"),
-		DeployID:    getString(args, "deploy_id"),
-		ProjectPath: getString(args, "project_path"),
-		Services:    getStringSlice(args, "services"),
-		Build:       getBoolPtr(args, "build"),
-		Pull:        getBoolPtr(args, "pull"),
-	})
+	return tools.HandleDeploy(ctx, t.agent, deployInputFromArgs(args))
 }
 
 // --- server_prune ---

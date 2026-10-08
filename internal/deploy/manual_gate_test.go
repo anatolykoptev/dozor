@@ -273,7 +273,7 @@ func TestExecuteBuild_ManualGate_NonManualRepo_Deploys(t *testing.T) {
 	// checkHealth calls outputRunner for `docker compose ps --format json`.
 	// Return a healthy, port-published container so the health check passes.
 	withOutputRunner(t, func(_ context.Context, _ string, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		if len(args) >= 2 && composeSub(args) == "ps" {
 			return []byte(`[{"State":"running","Status":"Up","Publishers":[{"URL":"0.0.0.0","TargetPort":8080,"PublishedPort":8080,"Protocol":"tcp"}]}]`), nil
 		}
 		return nil, nil

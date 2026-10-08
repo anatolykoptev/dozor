@@ -321,7 +321,10 @@ func syncSourceCheckout(ctx context.Context, repo, sourcePath, deployClonePath, 
 	// remote-tracking ref. This is the load-bearing freshness step — without it
 	// the off-branch self-fetch (`git fetch . origin/<b>:<b>`) would advance the
 	// local ref only to a stale local origin/<branch>.
-	if err := gitFetchRunner(ctx, sourcePath, branch); err != nil {
+	// gitFetchRunner itself does not lock — callers own the fetch-lock scope.
+	if err := withFetchLock(ctx, sourcePath, func() error {
+		return gitFetchRunner(ctx, sourcePath, branch)
+	}); err != nil {
 		slog.Warn("deploy: source sync — git fetch failed; leaving checkout as-is",
 			"repo", repo, "source", sourcePath, "branch", branch, "current", cur, "error", err)
 		return syncError
