@@ -49,6 +49,8 @@ func baseMCPConfig(host, port string) mcpserver.Config {
 		Host:                       host,
 		Port:                       port,
 		KeepAlive:                  30 * time.Second,
+		SessionTimeout:             10 * time.Minute,
+		Stateless:                  new(bool),
 		SchemaCache:                mcp.NewSchemaCache(),
 		DisableLocalhostProtection: true,
 		Logger:                     slog.Default(),
