@@ -131,7 +131,17 @@ func RequestLogWithSkip(logger *slog.Logger, skipPaths []string) Middleware {
 	}
 }
 
-const defaultAllowHeaders = "Content-Type, Authorization, X-Request-ID"
+// defaultAllowHeaders lists request headers browsers may send cross-origin.
+// The Mcp-* names and Last-Event-ID are the headers the go-sdk v1.8.0
+// streamable server reads (mcp/streamable_headers.go:24-28, streamable.go:1232).
+// Mcp-Param-* (per-tool x-mcp-header passthrough) is a dynamic prefix and cannot
+// be listed; set Config.CORSAllowHeaders for tools that declare it.
+const defaultAllowHeaders = "Content-Type, Authorization, X-Request-ID, " +
+	"Mcp-Protocol-Version, Mcp-Session-Id, Last-Event-ID, Mcp-Method, Mcp-Name"
+
+// defaultExposeHeaders lists response headers browsers may read cross-origin:
+// the SDK sets Mcp-Session-Id on stateful responses (streamable.go:1694).
+const defaultExposeHeaders = "Mcp-Session-Id"
 
 // CORSConfig controls CORS middleware behavior.
 type CORSConfig struct {
@@ -197,6 +207,7 @@ func setCORSHeaders(w http.ResponseWriter, origin string, wildcard bool, headers
 	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", headers)
+	w.Header().Set("Access-Control-Expose-Headers", defaultExposeHeaders)
 	if maxAge != "" {
 		w.Header().Set("Access-Control-Max-Age", maxAge)
 	}

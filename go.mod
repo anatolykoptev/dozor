@@ -5,11 +5,11 @@ go 1.26.3
 require (
 	github.com/a2aproject/a2a-go v0.3.13
 	github.com/anatolykoptev/go-kit v0.97.17
-	github.com/anatolykoptev/go-mcpserver v0.16.1
+	github.com/anatolykoptev/go-mcpserver v0.21.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/google/uuid v1.6.0
-	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	go.opentelemetry.io/otel v1.43.0
@@ -64,6 +64,7 @@ require (
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/grpc v1.80.0 // indirect

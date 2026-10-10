@@ -19,7 +19,10 @@ import (
 // true or "5" instead of 5 — this function handles both forms transparently.
 //
 // The input schema is inferred from In (same as mcp.AddTool).
-// Output schema is not supported (Out must be any).
+// Output schema is not inferred; a caller-supplied t.OutputSchema is advertised as given.
+//
+// Advertised schemas (input and output) are normalized so no boolean JSON
+// Schema appears in a subschema position — see portableSchema.
 //
 // If the schema cannot be inferred (e.g. unsupported jsonschema tags), the tool
 // is registered with an open schema and a warning is logged instead of panicking.
@@ -42,6 +45,7 @@ func AddTool[In any](s *mcp.Server, t *mcp.Tool, h func(context.Context, *mcp.Ca
 
 	tt := *t
 	tt.InputSchema = schema
+	makeToolPortable(&tt) // advertise only; validation below uses the typed schema
 
 	s.AddTool(&tt, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.Params.Arguments
@@ -175,6 +179,7 @@ func propType(s *jsonschema.Schema) string {
 func registerOpenSchema[In any](s *mcp.Server, t *mcp.Tool, h func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, error)) {
 	tt := *t
 	tt.InputSchema = &jsonschema.Schema{Type: jsonTypeObject}
+	makeToolPortable(&tt)
 
 	s.AddTool(&tt, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.Params.Arguments

@@ -29,7 +29,41 @@ type BearerAuth struct {
 	// Return true to allow, false to hide/deny.
 	// Called for tools/list (filtering) and tools/call (enforcement).
 	// Nil = all tools allowed.
+	//
+	// info is the bearer-verified identity. For requests admitted through
+	// LoopbackBypass it is nil unless LoopbackIdentity is configured —
+	// treat nil as "unauthenticated local caller" and decide explicitly.
 	ToolFilter func(ctx context.Context, toolName string, info *TokenInfo) bool
+	// LoopbackIdentity derives the caller identity for requests that
+	// bypass bearer verification via LoopbackBypass — e.g. an identity
+	// a trusted local proxy injected as a header. When set, bypassed
+	// requests carry a real *TokenInfo through the same plumbing as
+	// authenticated ones: ToolFilter, RequestExtra.TokenInfo and
+	// auth.TokenInfoFromContext all observe it.
+	//
+	// The extractor owns the trust decision: only read attributes the
+	// edge sets or overwrites. A header a client can send (e.g. a bare
+	// X-Forwarded-User the proxy merely passes through) is not identity —
+	// the proxy must strip-and-set it for the value to be trustworthy.
+	//
+	// The extractor sees EVERY bypassed request — including same-process
+	// self-connects (a workflow engine calling its own server) that
+	// cannot set edge headers. Distinguish those by a transport marker
+	// (e.g. absence of proxy-set headers) and return their identity
+	// explicitly, or they will be rejected.
+	//
+	// Return a non-nil *TokenInfo to admit the request. Return an error
+	// to reject it — an error wrapping auth.ErrInvalidToken produces 401,
+	// any other error 500. A nil (info, nil) result is rejected as
+	// invalid: anonymous bypass defeats the point of configuring an
+	// identity source. A zero TokenInfo.Expiration is stamped
+	// automatically (the SDK verifier requires a future expiry).
+	//
+	// Nil (default): bypassed requests carry no identity and ToolFilter
+	// sees nil — mcpserver logs a startup warning when ToolFilter is set
+	// without LoopbackIdentity, because that combination makes the filter
+	// silently ambiguous about who is calling.
+	LoopbackIdentity func(r *http.Request) (*TokenInfo, error)
 	// LoopbackBypass skips auth for requests whose net.IP-parsed RemoteAddr
 	// is loopback (127.0.0.1 / ::1). Useful for self-connect — e.g. a
 	// workflow engine calling tools on the same process.

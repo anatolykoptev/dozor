@@ -41,7 +41,7 @@ github.com/anatolykoptev/go-kit/tracing
 github.com/anatolykoptev/go-kit/tracing/httpmw
 github.com/anatolykoptev/go-kit/tracing/slogh
 github.com/anatolykoptev/go-kit/voice/stt
-# github.com/anatolykoptev/go-mcpserver v0.16.1
+# github.com/anatolykoptev/go-mcpserver v0.21.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-mcpserver
 # github.com/beorn7/perks v1.0.1
@@ -138,9 +138,10 @@ github.com/moby/docker-image-spec/specs-go/v1
 ## explicit; go 1.18
 # github.com/moby/term v0.5.2
 ## explicit; go 1.18
-# github.com/modelcontextprotocol/go-sdk v1.6.1
+# github.com/modelcontextprotocol/go-sdk v1.8.0
 ## explicit; go 1.25.0
 github.com/modelcontextprotocol/go-sdk/auth
+github.com/modelcontextprotocol/go-sdk/internal/authutil
 github.com/modelcontextprotocol/go-sdk/internal/json
 github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2
 github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug
@@ -329,6 +330,9 @@ golang.org/x/text/secure/bidirule
 golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
+# golang.org/x/time v0.15.0
+## explicit; go 1.25.0
+golang.org/x/time/rate
 # google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9
 ## explicit; go 1.25.0
 google.golang.org/genproto/googleapis/api/httpbody

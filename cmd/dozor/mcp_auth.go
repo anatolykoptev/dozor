@@ -1,8 +1,6 @@
 package main
 
 import (
-	"time"
-
 	"github.com/anatolykoptev/dozor/internal/mcpself"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"log/slog"
@@ -43,14 +41,16 @@ func mcpBearerAuth() *mcpserver.BearerAuth {
 // It is the single place BearerAuth is attached, so the auth test exercises
 // exactly what both commands run.
 func baseMCPConfig(host, port string) mcpserver.Config {
+	// Stateless on purpose (the go-mcpserver default): GET /mcp answers 405 +
+	// Allow: POST, which rmcp reads as "no standalone stream". The 2026-10-08
+	// stateful flip assumed that would stop an SSE error loop; the premise was disproved.
 	return mcpserver.Config{
-		Name:                       "dozor",
-		Version:                    version,
-		Host:                       host,
-		Port:                       port,
-		KeepAlive:                  30 * time.Second,
-		SessionTimeout:             10 * time.Minute,
-		Stateless:                  new(bool),
+		Name:    "dozor",
+		Version: version,
+		Host:    host,
+		Port:    port,
+		// Host operations must run to completion or to their own timeout, not die with a dropped client.
+		CancelOnClientDisconnect:   new(bool),
 		SchemaCache:                mcp.NewSchemaCache(),
 		DisableLocalhostProtection: true,
 		Logger:                     slog.Default(),
