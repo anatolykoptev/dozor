@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.5](https://github.com/anatolykoptev/dozor/compare/v1.18.4...v1.18.5) (2026-10-10)
+
+
+### Fixed
+
+* **mcp:** back to stateless + go-mcpserver v0.21.0 (MCP 2026-07-28) ([#254](https://github.com/anatolykoptev/dozor/issues/254)) ([d62ded5](https://github.com/anatolykoptev/dozor/commit/d62ded57da232517c0a6edb08cb80768063d665f))
+
 ## [1.18.4](https://github.com/anatolykoptev/dozor/compare/v1.18.3...v1.18.4) (2026-10-08)
 
 
