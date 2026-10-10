@@ -381,8 +381,8 @@ func (b *restBridge) buildOpenAPISpec(tools []*mcp.Tool) map[string]any {
 // toolResponseSchema is the OpenAPI schema for tool call responses.
 var toolResponseSchema = map[string]any{
 	jsonKeyType: jsonTypeObject,
-	"properties": map[string]any{
-		jsonKeyContent: map[string]any{jsonKeyType: jsonTypeArray, "items": map[string]string{jsonKeyType: jsonTypeObject}},
+	kwProperties: map[string]any{
+		jsonKeyContent: map[string]any{jsonKeyType: jsonTypeArray, kwItems: map[string]string{jsonKeyType: jsonTypeObject}},
 		"structured":   map[string]string{jsonKeyType: jsonTypeObject},
 		"is_error":     map[string]string{jsonKeyType: jsonTypeBoolean},
 	},

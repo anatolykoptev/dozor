@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -127,6 +128,15 @@ func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
+			// Cancel the tool when the HTTP client has gone away (see
+			// trackClientDisconnect); a no-op when the request is untracked.
+			clientCtx := clientRequestCtx(ctx)
+			defer cancelOnClientGone(clientCtx, cancel)()
+
+			// Keep the response stream warm while the tool runs so long calls
+			// aren't abandoned by clients/proxies before the result is ready.
+			stopKeepalive := startToolKeepalive(ctx, req, params.Name, cfg.ToolKeepaliveInterval)
+			defer stopKeepalive()
 
 			type callResult struct {
 				result mcp.Result
@@ -160,11 +170,95 @@ func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 				return &mcp.CallToolResult{
 					IsError: true,
 					Content: []mcp.Content{&mcp.TextContent{
-						Text: fmt.Sprintf("tool %q timed out after %s", params.Name, timeout),
+						Text: abortText(ctx, clientCtx, params.Name, timeout, start),
 					}},
 				}, nil
 			}
 		}
+	}
+}
+
+// startToolKeepalive periodically emits an MCP progress notification for an
+// in-flight tool call so intermediaries and clients see bytes on the response
+// stream and don't abandon a long-running call. The returned stop func must be
+// called when the call completes (safe to call exactly once).
+//
+// It is a no-op unless interval > 0 and the request carries a *mcp.ServerSession.
+// Notifications (unlike server->client requests) are permitted in stateless mode
+// and route to the originating request's stream via the request ID the SDK
+// stores in ctx. In application/json response mode there is no per-request
+// stream, so the notification is dropped harmlessly — SSE mode
+// (Config.JSONResponse == false) is required for the heartbeat to reach the client.
+func startToolKeepalive(ctx context.Context, req mcp.Request, toolName string, interval time.Duration) (stop func()) {
+	noop := func() {}
+	if interval <= 0 {
+		return noop
+	}
+	ss, ok := req.GetSession().(*mcp.ServerSession)
+	if !ok {
+		return noop
+	}
+	// Reuse the client-provided progress token when present so the client can
+	// correlate the heartbeat with its request; otherwise synthesize a stable
+	// token. Clients ignore progress for unknown tokens, so the synthesized
+	// token is safe and still delivers the keepalive bytes.
+	var token any = "keepalive/" + toolName
+	if params, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
+		if pt := params.GetProgressToken(); pt != nil {
+			token = pt
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		var progress float64
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				progress++
+				_ = ss.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+					ProgressToken: token,
+					Progress:      progress,
+					Message:       toolName + " running",
+				})
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// cancelOnClientGone arranges for cancel to run when clientCtx (the HTTP
+// request context from trackClientDisconnect) is done. The returned func
+// releases the registration; both are no-ops when clientCtx is nil.
+func cancelOnClientGone(clientCtx context.Context, cancel context.CancelFunc) (stop func()) {
+	if clientCtx == nil {
+		return func() {}
+	}
+	stopAfter := context.AfterFunc(clientCtx, cancel)
+	return func() { stopAfter() }
+}
+
+// abortText is the tool result text when ctx ended before the tool returned.
+// A client disconnect (clientCtx done) is logged once at Info; other
+// cancellations (notifications/cancelled, session close, REST ctx cancel) are
+// reported as a plain cancel; a deadline is a timeout.
+func abortText(ctx, clientCtx context.Context, tool string, timeout time.Duration, start time.Time) string {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return fmt.Sprintf("tool %q timed out after %s", tool, timeout)
+	case clientCtx != nil && clientCtx.Err() != nil:
+		slog.Info("tool cancelled: client disconnected",
+			slog.String("tool", tool),
+			slog.Duration("elapsed", time.Since(start)),
+		)
+		return fmt.Sprintf("tool %q cancelled: client disconnected", tool)
+	default:
+		return fmt.Sprintf("tool %q cancelled", tool)
 	}
 }
 

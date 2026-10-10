@@ -144,7 +144,6 @@ func buildMCPServer(eng *engine.ServerAgent, execOpts tools.ExecOptions) *mcp.Se
 		Name:    "dozor",
 		Version: version,
 	}, mcpserver.Config{
-		KeepAlive:   30 * time.Second,
 		SchemaCache: mcp.NewSchemaCache(),
 	})
 	tools.RegisterAllWithOpts(server, eng, execOpts)

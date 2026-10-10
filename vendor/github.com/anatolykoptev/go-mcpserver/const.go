@@ -13,4 +13,12 @@ const (
 	jsonKeyContent     = "content"
 
 	flagStdio = "--stdio"
+
+	// TransportStdio selects stdin/stdout as the MCP transport — set it as
+	// Config.Transport. The legacy --stdio os.Args scan in isStdio() remains
+	// as a fallback for consumers without a flag-parsing layer.
+	TransportStdio = "stdio"
+
+	// TransportHTTP is the default HTTP transport — explicit form of "".
+	TransportHTTP = "http"
 )
