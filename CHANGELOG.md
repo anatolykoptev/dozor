@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.19.0](https://github.com/anatolykoptev/dozor/compare/v1.18.5...v1.19.0) (2026-10-14)
+
+
+### Added
+
+* **deploy-check:** show pending debounced deploy, build start and last outcome ([#259](https://github.com/anatolykoptev/dozor/issues/259)) ([237ccba](https://github.com/anatolykoptev/dozor/commit/237ccbaafea218bcff5af578eea63a17caef5251))
+
+
+### Fixed
+
+* **deploy:** fail closed when the GitHub webhook secret is empty ([#258](https://github.com/anatolykoptev/dozor/issues/258)) ([bd89677](https://github.com/anatolykoptev/dozor/commit/bd8967705c6fd103ef26fc65642e605a31566add))
+
 ## [1.18.5](https://github.com/anatolykoptev/dozor/compare/v1.18.4...v1.18.5) (2026-10-10)
 
 
