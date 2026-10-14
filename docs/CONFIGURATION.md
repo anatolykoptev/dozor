@@ -135,6 +135,18 @@ Behavior matrix:
 | empty              | `true`                     | Endpoint registered, all requests allowed; WARN logged on startup and per-request |
 | empty              | unset / other (e.g. `"True"`, `"1"`, `"yes"`) | `Register` returns error → process exits (fail-closed). Only the exact string `"true"` is accepted. |
 
+## Inbound Webhooks & Local HTTP API
+
+The gateway HTTP server exposes signed inbound webhook routes (`POST /webhook`, `POST /webhook/` covering sub-paths like `/webhook/go-code`, `POST /webhook/monitor/healthcheck`), the unsigned-by-design `POST /webhook/alertmanager`, and `GET /api/logs`. Both auth surfaces are **fail-closed** since issues #233/#260: a missing credential disables the route instead of opening it.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DOZOR_WEBHOOK_SECRET` | _(empty)_ | HMAC-SHA256 secret for the signed `/webhook*` routes. Senders must set `X-Dozor-Webhook-Signature: <hex(HMAC-SHA256(body))>`. **Fail-closed:** when unset or whitespace-only, every signed `/webhook*` route answers `503 webhook disabled: no secret configured`, an ERROR is logged at startup, and `dozor_webhook_rejected_total{reason="no_secret"}` increments. Does NOT cover `/webhook/alertmanager` (below). |
+| `DOZOR_WEBHOOK_ALLOW_INSECURE` | _(empty)_ | Set to exactly `true` (case-sensitive) to restore the pre-fix unauthenticated behaviour on the signed `/webhook*` routes. Emits a WARN at startup. **Dev/test only — never in production.** |
+| `DOZOR_ALERTMANAGER_REQUIRE_SIG` | _(empty)_ | When `true`, `POST /webhook/alertmanager` also verifies `X-Dozor-Webhook-Signature` against `DOZOR_WEBHOOK_SECRET`. Default accepts unsigned payloads because stock Alertmanager cannot send an HMAC; tightening this path is tracked separately (issue #234). |
+| `DOZOR_API_TOKEN` | _(empty)_ | Bearer token for `GET /api/logs` (`Authorization: Bearer <token>`, constant-time compare). **Fail-closed:** unset or whitespace-only → every request gets `503 api disabled: no token configured` plus an ERROR at startup. With it set, a missing/wrong bearer gets 401. |
+| `DOZOR_API_ALLOW_INSECURE` | _(empty)_ | Set to exactly `true` (case-sensitive) to restore unauthenticated `/api/logs` (WARN at startup). **Dev/test only — never in production.** |
+
 ## Remote MCP Servers
 
 | Variable | Default | Description |

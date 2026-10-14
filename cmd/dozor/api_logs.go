@@ -72,11 +72,13 @@ var defaultGrepRe = regexp.MustCompile(`(?i)(panic|fatal|error)`)
 
 // registerLogsHandler mounts GET /api/logs on the given mux.
 //
-// Auth: if DOZOR_API_TOKEN is set in the environment, every request must
-// present `Authorization: Bearer <token>`. When the env var is unset the
-// endpoint is open (dev / same-network mode — suitable when dozor listens
-// only on the internal docker network). A warning is logged once at
-// registration time so operators see the gap in prod startup logs.
+// Auth: every request must present `Authorization: Bearer <DOZOR_API_TOKEN>`.
+// Fail closed (issue #233): when the token is unset or whitespace the endpoint
+// rejects every request with 503 instead of serving container logs
+// unauthenticated — a lost env var on a fresh host must not silently reopen
+// the route. DOZOR_API_ALLOW_INSECURE=true is the explicit dev opt-out,
+// mirroring DOZOR_MCP_ALLOW_INSECURE / DOZOR_A2A_ALLOW_INSECURE; it restores
+// the pre-fix open behaviour and logs a WARN at startup.
 //
 // Docker unavailability: if cli is nil (Docker not reachable at boot, or
 // non-local config), the handler is not registered and a warning is logged,
@@ -87,12 +89,23 @@ func registerLogsHandler(mx *http.ServeMux, cli containerLogger) {
 		return
 	}
 
-	apiToken := os.Getenv("DOZOR_API_TOKEN")
-	if apiToken == "" {
-		slog.Warn("logs endpoint running without auth; set DOZOR_API_TOKEN to restrict access")
+	apiToken := strings.TrimSpace(os.Getenv("DOZOR_API_TOKEN"))
+	// allowInsecure is read ONCE at registration so the decision cannot be
+	// mutated per-request (same TOCTOU fix as internal/a2a).
+	allowInsecure := os.Getenv("DOZOR_API_ALLOW_INSECURE") == "true"
+	apiDisabled := apiToken == "" && !allowInsecure
+	if apiDisabled {
+		slog.Error("logs endpoint disabled: DOZOR_API_TOKEN is not set; GET /api/logs rejects every request with 503 until it is configured",
+			slog.String("hint", "set DOZOR_API_TOKEN, or DOZOR_API_ALLOW_INSECURE=true for local dev only"))
+	} else if apiToken == "" {
+		slog.Warn("logs endpoint unauthenticated — DOZOR_API_ALLOW_INSECURE override active; DO NOT use in production")
 	}
 
 	mx.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
+		if apiDisabled {
+			http.Error(w, "api disabled: no token configured", http.StatusServiceUnavailable)
+			return
+		}
 		// Auth check — use constant-time compare to prevent timing oracle.
 		if apiToken != "" {
 			auth := r.Header.Get("Authorization")

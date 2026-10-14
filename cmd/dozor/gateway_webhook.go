@@ -17,6 +17,8 @@ import (
 	"github.com/anatolykoptev/dozor/internal/bus"
 	"github.com/anatolykoptev/dozor/internal/engine"
 	kitratelimit "github.com/anatolykoptev/go-kit/ratelimit"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 // webhookPayload is the union of fields dozor accepts from external monitors
@@ -40,6 +42,17 @@ type webhookPayload struct {
 // rotates twice a week) but caps a stuck-in-loop sender.
 var webhookLimiter = kitratelimit.NewKeyLimiter(10, 30)
 
+// webhookRejectedTotal counts requests rejected on the signed /webhook*
+// routes before dispatch. reason vocabulary mirrors
+// dozor_deploy_webhook_rejected_total (#258): "no_secret"
+// (DOZOR_WEBHOOK_SECRET unset/blank — the routes are disabled, fail-closed;
+// any increment means a misconfigured host), "missing_signature",
+// "invalid_signature".
+var webhookRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "dozor_webhook_rejected_total",
+	Help: "Requests to the signed /webhook* routes rejected by authentication, by reason.",
+}, []string{"reason"})
+
 // (HMAC startup warn is logged inline once per registerWebhookHandler call —
 // no package-level sync.Once because that breaks test isolation.)
 
@@ -50,7 +63,11 @@ func init() {
 
 // checkWebhookSignature verifies X-Dozor-Webhook-Signature (plain hex-encoded
 // HMAC-SHA256 of the raw body) against secret. Returns true when the signature
-// is valid, or when secret is empty (HMAC disabled).
+// is valid, or when secret is empty (HMAC disabled — still relied upon by
+// POST /webhook/alertmanager under DOZOR_ALERTMANAGER_REQUIRE_SIG; for every
+// other /webhook* route the fail-closed gate in registerWebhookHandler now
+// rejects empty-secret requests before this function is reached, and the
+// DOZOR_WEBHOOK_ALLOW_INSECURE override preserves the pass-through for dev).
 //
 // Header format: X-Dozor-Webhook-Signature: <hex(HMAC-SHA256(body, secret))>
 // (no prefix — differs from GitHub's "sha256=" envelope which is used by
@@ -121,12 +138,30 @@ var trustProxy = false
 // — exactly what the partner-edge fleet + piter scripts hit. The explicit route
 // renders those {"message":...} posts as deterministic alert cards instead.
 func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(string), notifyAlertFn func([]engine.Alert, string)) {
-	secret := os.Getenv("DOZOR_WEBHOOK_SECRET")
-	if secret == "" {
-		slog.Warn("webhook handler running without HMAC; set DOZOR_WEBHOOK_SECRET to enforce")
+	secret := strings.TrimSpace(os.Getenv("DOZOR_WEBHOOK_SECRET"))
+	// Fail closed (issues #233, #260): an empty secret must never re-open the
+	// signed /webhook* routes — the legacy branch feeds the agent loop, which
+	// carries exec tools. allowInsecure is read ONCE at registration so the
+	// decision cannot be mutated per-request; the dev opt-out mirrors the
+	// DOZOR_MCP_ALLOW_INSECURE / DOZOR_A2A_ALLOW_INSECURE convention.
+	//
+	// POST /webhook/alertmanager is deliberately NOT covered here: stock
+	// Alertmanager cannot send an HMAC, so it keeps its own
+	// DOZOR_ALERTMANAGER_REQUIRE_SIG gate unchanged (tracked by issue #234).
+	allowInsecure := os.Getenv("DOZOR_WEBHOOK_ALLOW_INSECURE") == "true"
+	webhookDisabled := secret == "" && !allowInsecure
+	if webhookDisabled {
+		slog.Error("webhook endpoints disabled: DOZOR_WEBHOOK_SECRET is not set; POST /webhook* rejects every request with 503 until it is configured",
+			slog.String("hint", "set DOZOR_WEBHOOK_SECRET, or DOZOR_WEBHOOK_ALLOW_INSECURE=true for local dev only"))
+	} else if secret == "" {
+		slog.Warn("webhook endpoints unauthenticated — DOZOR_WEBHOOK_ALLOW_INSECURE override active; DO NOT use in production")
 	}
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
+		if webhookDisabled {
+			rejectWebhookNoSecret(w, r)
+			return
+		}
 		key := webhookSourceKey(r)
 		if !webhookLimiter.Allow(key) {
 			slog.Warn("webhook rate-limited",
@@ -142,6 +177,7 @@ func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(st
 		}
 
 		if !checkWebhookSignature(body, r, secret) {
+			webhookRejectedTotal.WithLabelValues(webhookSigRejectReason(r)).Inc()
 			slog.Warn("webhook signature mismatch",
 				slog.String("source", key),
 				slog.String("path", r.URL.Path))
@@ -196,7 +232,27 @@ func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(st
 
 	mx.HandleFunc("POST /webhook", handler)
 	mx.HandleFunc("POST /webhook/", handler)
-	mx.HandleFunc("POST /webhook/monitor/healthcheck", monitorHealthcheckHandler(secret, notifyAlertFn))
+	mx.HandleFunc("POST /webhook/monitor/healthcheck", monitorHealthcheckHandler(secret, webhookDisabled, notifyAlertFn))
+}
+
+// rejectWebhookNoSecret answers every request on a disabled (secretless)
+// signed /webhook* route: 503 + a no_secret tick on
+// dozor_webhook_rejected_total so the misconfigured host is alertable.
+func rejectWebhookNoSecret(w http.ResponseWriter, r *http.Request) {
+	webhookRejectedTotal.WithLabelValues("no_secret").Inc()
+	slog.Warn("webhook rejected: DOZOR_WEBHOOK_SECRET not configured",
+		slog.String("path", r.URL.Path))
+	http.Error(w, "webhook disabled: no secret configured", http.StatusServiceUnavailable)
+}
+
+// webhookSigRejectReason distinguishes a missing X-Dozor-Webhook-Signature
+// header from a present-but-invalid one for the rejected_total reason label —
+// same vocabulary as dozor_deploy_webhook_rejected_total.
+func webhookSigRejectReason(r *http.Request) string {
+	if r.Header.Get("X-Dozor-Webhook-Signature") == "" {
+		return "missing_signature"
+	}
+	return "invalid_signature"
 }
 
 // monitorHealthcheckHandler renders the {"message":"..."} posts from the
@@ -213,8 +269,12 @@ func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(st
 //
 // The route is backward-compatible: it parses exactly the payload the existing
 // senders already POST, so no edge-fleet redeploy is required.
-func monitorHealthcheckHandler(secret string, notifyAlertFn func([]engine.Alert, string)) http.HandlerFunc {
+func monitorHealthcheckHandler(secret string, disabled bool, notifyAlertFn func([]engine.Alert, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if disabled {
+			rejectWebhookNoSecret(w, r)
+			return
+		}
 		key := webhookSourceKey(r)
 		if !webhookLimiter.Allow(key) {
 			slog.Warn("monitor webhook rate-limited",
@@ -229,6 +289,7 @@ func monitorHealthcheckHandler(secret string, notifyAlertFn func([]engine.Alert,
 			return
 		}
 		if !checkWebhookSignature(body, r, secret) {
+			webhookRejectedTotal.WithLabelValues(webhookSigRejectReason(r)).Inc()
 			slog.Warn("monitor webhook signature mismatch",
 				slog.String("source", key),
 				slog.String("path", r.URL.Path))
