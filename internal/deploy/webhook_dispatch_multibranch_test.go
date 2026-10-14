@@ -42,7 +42,7 @@ func TestMultiBranch_PushToMain_TriggersMainEntry(t *testing.T) {
 
 	cfg := multiBranchConfig()
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayload("anatolykoptev/oxpulse-chat", "refs/heads/main", "abc1234567890")
@@ -77,7 +77,7 @@ func TestMultiBranch_PushToDev_TriggersDevEntry(t *testing.T) {
 
 	cfg := multiBranchConfig()
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayload("anatolykoptev/oxpulse-chat", "refs/heads/dev", "def5678abcdef")
@@ -111,7 +111,7 @@ func TestMultiBranch_PushToFeature_IsIgnored(t *testing.T) {
 
 	cfg := multiBranchConfig()
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayload("anatolykoptev/oxpulse-chat", "refs/heads/feature/new-ui", "aaa0001")
@@ -156,7 +156,9 @@ func TestMultiBranch_DebounceIsolation(t *testing.T) {
 	}
 	q, _ := newTestQueue()
 
-	h := &Handler{config: cfg, queue: q, notify: func(string) {}}
+	cfg.Secret = autoSignSecret
+	raw := &Handler{config: cfg, queue: q, notify: func(string) {}}
+	h := &signingHandler{Handler: raw, autoSign: true}
 	var mu sync.Mutex
 	var dispatched []PendingEvent
 	h.debouncer = NewDebouncer(clock, func(ev PendingEvent) {
@@ -236,7 +238,7 @@ func TestMultiBranch_BackwardCompat_SingleEntry(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayload("anatolykoptev/go-job", "refs/heads/main", "oldstyle123")
@@ -292,7 +294,7 @@ func TestLookupBranch_MultiEntry(t *testing.T) {
 }
 
 // postMultiBranchPush is a thin wrapper used by multi-branch tests.
-func postMultiBranchPush(h *Handler, body string) *httptest.ResponseRecorder {
+func postMultiBranchPush(h http.Handler, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequestWithContext(
 		context.Background(),
 		http.MethodPost,

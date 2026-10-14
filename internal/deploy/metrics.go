@@ -67,6 +67,15 @@ var (
 		Help: "Durable build-queue lifecycle events (persist/reload/recover/stale_skip) for restart-survival of queued + in-flight builds.",
 	}, []string{"repo", "service", "op"})
 
+	// WebhookRejectedTotal counts POST /deploy/github requests rejected before
+	// parsing. reason: "no_secret" (DOZOR_GITHUB_WEBHOOK_SECRET unset — the
+	// endpoint is disabled, fail-closed; any increment means a misconfigured
+	// deploy), "missing_signature", "invalid_signature".
+	WebhookRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dozor_deploy_webhook_rejected_total",
+		Help: "GitHub deploy webhook requests rejected by authentication, by reason.",
+	}, []string{"reason"})
+
 	// SkippedTotal counts deploys that were skipped before queueing.
 	// `reason` is one of: "skip_if_any", "only_skip_paths", "skip_if_all",
 	// "no_relevant_paths", "no_auto_deploy".

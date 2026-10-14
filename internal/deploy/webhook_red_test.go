@@ -19,7 +19,7 @@ func TestHandler_GetMethod_Returns405(t *testing.T) {
 
 	cfg := testConfig("")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/deploy/github", http.NoBody)
 	w := httptest.NewRecorder()
@@ -35,7 +35,7 @@ func TestHandler_PutMethod_Returns405(t *testing.T) {
 
 	cfg := testConfig("")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, "/deploy/github", strings.NewReader("{}"))
 	w := httptest.NewRecorder()
@@ -55,7 +55,7 @@ func TestHandler_OversizedBody_IsHandledGracefully(t *testing.T) {
 	// and the remainder of the (truncated) body will fail JSON parse → 400.
 	cfg := testConfig("")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	// Build a body larger than maxWebhookBody: valid JSON prefix + garbage.
 	const oversize = maxWebhookBody + 1024
@@ -66,6 +66,9 @@ func TestHandler_OversizedBody_IsHandledGracefully(t *testing.T) {
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/deploy/github", bytes.NewReader(large))
 	req.Header.Set("X-GitHub-Event", "push")
+	// The handler verifies the HMAC over the bytes it read (capped at
+	// maxWebhookBody), so sign exactly that prefix.
+	req.Header.Set("X-Hub-Signature-256", computeSignature(string(large[:maxWebhookBody]), autoSignSecret))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -83,7 +86,7 @@ func TestHandler_MissingSignature_WhenSecretConfigured_Returns401(t *testing.T) 
 
 	cfg := testConfig("my-secret")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	body := pushPayload("anatolykoptev/dozor", "refs/heads/main", "abc123")
 
@@ -99,31 +102,6 @@ func TestHandler_MissingSignature_WhenSecretConfigured_Returns401(t *testing.T) 
 	}
 }
 
-// --- No secret configured — signature header is ignored ---
-
-func TestHandler_WrongSignature_WhenNoSecretConfigured_IsAccepted(t *testing.T) {
-	t.Parallel()
-
-	// When config.Secret == "", signature verification is skipped entirely.
-	cfg := testConfig("")
-	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
-
-	body := pushPayload("anatolykoptev/dozor", "refs/heads/main", "abc123")
-
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/deploy/github", strings.NewReader(body))
-	req.Header.Set("X-GitHub-Event", "push")
-	req.Header.Set("X-Hub-Signature-256", "sha256=wrong")
-
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	// Should proceed normally (200), not 401.
-	if w.Code != http.StatusOK {
-		t.Errorf("no-secret mode: expected 200 regardless of sig, got %d", w.Code)
-	}
-}
-
 // --- Concurrent deduplication: second push for same repo returns "deduplicated" ---
 
 func TestHandler_ConcurrentDuplicatePush_SecondIsDeduped(t *testing.T) {
@@ -131,7 +109,7 @@ func TestHandler_ConcurrentDuplicatePush_SecondIsDeduped(t *testing.T) {
 
 	cfg := testConfig("")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	body := pushPayload("anatolykoptev/dozor", "refs/heads/main", "abc1234567890")
 
@@ -178,7 +156,7 @@ func TestHandler_ConcurrentRequests_NoRaceCondition(t *testing.T) {
 	q, _ := newTestQueue()
 
 	var notifyCount atomic.Int64
-	h := NewHandler(cfg, q, func(string) { notifyCount.Add(1) })
+	h := newTestHandler(cfg, q, func(string) { notifyCount.Add(1) })
 
 	const goroutines = 20
 	var wg sync.WaitGroup
@@ -220,7 +198,7 @@ func TestHandler_EmptyBody_PushEvent_Returns400(t *testing.T) {
 
 	cfg := testConfig("")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/deploy/github", strings.NewReader(""))
 	req.Header.Set("X-GitHub-Event", "push")
@@ -240,7 +218,7 @@ func TestHandler_UnknownEvent_ReturnsIgnored(t *testing.T) {
 
 	cfg := testConfig("")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/deploy/github", strings.NewReader(`{}`))
 	req.Header.Set("X-GitHub-Event", "create")
@@ -268,7 +246,7 @@ func TestHandler_NotifyNotCalledSynchronously(t *testing.T) {
 	q, _ := newTestQueue()
 
 	notified := make(chan string, 1)
-	h := NewHandler(cfg, q, func(msg string) {
+	h := newTestHandler(cfg, q, func(msg string) {
 		select {
 		case notified <- msg:
 		default:

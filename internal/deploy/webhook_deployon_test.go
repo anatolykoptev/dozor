@@ -123,7 +123,7 @@ func TestHandler_DeployOnRelease_Push_Skipped(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/ox-codes", "refs/heads/main", "abc1234567890",
@@ -161,7 +161,7 @@ func TestHandler_DeployOnDefault_Push_Builds(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/ox-codes", "refs/heads/main", "abc1234567890",
@@ -197,7 +197,7 @@ func TestHandler_DeployOnRelease_ReleaseEvent_Builds(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := releasePayload("anatolykoptev/ox-codes", "v1.0.0", "main")
@@ -240,7 +240,7 @@ func TestHandler_DeployOn_Monorepo_Mixed_FiltersPerMatch(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/mono", "refs/heads/main", "abc1234567890",
@@ -286,7 +286,7 @@ func TestHandler_DeployOnManual_Push_Skipped(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/ox-manual-push", "refs/heads/main", "abc1234567890",
@@ -324,7 +324,7 @@ func TestHandler_DeployOnManual_ReleaseEvent_Queued(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := releasePayload("anatolykoptev/ox-manual-rel", "v1.0.0", "main")

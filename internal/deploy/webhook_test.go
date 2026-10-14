@@ -130,7 +130,7 @@ func TestHandler_Push(t *testing.T) {
 	secret := "webhook-secret"
 	cfg := testConfig(secret)
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	body := pushPayload("anatolykoptev/dozor", "refs/heads/main", "abc1234567890")
 	sig := computeSignature(body, secret)
@@ -166,7 +166,7 @@ func TestHandler_NonMainBranch(t *testing.T) {
 
 	cfg := testConfig("")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	body := pushPayload("anatolykoptev/dozor", "refs/heads/feature-x", "abc1234567890")
 
@@ -198,7 +198,7 @@ func TestHandler_Ping(t *testing.T) {
 
 	cfg := testConfig("")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	req := httptest.NewRequest(http.MethodPost, "/deploy/github", strings.NewReader("{}"))
 	req.Header.Set("X-GitHub-Event", "ping")
@@ -224,7 +224,7 @@ func TestHandler_UnknownRepo(t *testing.T) {
 
 	cfg := testConfig("")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	body := pushPayload("unknown/repo", "refs/heads/main", "abc1234567890")
 
@@ -257,7 +257,7 @@ func TestHandler_InvalidSignature(t *testing.T) {
 
 	cfg := testConfig("correct-secret")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	body := pushPayload("anatolykoptev/dozor", "refs/heads/main", "abc1234567890")
 	wrongSig := computeSignature(body, "wrong-secret")
@@ -279,7 +279,7 @@ func TestHandler_InvalidJSON(t *testing.T) {
 
 	cfg := testConfig("")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	req := httptest.NewRequest(http.MethodPost, "/deploy/github",
 		strings.NewReader("not json{{{"))
@@ -298,7 +298,7 @@ func TestHandler_NonPushEvent(t *testing.T) {
 
 	cfg := testConfig("")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	req := httptest.NewRequest(http.MethodPost, "/deploy/github",
 		strings.NewReader(`{"action":"opened"}`))
@@ -343,7 +343,7 @@ func TestWebhook_PushEvent_PerRepoBranch(t *testing.T) {
 	// Repo configured with Branch: "master" — push to master should be accepted.
 	cfg := testConfigWithBranch("master")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	body := pushPayload("anatolykoptev/dozor", "refs/heads/master", "abc1234567890")
 	req := httptest.NewRequest(http.MethodPost, "/deploy/github", strings.NewReader(body))
@@ -372,7 +372,7 @@ func TestWebhook_PushEvent_PerRepoBranch_Mismatch(t *testing.T) {
 	// Repo configured with Branch: "develop" — push to master should be ignored.
 	cfg := testConfigWithBranch("develop")
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 
 	body := pushPayload("anatolykoptev/dozor", "refs/heads/master", "abc1234567890")
 	req := httptest.NewRequest(http.MethodPost, "/deploy/github", strings.NewReader(body))
