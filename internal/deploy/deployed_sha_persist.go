@@ -36,6 +36,10 @@ func DefaultDeployedSHAPersistPath() string {
 type deployedSHAFile struct {
 	Deployed map[string]string `json:"deployed"`          // bare owner/repo → last successfully deployed source SHA
 	Compose  map[string]string `json:"compose,omitempty"` // bare owner/repo → deploy-clone SHA the `up` ran against (compose@<sha>, #239)
+	// Outcomes: service name → last build outcome (any status). See build_outcome.go.
+	Outcomes map[string]BuildOutcome `json:"outcomes,omitempty"`
+	// LastSuccess: service name → last successful deploy, never overwritten by a failure.
+	LastSuccess map[string]BuildOutcome `json:"last_success,omitempty"`
 }
 
 var (
@@ -58,6 +62,8 @@ func ConfigureDeployedSHAPersistence(path string) {
 	defer pendingDeployMu.Unlock()
 	deployedSHAPersistPath = path
 	deployedSHAs = map[string]string{}
+	buildOutcomes = map[string]BuildOutcome{}
+	lastSuccesses = map[string]BuildOutcome{}
 	if path == "" {
 		return
 	}
@@ -80,6 +86,12 @@ func ConfigureDeployedSHAPersistence(path string) {
 	}
 	for repo, sha := range doc.Compose {
 		deployedComposeSHAs[repo] = sha
+	}
+	for svc, o := range doc.Outcomes {
+		buildOutcomes[svc] = o
+	}
+	for svc, o := range doc.LastSuccess {
+		lastSuccesses[svc] = o
 	}
 }
 

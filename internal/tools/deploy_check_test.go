@@ -1,8 +1,17 @@
 package tools
 
 import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anatolykoptev/dozor/internal/deploy"
 	"github.com/prometheus/client_golang/prometheus"
@@ -166,5 +175,153 @@ func TestShortSHAUsesDeployHelper(t *testing.T) {
 	}
 	if got == fullSHA {
 		t.Error("ShortSHA returned full SHA — truncation broken")
+	}
+}
+
+// The incident: a release webhook arrived, dozor debounced 3 minutes, and
+// server_deploy_check showed old HEAD + "Queue: idle" with nothing hinting a
+// deploy was on its way. The pending section must say what fires and when.
+func TestWritePendingDebounce_ShowsPendingFireTime(t *testing.T) {
+	burst := time.Date(2026, 10, 14, 4, 15, 8, 0, time.UTC)
+	pending := []deploy.PendingDebounce{
+		{Repo: "anatolykoptev/vaelor", Services: []string{"go-code"}, CommitSHA: "5ec0de1234567890",
+			HitCount: 1, FirstSeen: burst, LastSeen: burst, FiresAt: burst.Add(3 * time.Minute)},
+		{Repo: "anatolykoptev/other", Services: []string{"other-svc"}, CommitSHA: "badbadbadbad",
+			HitCount: 1, FirstSeen: burst, LastSeen: burst, FiresAt: burst.Add(time.Minute)},
+	}
+	var b strings.Builder
+	// Through the pipeline renderer handleDeployCheck calls: dropping the
+	// pending section there must turn this red, not just the unit below it.
+	writeDeployPipeline(&b, burst.Add(30*time.Second), "anatolykoptev/vaelor", []string{"go-code"}, pending, true, nil, true)
+	got := b.String()
+
+	for _, want := range []string{"Pending:", "Queue:   idle", "5ec0de1", "NOT yet building", "burst started 2026-10-14T04:15:08Z", "fires 2026-10-14T04:18:08Z", "in 2m30s", "1 webhook"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("pending section missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "badbad") {
+		t.Errorf("pending section leaked another service's entry:\n%s", got)
+	}
+}
+
+func TestWritePendingDebounce_NoneAndUnavailableAndOverdue(t *testing.T) {
+	now := time.Date(2026, 10, 14, 4, 20, 0, 0, time.UTC)
+
+	var none strings.Builder
+	writePendingDebounce(&none, now, []string{"go-code"}, nil, true)
+	if !strings.Contains(none.String(), "Pending: none") {
+		t.Errorf("empty case: %q", none.String())
+	}
+
+	var off strings.Builder
+	writePendingDebounce(&off, now, []string{"go-code"}, nil, false)
+	if !strings.Contains(off.String(), "unavailable") {
+		t.Errorf("handler-not-started case: %q", off.String())
+	}
+
+	var late strings.Builder
+	p := []deploy.PendingDebounce{{Services: []string{"go-code"}, CommitSHA: "abcdef123456", HitCount: 2,
+		FirstSeen: now.Add(-5 * time.Minute), LastSeen: now.Add(-4 * time.Minute), FiresAt: now.Add(-time.Second)}}
+	writePendingDebounce(&late, now, []string{"go-code"}, p, true)
+	if !strings.Contains(late.String(), "firing now") {
+		t.Errorf("overdue case: %q", late.String())
+	}
+}
+
+func TestRenderQueueState_ShowsBuildStart(t *testing.T) {
+	started := time.Date(2026, 10, 14, 4, 18, 8, 0, time.UTC)
+	snap := []deploy.ServiceQueueState{{Services: []string{"go-code"}, BuildingSHA: "5ec0de1234567890", BuildingSince: started}}
+	var b strings.Builder
+	renderQueueState(&b, started.Add(90*time.Second), []string{"go-code"}, snap)
+	got := b.String()
+	for _, want := range []string{"building 5ec0de1", "started 2026-10-14T04:18:08Z", "running 1m30s"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("queue line missing %q: %s", want, got)
+		}
+	}
+
+	var idle strings.Builder
+	renderQueueState(&idle, started, []string{"go-code"}, nil)
+	if !strings.Contains(idle.String(), "Queue:   idle") {
+		t.Errorf("idle: %q", idle.String())
+	}
+}
+
+func TestImageNewerThanDeploy(t *testing.T) {
+	deployed := time.Date(2026, 10, 14, 4, 23, 16, 0, time.UTC)
+	if !imageNewerThanDeploy(deployed.Add(time.Hour), deployed) {
+		t.Error("image created after the last dozor deploy must be flagged")
+	}
+	if imageNewerThanDeploy(deployed.Add(-time.Minute), deployed) {
+		t.Error("image built before the deploy finished is dozor's own")
+	}
+}
+
+// Drives the exact assembly handleDeployCheck uses: a real webhook handler
+// debounces a push, and the FULL tool output must show Pending + Last deploy.
+func TestAssembleDeployCheck_FullOutput(t *testing.T) {
+	t.Setenv("DOZOR_WORKSPACE", t.TempDir())
+	persist := filepath.Join(t.TempDir(), "deployed-sha.json")
+	deploy.ConfigureDeployedSHAPersistence(persist)
+	t.Cleanup(func() { deploy.ConfigureDeployedSHAPersistence("") })
+	doc := `{"outcomes":{"full-out-svc":{"repo":"o/full-out","services":["full-out-svc"],"commit":"a28382e0000","status":"superseded","finished_at":"2026-10-14T04:10:00Z"}},
+	"last_success":{"full-out-svc":{"repo":"o/full-out","services":["full-out-svc"],"commit":"a28382e0000","status":"success","finished_at":"2026-10-14T03:00:00Z"}}}`
+	if err := os.WriteFile(persist, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deploy.ConfigureDeployedSHAPersistence(persist) // load it
+
+	const secret = "s3cret"
+	cfg := &deploy.Config{
+		Secret: secret,
+		Repos: map[string]deploy.RepoConfig{"o/full-out": {
+			Kind: deploy.KindStatic, Services: []string{"full-out-svc"}, SourcePath: t.TempDir(), ComposePath: t.TempDir(),
+		}},
+	}
+	q := deploy.NewQueue(context.Background(), func(string) {})
+	defer q.Close()
+	h := deploy.NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := `{"ref":"refs/heads/main","repository":{"full_name":"o/full-out"},"head_commit":{"id":"5ec0de1234567890","message":"m"}}`
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(body))
+	req := httptest.NewRequest(http.MethodPost, "/deploy/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "debounced") {
+		t.Fatalf("webhook not debounced: %d %s", w.Code, w.Body.String())
+	}
+
+	out, err := assembleDeployCheck(context.Background(), DeployCheckInput{Service: "full-out-svc"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Pending: 5ec0de1 debounced, NOT yet building", "fires ", "Last deploy: a28382e superseded", "Last success: a28382e", "Queue:   idle"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("full output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// The latest outcome being "superseded" must not zero the last-success time
+// that gates the hand-deploy warning.
+func TestWriteLastDeploy_LastSuccessSurvivesSuperseded(t *testing.T) {
+	persist := filepath.Join(t.TempDir(), "deployed-sha.json")
+	doc := `{"outcomes":{"ls-svc":{"commit":"old","status":"superseded","finished_at":"2026-10-14T05:00:00Z"}},
+	"last_success":{"ls-svc":{"commit":"good","status":"success","finished_at":"2026-10-14T03:00:00Z"}}}`
+	if err := os.WriteFile(persist, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deploy.ConfigureDeployedSHAPersistence(persist)
+	t.Cleanup(func() { deploy.ConfigureDeployedSHAPersistence("") })
+
+	var b strings.Builder
+	got := writeLastDeploy(&b, "o/ls", []string{"ls-svc"}, time.Date(2026, 10, 14, 6, 0, 0, 0, time.UTC))
+	if want := time.Date(2026, 10, 14, 3, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("lastSuccess = %v, want %v (hand-deploy check would be disabled)\n%s", got, want, b.String())
 	}
 }

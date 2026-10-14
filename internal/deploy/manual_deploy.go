@@ -123,7 +123,12 @@ func defaultGitManualOriginSHARunner(ctx context.Context, dir, branch string) (s
 // The caller is expected to run this in a goroutine and write the log to a
 // temp file — see StartManualDeploy in internal/engine/deploy.go.
 func ExecuteManualDeploy(ctx context.Context, req ManualDeployRequest) ManualDeployResult {
+	start := time.Now()
 	result := executeManualDeploy(ctx, req)
+	// Record for server_deploy_check ("Last deploy"): without this a dozor-owned
+	// manual deploy leaves the previous webhook commit as the last success and
+	// the hand-deploy warning fires against dozor's own work.
+	recordManualDeployOutcome(req, result, time.Since(start))
 	if result.Success && result.BuiltSHA != "" {
 		// The clears are gated on a SHA having been BUILT: a build=false
 		// (up --no-build) deploy ships no new image, so the "deploy owed"

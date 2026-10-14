@@ -3,7 +3,9 @@ package deploy
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -254,4 +256,58 @@ func (d *Debouncer) Pending() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return len(d.pending)
+}
+
+// PendingDebounce is a read-only view of one debounced deploy that has not
+// fired yet.
+type PendingDebounce struct {
+	Repo      string
+	Services  []string
+	CommitSHA string // latest commit in the burst (what will be built)
+	HitCount  int    // webhooks coalesced so far
+	FirstSeen time.Time
+	LastSeen  time.Time
+	FiresAt   time.Time // LastSeen + window: when the timer fires absent new hits
+}
+
+// Snapshot returns every debounce entry still waiting for its timer, ordered
+// by key. The slice is independent of the live map.
+func (d *Debouncer) Snapshot() []PendingDebounce {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	keys := make([]string, 0, len(d.pending))
+	for k := range d.pending {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]PendingDebounce, 0, len(keys))
+	for _, k := range keys {
+		e := d.pending[k]
+		out = append(out, PendingDebounce{
+			Repo:      e.event.Repo,
+			Services:  append([]string(nil), e.event.Config.Services...),
+			CommitSHA: e.event.CommitSHA,
+			HitCount:  e.event.HitCount,
+			FirstSeen: e.event.FirstSeen,
+			LastSeen:  e.event.LastSeen,
+			FiresAt:   e.event.LastSeen.Add(e.window),
+		})
+	}
+	return out
+}
+
+// activeDebouncer is the process-wide debouncer behind the GitHub webhook
+// handler, registered by NewHandler and cleared by Handler.Close. Same
+// late-binding singleton idea as activeQueue: read-only tools
+// (server_deploy_check) inspect it without being plumbed a Handler.
+var activeDebouncer atomic.Pointer[Debouncer]
+
+// PendingDebounces returns the active handler's un-fired debounce entries.
+// ok is false when no webhook handler is running (early init / webhook off).
+func PendingDebounces() (pending []PendingDebounce, ok bool) {
+	d := activeDebouncer.Load()
+	if d == nil {
+		return nil, false
+	}
+	return d.Snapshot(), true
 }
