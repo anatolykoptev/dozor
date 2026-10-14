@@ -112,3 +112,72 @@ func TestDebouncer_Snapshot_ReportsFireTime(t *testing.T) {
 		t.Errorf("FiresAt = %v, want LastSeen+3m = %v", p.FiresAt, want)
 	}
 }
+
+// NewHandler must register its debouncer for server_deploy_check; without the
+// registration the tool reports "debounce state unavailable" forever.
+func TestNewHandler_RegistersActiveDebouncer(t *testing.T) {
+	t.Setenv("DOZOR_WORKSPACE", t.TempDir())
+	q, _ := newTestQueue()
+	h := NewHandler(testConfig("s"), q, func(string) {})
+
+	if _, ok := PendingDebounces(); !ok {
+		t.Fatal("PendingDebounces() ok=false right after NewHandler: debouncer not registered")
+	}
+	h.Close()
+	if _, ok := PendingDebounces(); ok {
+		t.Fatal("PendingDebounces() ok=true after Close: debouncer still registered")
+	}
+}
+
+// A later superseded/failed outcome must not erase the last successful deploy.
+func TestLastSuccessfulDeploy_SurvivesLaterOutcomes(t *testing.T) {
+	persist := filepath.Join(t.TempDir(), "deployed-sha.json")
+	ConfigureDeployedSHAPersistence(persist)
+	t.Cleanup(func() { ConfigureDeployedSHAPersistence("") })
+
+	const svc = "keep-success-svc"
+	okAt := time.Date(2026, 10, 14, 4, 23, 16, 0, time.UTC)
+	recordBuildOutcome(BuildOutcome{Services: []string{svc}, CommitSHA: "good1", Status: "success", FinishedAt: okAt})
+	recordBuildOutcome(BuildOutcome{Services: []string{svc}, CommitSHA: "bad2", Status: "failure", FinishedAt: okAt.Add(time.Hour)})
+	recordBuildOutcome(BuildOutcome{Services: []string{svc}, CommitSHA: "old3", Status: OutcomeSuperseded, FinishedAt: okAt.Add(2 * time.Hour)})
+
+	check := func(stage string) {
+		t.Helper()
+		if o, _ := LastBuildOutcome(svc); o.Status != OutcomeSuperseded {
+			t.Errorf("%s: latest outcome = %q, want superseded", stage, o.Status)
+		}
+		s, ok := LastSuccessfulDeploy(svc)
+		if !ok || s.CommitSHA != "good1" || !s.FinishedAt.Equal(okAt) {
+			t.Errorf("%s: LastSuccessfulDeploy = %+v ok=%v, want good1 @ %v", stage, s, ok, okAt)
+		}
+	}
+	check("in memory")
+	ConfigureDeployedSHAPersistence(persist) // restart
+	check("after restart")
+}
+
+// server_deploy (the manual lane) must record an outcome, else the tool keeps
+// showing the previous webhook commit as the last success.
+func TestExecuteManualDeploy_RecordsManualOutcome(t *testing.T) {
+	ConfigureDeployedSHAPersistence("")
+	req := ManualDeployRequest{Repo: "test/manual-outcome", Config: RepoConfig{Services: []string{"manual-outcome-svc"}}}
+	// Fails fast (no source path / compose) — a failed run is still an outcome.
+	res := ExecuteManualDeploy(context.Background(), req)
+	o, ok := LastBuildOutcome("manual-outcome-svc")
+	if !ok {
+		t.Fatalf("no outcome recorded after ExecuteManualDeploy (result %+v)", res)
+	}
+	if res.Success {
+		t.Fatalf("expected the empty request to fail, got %+v", res)
+	}
+	if o.Status != "failure" || o.Error == "" {
+		t.Errorf("outcome = %+v, want failure with error", o)
+	}
+
+	// Success shape, via the recorder ExecuteManualDeploy calls.
+	recordManualDeployOutcome(req, ManualDeployResult{Success: true, BuiltSHA: "abc1234"}, 90*time.Second)
+	s, ok := LastSuccessfulDeploy("manual-outcome-svc")
+	if !ok || s.Status != OutcomeManual || s.CommitSHA != "abc1234" {
+		t.Errorf("LastSuccessfulDeploy = %+v ok=%v, want manual/abc1234", s, ok)
+	}
+}

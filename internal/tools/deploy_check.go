@@ -56,7 +56,12 @@ func handleDeployCheck(ctx context.Context, input DeployCheckInput) (string, err
 	if err != nil {
 		return "", fmt.Errorf("load deploy config: %w", err)
 	}
+	return assembleDeployCheck(ctx, input, cfg)
+}
 
+// assembleDeployCheck builds the full tool output for a loaded config. Split
+// from handleDeployCheck so tests drive the exact assembly production uses.
+func assembleDeployCheck(ctx context.Context, input DeployCheckInput, cfg *deploy.Config) (string, error) {
 	repo, rc, ok := findRepoByService(cfg, input.Service)
 	if !ok {
 		return "", fmt.Errorf("service %q not found in deploy-repos.yaml", input.Service)
@@ -169,6 +174,14 @@ func renderQueueState(b *strings.Builder, now time.Time, services []string, snap
 	fmt.Fprintf(b, "Queue:   idle\n")
 }
 
+// shortOrDash abbreviates a SHA; a no-build manual deploy has none.
+func shortOrDash(sha string) string {
+	if sha == "" {
+		return "-"
+	}
+	return deploy.ShortSHA(sha)
+}
+
 func fmtTS(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05Z") }
 
 // writePendingDebounce renders debounced deploys that have not fired yet —
@@ -217,7 +230,6 @@ func writeLastDeploy(b *strings.Builder, repo string, services []string, now tim
 	if deploy.BuildOutcomesDurable() {
 		scope = "persisted across restarts"
 	}
-	var lastSuccess time.Time
 	shown := false
 	for _, svc := range services {
 		o, ok := deploy.LastBuildOutcome(svc)
@@ -225,7 +237,7 @@ func writeLastDeploy(b *strings.Builder, repo string, services []string, now tim
 			continue
 		}
 		shown = true
-		fmt.Fprintf(b, "Last deploy: %s %s finished %s (%s ago)", deploy.ShortSHA(o.CommitSHA), o.Status, fmtTS(o.FinishedAt),
+		fmt.Fprintf(b, "Last deploy: %s %s finished %s (%s ago)", shortOrDash(o.CommitSHA), o.Status, fmtTS(o.FinishedAt),
 			now.Sub(o.FinishedAt).Round(time.Second))
 		if o.Duration != "" {
 			fmt.Fprintf(b, ", took %s", o.Duration)
@@ -237,8 +249,24 @@ func writeLastDeploy(b *strings.Builder, repo string, services []string, now tim
 			fmt.Fprintf(b, " — %s", o.Error)
 		}
 		b.WriteString("\n")
-		if o.Status == "success" && o.FinishedAt.After(lastSuccess) {
-			lastSuccess = o.FinishedAt
+	}
+	// Last successful deploy, tracked apart from the latest outcome so a later
+	// failure/timeout/superseded record neither hides it nor disables the
+	// hand-deploy check.
+	var lastSuccess time.Time
+	for _, svc := range services {
+		o, ok := deploy.LastBuildOutcome(svc)
+		if ok && o.IsDeploySuccess() {
+			continue // already shown above as the latest outcome
+		}
+		if s, ok := deploy.LastSuccessfulDeploy(svc); ok {
+			fmt.Fprintf(b, "Last success: %s finished %s (%s ago) [%s]\n", shortOrDash(s.CommitSHA), fmtTS(s.FinishedAt),
+				now.Sub(s.FinishedAt).Round(time.Second), s.Status)
+		}
+	}
+	for _, svc := range services {
+		if s, ok := deploy.LastSuccessfulDeploy(svc); ok && s.FinishedAt.After(lastSuccess) {
+			lastSuccess = s.FinishedAt
 		}
 	}
 	if !shown {

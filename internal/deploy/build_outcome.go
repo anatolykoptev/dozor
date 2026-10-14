@@ -19,6 +19,7 @@ import (
 const (
 	OutcomeSuperseded  = "superseded"   // pending build replaced by a newer commit before it ran
 	OutcomeManualGated = "manual_gated" // built, but deploy_on=manual withheld the deploy
+	OutcomeManual      = "manual"       // server_deploy (dozor-owned manual lane) succeeded
 	maxOutcomeErrLen   = 200
 )
 
@@ -33,9 +34,21 @@ type BuildOutcome struct {
 	Error      string    `json:"error,omitempty"`
 }
 
-// buildOutcomes is the in-memory mirror, service name → last outcome.
-// Guarded by pendingDeployMu (same lock as the deployed-SHA receipt).
-var buildOutcomes = map[string]BuildOutcome{}
+// IsDeploySuccess reports whether the outcome shipped to production via dozor
+// (webhook build or server_deploy).
+func (o BuildOutcome) IsDeploySuccess() bool {
+	return o.Status == "success" || o.Status == OutcomeManual
+}
+
+// buildOutcomes is the in-memory mirror, service name → latest outcome of any
+// status; lastSuccesses is service name → latest successful deploy, kept apart
+// so a later failure/timeout/superseded record cannot erase it (the hand-deploy
+// check compares image age against it). Guarded by pendingDeployMu (same lock
+// as the deployed-SHA receipt).
+var (
+	buildOutcomes = map[string]BuildOutcome{}
+	lastSuccesses = map[string]BuildOutcome{}
+)
 
 func truncateOutcomeError(e string) string {
 	if len(e) > maxOutcomeErrLen {
@@ -54,6 +67,9 @@ func recordBuildOutcome(o BuildOutcome) {
 	defer pendingDeployMu.Unlock()
 	for _, svc := range o.Services {
 		buildOutcomes[svc] = o
+		if o.IsDeploySuccess() {
+			lastSuccesses[svc] = o
+		}
 	}
 	if deployedSHAPersistPath == "" {
 		return
@@ -67,6 +83,12 @@ func recordBuildOutcome(o BuildOutcome) {
 	}
 	for _, svc := range o.Services {
 		doc.Outcomes[svc] = o
+		if o.IsDeploySuccess() {
+			if doc.LastSuccess == nil {
+				doc.LastSuccess = map[string]BuildOutcome{}
+			}
+			doc.LastSuccess[svc] = o
+		}
 	}
 	if err := writeJSONAtomic(deployedSHAPersistPath, doc); err != nil {
 		slog.Warn("deploy: failed to persist build outcome",
@@ -80,6 +102,32 @@ func LastBuildOutcome(service string) (BuildOutcome, bool) {
 	defer pendingDeployMu.Unlock()
 	o, ok := buildOutcomes[service]
 	return o, ok
+}
+
+// LastSuccessfulDeploy returns the most recent successful deploy for service,
+// independent of any later failed/superseded outcome.
+func LastSuccessfulDeploy(service string) (BuildOutcome, bool) {
+	pendingDeployMu.Lock()
+	defer pendingDeployMu.Unlock()
+	o, ok := lastSuccesses[service]
+	return o, ok
+}
+
+// recordManualDeployOutcome records the result of a server_deploy run.
+func recordManualDeployOutcome(req ManualDeployRequest, res ManualDeployResult, d time.Duration) {
+	o := BuildOutcome{
+		Repo:       req.Repo,
+		Services:   req.Config.Services,
+		CommitSHA:  res.BuiltSHA,
+		Status:     OutcomeManual,
+		FinishedAt: time.Now(),
+		Duration:   d.Round(time.Second).String(),
+	}
+	if !res.Success {
+		o.Status = "failure"
+		o.Error = truncateOutcomeError(res.Error)
+	}
+	recordBuildOutcome(o)
 }
 
 // BuildOutcomesDurable reports whether outcomes are persisted across a dozor

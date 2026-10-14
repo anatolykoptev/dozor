@@ -1,6 +1,14 @@
 package tools
 
 import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -247,5 +255,73 @@ func TestImageNewerThanDeploy(t *testing.T) {
 	}
 	if imageNewerThanDeploy(deployed.Add(-time.Minute), deployed) {
 		t.Error("image built before the deploy finished is dozor's own")
+	}
+}
+
+// Drives the exact assembly handleDeployCheck uses: a real webhook handler
+// debounces a push, and the FULL tool output must show Pending + Last deploy.
+func TestAssembleDeployCheck_FullOutput(t *testing.T) {
+	t.Setenv("DOZOR_WORKSPACE", t.TempDir())
+	persist := filepath.Join(t.TempDir(), "deployed-sha.json")
+	deploy.ConfigureDeployedSHAPersistence(persist)
+	t.Cleanup(func() { deploy.ConfigureDeployedSHAPersistence("") })
+	doc := `{"outcomes":{"full-out-svc":{"repo":"o/full-out","services":["full-out-svc"],"commit":"a28382e0000","status":"superseded","finished_at":"2026-10-14T04:10:00Z"}},
+	"last_success":{"full-out-svc":{"repo":"o/full-out","services":["full-out-svc"],"commit":"a28382e0000","status":"success","finished_at":"2026-10-14T03:00:00Z"}}}`
+	if err := os.WriteFile(persist, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deploy.ConfigureDeployedSHAPersistence(persist) // load it
+
+	const secret = "s3cret"
+	cfg := &deploy.Config{
+		Secret: secret,
+		Repos: map[string]deploy.RepoConfig{"o/full-out": {
+			Kind: deploy.KindStatic, Services: []string{"full-out-svc"}, SourcePath: t.TempDir(), ComposePath: t.TempDir(),
+		}},
+	}
+	q := deploy.NewQueue(context.Background(), func(string) {})
+	defer q.Close()
+	h := deploy.NewHandler(cfg, q, func(string) {})
+	defer h.Close()
+
+	body := `{"ref":"refs/heads/main","repository":{"full_name":"o/full-out"},"head_commit":{"id":"5ec0de1234567890","message":"m"}}`
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(body))
+	req := httptest.NewRequest(http.MethodPost, "/deploy/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "debounced") {
+		t.Fatalf("webhook not debounced: %d %s", w.Code, w.Body.String())
+	}
+
+	out, err := assembleDeployCheck(context.Background(), DeployCheckInput{Service: "full-out-svc"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Pending: 5ec0de1 debounced, NOT yet building", "fires ", "Last deploy: a28382e superseded", "Last success: a28382e", "Queue:   idle"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("full output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// The latest outcome being "superseded" must not zero the last-success time
+// that gates the hand-deploy warning.
+func TestWriteLastDeploy_LastSuccessSurvivesSuperseded(t *testing.T) {
+	persist := filepath.Join(t.TempDir(), "deployed-sha.json")
+	doc := `{"outcomes":{"ls-svc":{"commit":"old","status":"superseded","finished_at":"2026-10-14T05:00:00Z"}},
+	"last_success":{"ls-svc":{"commit":"good","status":"success","finished_at":"2026-10-14T03:00:00Z"}}}`
+	if err := os.WriteFile(persist, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deploy.ConfigureDeployedSHAPersistence(persist)
+	t.Cleanup(func() { deploy.ConfigureDeployedSHAPersistence("") })
+
+	var b strings.Builder
+	got := writeLastDeploy(&b, "o/ls", []string{"ls-svc"}, time.Date(2026, 10, 14, 6, 0, 0, 0, time.UTC))
+	if want := time.Date(2026, 10, 14, 3, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("lastSuccess = %v, want %v (hand-deploy check would be disabled)\n%s", got, want, b.String())
 	}
 }
