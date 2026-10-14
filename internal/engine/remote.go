@@ -261,6 +261,21 @@ func IsValidRemoteService(cfg Config, name string) bool {
 	return false
 }
 
+// RemoteAlertsHash returns a dedup key for the critical/error alerts of a remote
+// check, built from alert identity (level, service, title) only. Descriptions
+// carry volatile text (ssh stderr) and must not influence it.
+func RemoteAlertsHash(status *RemoteServerStatus) string {
+	var actionable []Alert
+	if status != nil {
+		for _, a := range status.Alerts {
+			if a.Level == AlertCritical || a.Level == AlertError {
+				actionable = append(actionable, a)
+			}
+		}
+	}
+	return hashAlerts(actionable)
+}
+
 // FormatRemoteAlerts formats critical/error alerts from a remote check for direct Telegram notification.
 // Returns empty string if there are no actionable alerts.
 func FormatRemoteAlerts(status *RemoteServerStatus) string {

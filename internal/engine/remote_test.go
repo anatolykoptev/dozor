@@ -184,3 +184,52 @@ func TestRemote_ServiceStatusSSHUnreachable(t *testing.T) {
 		t.Errorf("per-service rows must not be emitted: %q", out)
 	}
 }
+
+func TestRemote_ProbeTokenMustMatchExactly(t *testing.T) {
+	for _, stdout := range []string{"Welcome\n", "dozor-ssh-ok-extra", "Welcome\ndozor-ssh-ok"} {
+		f := &fakeRemote{probe: CommandResult{Stdout: stdout, Success: true}, httpCode: 200}
+		s := checkRemote(context.Background(), remoteCfg(), f.exec, f.http)
+		if len(s.Alerts) != 1 || !strings.Contains(s.Alerts[0].Title, "unreachable over SSH") {
+			t.Errorf("stdout %q: want 1 unreachable-over-SSH alert, got %d: %s", stdout, len(s.Alerts), titles(s))
+		}
+	}
+}
+
+func TestRemote_SSHDownHTTP500(t *testing.T) {
+	f := &fakeRemote{probe: CommandResult{Stderr: sshTimeoutStderr, ReturnCode: 255}, httpCode: 500}
+	s := checkRemote(context.Background(), remoteCfg(), f.exec, f.http)
+	if len(s.Alerts) != 2 {
+		t.Fatalf("want 2 alerts, got %d: %s", len(s.Alerts), titles(s))
+	}
+	if s.Alerts[0].Title != "HTTP 500 error" || !strings.Contains(s.Alerts[1].Title, "unreachable over SSH") {
+		t.Errorf("unexpected alerts: %s", titles(s))
+	}
+}
+
+func TestRemote_SSHDownNoURL(t *testing.T) {
+	cfg := remoteCfg()
+	cfg.RemoteURL = ""
+	f := &fakeRemote{probe: CommandResult{Stderr: sshTimeoutStderr, ReturnCode: 255}}
+	s := checkRemote(context.Background(), cfg, f.exec, f.http)
+	if len(s.Alerts) != 1 || s.Alerts[0].Level != AlertError || !strings.Contains(s.Alerts[0].Title, "unreachable over SSH") {
+		t.Fatalf("want 1 Error unreachable-over-SSH alert, got %d: %s", len(s.Alerts), titles(s))
+	}
+}
+
+func TestRemote_AlertsHashIgnoresDescription(t *testing.T) {
+	mk := func(title, desc string) *RemoteServerStatus {
+		return &RemoteServerStatus{Alerts: []Alert{
+			{Level: AlertError, Service: "h", Title: title, Description: desc},
+			{Level: AlertWarning, Service: "u", Title: "ssl", Description: "warn"},
+		}}
+	}
+	a := RemoteAlertsHash(mk("Remote host h unreachable", "SSH failed: Connection timed out"))
+	b := RemoteAlertsHash(mk("Remote host h unreachable", "SSH failed: kex_exchange_identification: reset"))
+	c := RemoteAlertsHash(mk("Remote host h other", "SSH failed: Connection timed out"))
+	if a != b {
+		t.Errorf("hash changed with Description only: %s vs %s", a, b)
+	}
+	if a == c {
+		t.Errorf("hash equal despite different Title: %s", a)
+	}
+}
