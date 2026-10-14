@@ -74,6 +74,7 @@ func NewHandler(config *Config, queue *Queue, notify func(string)) *Handler {
 	// so queued builds survive a dozor restart (graceful self-deploy or crash).
 	// See debounce_persist.go (VOLATILE-PENDING-STATE fix).
 	h.debouncer.WithPersistence(DefaultDebouncePersistPath())
+	activeDebouncer.Store(h.debouncer)
 	return h
 }
 
@@ -94,6 +95,7 @@ func (h *Handler) RecoverPending(ctx context.Context) {
 // Close releases the handler's debouncer goroutines. Safe to call once.
 func (h *Handler) Close() {
 	if h.debouncer != nil {
+		activeDebouncer.CompareAndSwap(h.debouncer, nil)
 		h.debouncer.Stop(nil)
 	}
 }

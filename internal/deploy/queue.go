@@ -91,7 +91,9 @@ type Queue struct {
 	pending map[string]BuildRequest // service-key â next-to-build (newest-wins)
 	busySHA map[string]string       // service-key â SHA currently building (active)
 	busyReq map[string]BuildRequest // service-key -> full request currently building (for restart-survival persistence)
-	signal  chan struct{}           // worker wake-up (buffered N)
+	// busyStart records when each in-flight build started (read by Snapshot).
+	busyStart map[string]time.Time
+	signal    chan struct{} // worker wake-up (buffered N)
 
 	// For tests: visibility into the building set without exposing busySHA's SHA.
 	building map[string]bool
@@ -146,6 +148,7 @@ func NewQueueN(ctx context.Context, notify func(string), n int) *Queue {
 		pending:   make(map[string]BuildRequest),
 		busySHA:   make(map[string]string),
 		busyReq:   make(map[string]BuildRequest),
+		busyStart: make(map[string]time.Time),
 		building:  make(map[string]bool),
 		signal:    make(chan struct{}, n), // buffered N so all workers can be woken
 		heavySem:  semaphore.NewWeighted(1),
@@ -257,6 +260,13 @@ func (q *Queue) Submit(req BuildRequest) bool {
 		for _, svc := range req.Config.Services {
 			SupersededTotal.WithLabelValues(req.Repo, svc).Inc()
 		}
+		recordBuildOutcome(BuildOutcome{
+			Repo:       existing.Repo,
+			Services:   existing.Config.Services,
+			CommitSHA:  existing.CommitSHA,
+			Status:     OutcomeSuperseded,
+			FinishedAt: time.Now(),
+		})
 	}
 	q.pending[key] = req
 	// Mirror the new pending set to disk so this queued build survives a dozor
@@ -311,6 +321,8 @@ type ServiceQueueState struct {
 	Services []string
 	// BuildingSHA is the commit currently being built for this group, or "" if idle.
 	BuildingSHA string
+	// BuildingSince is when the in-flight build started (zero when idle).
+	BuildingSince time.Time
 	// PendingSHA is the next commit queued to build, or "" if nothing pending.
 	PendingSHA string
 }
@@ -343,6 +355,7 @@ func (q *Queue) Snapshot() []ServiceQueueState {
 		state := ServiceQueueState{Services: strings.Split(k, "+")}
 		if sha, ok := q.busySHA[k]; ok {
 			state.BuildingSHA = sha
+			state.BuildingSince = q.busyStart[k]
 		}
 		if req, ok := q.pending[k]; ok {
 			state.PendingSHA = req.CommitSHA
@@ -420,6 +433,10 @@ func (q *Queue) drainPending(ctx context.Context) {
 		delete(q.pending, pickKey)
 		q.busySHA[pickKey] = pickReq.CommitSHA
 		q.busyReq[pickKey] = pickReq
+		if q.busyStart == nil {
+			q.busyStart = make(map[string]time.Time)
+		}
+		q.busyStart[pickKey] = time.Now()
 		q.building[pickKey] = true
 		// Mirror the pending→in-flight transition: the build is no longer pending
 		// but its full request is now tracked as in-flight, so a restart mid-build
@@ -439,6 +456,7 @@ func (q *Queue) drainPending(ctx context.Context) {
 		q.mu.Lock()
 		delete(q.busySHA, pickKey)
 		delete(q.busyReq, pickKey)
+		delete(q.busyStart, pickKey)
 		delete(q.building, pickKey)
 		// Build finished (success or failure): drop it from the persisted set so a
 		// later restart does not redundantly re-enqueue a completed build.
@@ -512,6 +530,19 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 	for _, svc := range req.Config.Services {
 		BuildResultTotal.WithLabelValues(req.Repo, svc, status).Inc()
 	}
+	outcomeStatus := status
+	if result.Success && result.ManualGated {
+		outcomeStatus = OutcomeManualGated
+	}
+	recordBuildOutcome(BuildOutcome{
+		Repo:       req.Repo,
+		Services:   req.Config.Services,
+		CommitSHA:  req.CommitSHA,
+		Status:     outcomeStatus,
+		FinishedAt: time.Now(),
+		Duration:   result.Duration.Round(time.Second).String(),
+		Error:      truncateOutcomeError(result.Error),
+	})
 
 	// Durable deployed-SHA receipt for the boot reconciler (issue #174):
 	// record what actually shipped, not what was attempted — including the

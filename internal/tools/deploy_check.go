@@ -33,8 +33,11 @@ func registerDeployCheck(server *mcp.Server, _ *engine.ServerAgent) {
 		Name: "server_deploy_check",
 		Description: `Check the current deploy state of a webhook-driven service.
 
-Aggregates: source git HEAD, smoke_url probe, container status, build counters
-(success / failure / timeout / debounced / superseded / deduplicated).
+Aggregates: source git HEAD, smoke_url probe, the deploy pipeline (a debounced
+deploy still waiting to fire, the in-flight build, the last build outcome and
+deployed commit), container status (flagging an image newer than dozor's last
+deploy = deployed by hand), and build counters (success / failure / timeout /
+debounced / superseded / deduplicated).
 
 Use to answer "did my last merge deploy?" without grepping /metrics by hand.
 Input: { "service": "oxpulse-chat" }`,
@@ -66,7 +69,7 @@ func handleDeployCheck(ctx context.Context, input DeployCheckInput) (string, err
 	// 1. git HEAD
 	sha, subject := readGitHead(ctx, rc.SourcePath)
 	if sha != "" {
-		fmt.Fprintf(&b, "HEAD:    %s %q\n", deploy.ShortSHA(sha), subject)
+		fmt.Fprintf(&b, "HEAD:    %s %q (source checkout — not necessarily what is running; see Last deploy)\n", deploy.ShortSHA(sha), subject)
 	} else {
 		fmt.Fprintf(&b, "HEAD:    (unreadable — %s)\n", subject)
 	}
@@ -81,15 +84,27 @@ func handleDeployCheck(ctx context.Context, input DeployCheckInput) (string, err
 		b.WriteString("\n")
 	}
 
-	// 3. container status (compose services only — binary/static have no docker)
+	// 3. deploy pipeline: debounced-but-unfired, queued/in-flight, last outcome.
+	// Written before container status so "a deploy is on its way" is not buried.
+	pending, pendingOK := deploy.PendingDebounces()
+	var queueSnap []deploy.ServiceQueueState
+	queueOK := false
+	if q := deploy.ActiveQueue(); q != nil {
+		queueSnap, queueOK = q.Snapshot(), true
+	}
+	lastSuccess := writeDeployPipeline(&b, time.Now(), repo, rc.Services, pending, pendingOK, queueSnap, queueOK)
+
+	// 4. container status (compose services only — binary/static have no docker)
 	if effectiveKind(rc) == "compose" {
 		for _, svc := range rc.Services {
 			fmt.Fprintf(&b, "Docker:  %s\n", dockerStatus(ctx, svc))
+			if created, err := containerImageCreated(ctx, svc); err == nil && !lastSuccess.IsZero() &&
+				imageNewerThanDeploy(created, lastSuccess) {
+				fmt.Fprintf(&b, "WARNING: %s runs an image created %s, after dozor's last successful deploy (%s) — likely deployed by hand\n",
+					svc, created.UTC().Format(time.RFC3339), lastSuccess.UTC().Format(time.RFC3339))
+			}
 		}
 	}
-
-	// 4. live queue state for this service group
-	writeQueueState(&b, rc.Services)
 
 	// 5. counters
 	fmt.Fprintf(&b, "\nCounters since dozor start (%s):\n", repo)
@@ -98,24 +113,31 @@ func handleDeployCheck(ctx context.Context, input DeployCheckInput) (string, err
 	return b.String(), nil
 }
 
-// writeQueueState renders the current Queue snapshot for the requested
-// service set. "idle" when no build is in flight or pending. The data
-// comes from deploy.ActiveQueue() — nil during early init (before
-// NewQueue runs) — in which case the section is omitted entirely.
-func writeQueueState(b *strings.Builder, services []string) {
-	q := deploy.ActiveQueue()
-	if q == nil {
-		// Most plausibly an early-restart race — operator ran the tool
-		// before gateway init completed NewQueue. Make the absence visible
-		// rather than silently skipping the section.
-		fmt.Fprintf(b, "Queue:   (not yet started)\n")
-		return
+// writeDeployPipeline renders the three stages a webhook passes through, in
+// order: debounce window (Pending), build queue (Queue), and the recorded
+// outcome (Last deploy). Showing all of them is the point — any single one
+// reads "idle" while a deploy is on its way. A nil queue (early init, before
+// NewQueue ran) is made visible rather than silently skipped. Returns the
+// finish time of the last successful deploy (zero if unknown).
+func writeDeployPipeline(b *strings.Builder, now time.Time, repo string, services []string,
+	pending []deploy.PendingDebounce, pendingOK bool, queueSnap []deploy.ServiceQueueState, queueOK bool,
+) time.Time {
+	writePendingDebounce(b, now, services, pending, pendingOK)
+	if queueOK {
+		renderQueueState(b, now, services, queueSnap)
+	} else {
+		b.WriteString("Queue:   (not yet started)\n")
 	}
+	return writeLastDeploy(b, repo, services, now)
+}
+
+// renderQueueState is the pure half of writeQueueState.
+func renderQueueState(b *strings.Builder, now time.Time, services []string, snap []deploy.ServiceQueueState) {
 	want := make(map[string]struct{}, len(services))
 	for _, s := range services {
 		want[s] = struct{}{}
 	}
-	for _, state := range q.Snapshot() {
+	for _, state := range snap {
 		// Match if any of the snapshot's service names is in our request.
 		hit := false
 		for _, s := range state.Services {
@@ -130,6 +152,9 @@ func writeQueueState(b *strings.Builder, services []string) {
 		fmt.Fprintf(b, "Queue:   ")
 		if state.BuildingSHA != "" {
 			fmt.Fprintf(b, "building %s", deploy.ShortSHA(state.BuildingSHA))
+			if !state.BuildingSince.IsZero() {
+				fmt.Fprintf(b, " (started %s, running %s)", fmtTS(state.BuildingSince), now.Sub(state.BuildingSince).Round(time.Second))
+			}
 		}
 		if state.PendingSHA != "" {
 			if state.BuildingSHA != "" {
@@ -142,6 +167,114 @@ func writeQueueState(b *strings.Builder, services []string) {
 	}
 	// Service known to config but absent from the snapshot — queue is idle for it.
 	fmt.Fprintf(b, "Queue:   idle\n")
+}
+
+func fmtTS(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05Z") }
+
+// writePendingDebounce renders debounced deploys that have not fired yet —
+// the window between "webhook received" and "build queued" in which HEAD,
+// Queue and the counters all still look idle. ok=false means the webhook
+// handler (and so the debouncer) is not running in this process.
+func writePendingDebounce(b *strings.Builder, now time.Time, services []string, pending []deploy.PendingDebounce, ok bool) {
+	if !ok {
+		b.WriteString("Pending: (debounce state unavailable — webhook handler not started)\n")
+		return
+	}
+	want := make(map[string]struct{}, len(services))
+	for _, s := range services {
+		want[s] = struct{}{}
+	}
+	found := false
+	for _, p := range pending {
+		hit := false
+		for _, s := range p.Services {
+			if _, in := want[s]; in {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			continue
+		}
+		found = true
+		fires := "firing now"
+		if d := p.FiresAt.Sub(now); d > 0 {
+			fires = fmt.Sprintf("fires %s (in %s)", fmtTS(p.FiresAt), d.Round(time.Second))
+		}
+		fmt.Fprintf(b, "Pending: %s debounced, NOT yet building — burst started %s, last webhook %s, %s, %d webhook(s)\n",
+			deploy.ShortSHA(p.CommitSHA), fmtTS(p.FirstSeen), fmtTS(p.LastSeen), fires, p.HitCount)
+	}
+	if !found {
+		b.WriteString("Pending: none (no debounced deploy waiting)\n")
+	}
+}
+
+// writeLastDeploy renders the last recorded build outcome for the service
+// group and the deploy receipt. Returns the finish time of the last
+// successful deploy (zero if none known) for the hand-deploy check.
+func writeLastDeploy(b *strings.Builder, repo string, services []string, now time.Time) time.Time {
+	scope := "since dozor start"
+	if deploy.BuildOutcomesDurable() {
+		scope = "persisted across restarts"
+	}
+	var lastSuccess time.Time
+	shown := false
+	for _, svc := range services {
+		o, ok := deploy.LastBuildOutcome(svc)
+		if !ok {
+			continue
+		}
+		shown = true
+		fmt.Fprintf(b, "Last deploy: %s %s finished %s (%s ago)", deploy.ShortSHA(o.CommitSHA), o.Status, fmtTS(o.FinishedAt),
+			now.Sub(o.FinishedAt).Round(time.Second))
+		if o.Duration != "" {
+			fmt.Fprintf(b, ", took %s", o.Duration)
+		}
+		if len(services) > 1 {
+			fmt.Fprintf(b, " [%s]", svc)
+		}
+		if o.Error != "" {
+			fmt.Fprintf(b, " — %s", o.Error)
+		}
+		b.WriteString("\n")
+		if o.Status == "success" && o.FinishedAt.After(lastSuccess) {
+			lastSuccess = o.FinishedAt
+		}
+	}
+	if !shown {
+		fmt.Fprintf(b, "Last deploy: none recorded (%s)\n", scope)
+	} else {
+		fmt.Fprintf(b, "         (last-deploy history: %s)\n", scope)
+	}
+	if sha := deploy.DeployedSHA(repo); sha != "" {
+		fmt.Fprintf(b, "Deployed (receipt): %s\n", deploy.ShortSHA(sha))
+	}
+	return lastSuccess
+}
+
+// imageNewerThanDeploy reports whether a container image was created after
+// dozor's last successful deploy finished. dozor's own builds finish before
+// they are recorded, so a strictly later image can only come from a deploy
+// done outside dozor.
+func imageNewerThanDeploy(imageCreated, lastSuccess time.Time) bool {
+	return imageCreated.After(lastSuccess)
+}
+
+// containerImageCreated returns the creation time of the image a container is
+// running (not of whatever its tag points at now).
+func containerImageCreated(ctx context.Context, container string) (time.Time, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	idOut, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.Image}}", container).Output()
+	if err != nil {
+		return time.Time{}, err
+	}
+	out, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Created}}",
+		strings.TrimSpace(string(idOut))).Output()
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Parse(time.RFC3339Nano, strings.TrimSpace(string(out)))
 }
 
 // findRepoByService scans the loaded config for any repo whose Services list
