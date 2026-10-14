@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.1](https://github.com/anatolykoptev/dozor/compare/v1.19.0...v1.19.1) (2026-10-14)
+
+
+### Fixed
+
+* **remote:** report SSH transport failure as one unreachable-host alert, not N inactive services ([#264](https://github.com/anatolykoptev/dozor/issues/264)) ([e10dfef](https://github.com/anatolykoptev/dozor/commit/e10dfefe0f0387d195946b5dd5be547dadcc0576))
+
 ## [1.19.0](https://github.com/anatolykoptev/dozor/compare/v1.18.5...v1.19.0) (2026-10-14)
 
 
