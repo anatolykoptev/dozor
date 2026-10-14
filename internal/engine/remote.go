@@ -15,25 +15,70 @@ const (
 	remoteSSLWarnHours = 14 * 24
 )
 
+// remoteProbeToken is echoed by the SSH reachability probe; the host counts as
+// reachable only when it comes back verbatim.
+const remoteProbeToken = "dozor-ssh-ok"
+
+type (
+	remoteExecFunc func(ctx context.Context, cmd string) CommandResult
+	remoteHTTPFunc func(ctx context.Context, url string) (int, *time.Time)
+)
+
 // CheckRemoteServer monitors a remote server via HTTP and SSH.
 func CheckRemoteServer(ctx context.Context, cfg Config) *RemoteServerStatus {
 	if cfg.RemoteHost == "" && cfg.RemoteURL == "" {
 		return nil
 	}
+	return checkRemote(ctx, cfg, newRemoteTransport(cfg).ExecuteUnsafe, checkHTTP)
+}
 
+// probeRemoteSSH reports whether the remote host answers over SSH. The second
+// return value is the first stderr line (empty if none) for the alert text.
+func probeRemoteSSH(ctx context.Context, exec remoteExecFunc) (bool, string) {
+	res := exec(ctx, "echo "+remoteProbeToken)
+	if res.ReturnCode == 0 && strings.TrimSpace(res.Stdout) == remoteProbeToken {
+		return true, ""
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(res.Stderr), "\n")
+	line = strings.TrimSpace(line)
+	if line == "" {
+		line = fmt.Sprintf("no valid response (exit code %d)", res.ReturnCode)
+	}
+	return false, line
+}
+
+func checkRemote(ctx context.Context, cfg Config, exec remoteExecFunc, httpCheck remoteHTTPFunc) *RemoteServerStatus {
 	status := &RemoteServerStatus{
 		Host:     cfg.RemoteHost,
 		Services: make(map[string]string),
 	}
 
+	// Probe SSH once up front so a transport failure is not reported as N service failures.
+	sshOK, sshErr := true, ""
+	if cfg.RemoteHost != "" {
+		sshOK, sshErr = probeRemoteSSH(ctx, exec)
+	}
+
 	// HTTP availability check
 	if cfg.RemoteURL != "" {
-		httpStatus, sslExpiry := checkHTTP(ctx, cfg.RemoteURL)
+		httpStatus, sslExpiry := httpCheck(ctx, cfg.RemoteURL)
 		status.HTTPStatus = httpStatus
 		status.SSLExpiry = sslExpiry
-
 		now := time.Now()
-		if httpStatus == 0 {
+		switch {
+		case httpStatus == 0 && !sshOK:
+			status.Alerts = append(status.Alerts, Alert{
+				Level:   AlertCritical,
+				Service: cfg.RemoteHost,
+				Title:   "Remote host unreachable from the monitor (HTTP and SSH both fail)",
+				Description: fmt.Sprintf("%s does not answer HTTP and SSH from this monitor (%s). "+
+					"This is either a full outage or a network-path problem between the monitor and the host. "+
+					"Service states are unknown, not failed: %s",
+					cfg.RemoteURL, sshErr, strings.Join(cfg.RemoteServices, ", ")),
+				SuggestedAction: "Confirm from another network before restarting anything",
+				Timestamp:       now,
+			})
+		case httpStatus == 0:
 			status.Alerts = append(status.Alerts, Alert{
 				Level:           AlertCritical,
 				Service:         cfg.RemoteURL,
@@ -42,7 +87,7 @@ func CheckRemoteServer(ctx context.Context, cfg Config) *RemoteServerStatus {
 				SuggestedAction: "Check nginx and upstream services on the remote server",
 				Timestamp:       now,
 			})
-		} else if httpStatus >= httpServerErrorMin {
+		case httpStatus >= httpServerErrorMin:
 			status.Alerts = append(status.Alerts, Alert{
 				Level:           AlertError,
 				Service:         cfg.RemoteURL,
@@ -52,7 +97,6 @@ func CheckRemoteServer(ctx context.Context, cfg Config) *RemoteServerStatus {
 				Timestamp:       now,
 			})
 		}
-
 		if sslExpiry != nil && time.Until(*sslExpiry) < remoteSSLWarnHours*time.Hour {
 			status.Alerts = append(status.Alerts, Alert{
 				Level:           AlertWarning,
@@ -66,39 +110,64 @@ func CheckRemoteServer(ctx context.Context, cfg Config) *RemoteServerStatus {
 	}
 
 	// SSH-based checks
-	if cfg.RemoteHost != "" {
-		t := newRemoteTransport(cfg)
-
-		// Check systemd services
+	if cfg.RemoteHost == "" {
+		return status
+	}
+	if !sshOK {
 		for _, svc := range cfg.RemoteServices {
-			res := t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null", svc))
-			state := strings.TrimSpace(res.Stdout)
-			if state == "" {
-				state = string(StateUnknown)
-			}
-			status.Services[svc] = state
-
-			if state != stateActive {
-				status.Alerts = append(status.Alerts, Alert{
-					Level:           AlertError,
-					Service:         svc,
-					Title:           fmt.Sprintf("Remote service %s is %s", svc, state),
-					Description:     fmt.Sprintf("Systemd service %s on %s is not active", svc, cfg.RemoteHost),
-					SuggestedAction: fmt.Sprintf("SSH into %s and check: systemctl status %s", cfg.RemoteHost, svc),
-					Timestamp:       time.Now(),
-				})
-			}
+			status.Services[svc] = string(StateUnknown)
 		}
-
-		// Disk usage
-		res := t.ExecuteUnsafe(ctx, "df -h / | tail -1")
-		status.DiskUsage = strings.TrimSpace(res.Stdout)
-
-		// Load average
-		res = t.ExecuteUnsafe(ctx, "cat /proc/loadavg 2>/dev/null")
-		status.LoadAvg = strings.TrimSpace(res.Stdout)
+		// The combined HTTP+SSH alert above already covers this case.
+		if status.HTTPStatus != 0 || cfg.RemoteURL == "" {
+			status.Alerts = append(status.Alerts, Alert{
+				Level:   AlertError,
+				Service: cfg.RemoteHost,
+				Title:   fmt.Sprintf("Remote host %s unreachable over SSH from the monitor", cfg.RemoteHost),
+				Description: fmt.Sprintf("SSH failed from this monitor: %s. "+
+					"Services were not checked; their state is UNKNOWN, not failed: %s",
+					sshErr, strings.Join(cfg.RemoteServices, ", ")),
+				SuggestedAction: "Check the network path from the monitor to the host; services are not known to be down",
+				Timestamp:       time.Now(),
+			})
+		}
+		return status
 	}
 
+	// Check systemd services
+	for _, svc := range cfg.RemoteServices {
+		res := exec(ctx, fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null", svc))
+		state := strings.TrimSpace(res.Stdout)
+		if state == "" {
+			status.Services[svc] = string(StateUnknown)
+			status.Alerts = append(status.Alerts, Alert{
+				Level:           AlertError,
+				Service:         svc,
+				Title:           fmt.Sprintf("Remote service %s state unknown", svc),
+				Description:     fmt.Sprintf("systemctl returned no state for %s on %s (exit code %d)", svc, cfg.RemoteHost, res.ReturnCode),
+				SuggestedAction: fmt.Sprintf("SSH into %s and check: systemctl status %s", cfg.RemoteHost, svc),
+				Timestamp:       time.Now(),
+			})
+			continue
+		}
+		status.Services[svc] = state
+		if state != stateActive {
+			status.Alerts = append(status.Alerts, Alert{
+				Level:           AlertError,
+				Service:         svc,
+				Title:           fmt.Sprintf("Remote service %s is %s", svc, state),
+				Description:     fmt.Sprintf("Systemd service %s on %s is not active", svc, cfg.RemoteHost),
+				SuggestedAction: fmt.Sprintf("SSH into %s and check: systemctl status %s", cfg.RemoteHost, svc),
+				Timestamp:       time.Now(),
+			})
+		}
+	}
+
+	// Disk usage
+	res := exec(ctx, "df -h / | tail -1")
+	status.DiskUsage = strings.TrimSpace(res.Stdout)
+	// Load average
+	res = exec(ctx, "cat /proc/loadavg 2>/dev/null")
+	status.LoadAvg = strings.TrimSpace(res.Stdout)
 	return status
 }
 
@@ -113,13 +182,18 @@ func newRemoteTransport(cfg Config) *Transport {
 
 // RemoteServiceStatus returns status of all configured remote services.
 func RemoteServiceStatus(ctx context.Context, cfg Config) string {
-	t := newRemoteTransport(cfg)
+	return remoteServiceStatus(ctx, cfg, newRemoteTransport(cfg).ExecuteUnsafe)
+}
 
+func remoteServiceStatus(ctx context.Context, cfg Config, exec remoteExecFunc) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Remote Services [%s] (%d)\n\n", cfg.RemoteHost, len(cfg.RemoteServices))
-
+	if ok, sshErr := probeRemoteSSH(ctx, exec); !ok {
+		fmt.Fprintf(&b, "SSH unreachable from monitor: %s — service states unknown\n", sshErr)
+		return b.String()
+	}
 	for _, svc := range cfg.RemoteServices {
-		res := t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null", svc))
+		res := exec(ctx, fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null", svc))
 		state := strings.TrimSpace(res.Stdout)
 		if state == "" {
 			state = string(StateUnknown)
@@ -132,7 +206,7 @@ func RemoteServiceStatus(ctx context.Context, cfg Config) string {
 		fmt.Fprintf(&b, "[%s] %s: %s\n", icon, svc, state)
 
 		// Get uptime and memory
-		res = t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo systemctl show %s --property=ActiveEnterTimestamp,MemoryCurrent 2>/dev/null", svc))
+		res = exec(ctx, fmt.Sprintf("sudo systemctl show %s --property=ActiveEnterTimestamp,MemoryCurrent 2>/dev/null", svc))
 		FormatSystemctlProperties(res.Stdout, &b)
 	}
 
@@ -185,6 +259,21 @@ func IsValidRemoteService(cfg Config, name string) bool {
 		}
 	}
 	return false
+}
+
+// RemoteAlertsHash returns a dedup key for the critical/error alerts of a remote
+// check, built from alert identity (level, service, title) only. Descriptions
+// carry volatile text (ssh stderr) and must not influence it.
+func RemoteAlertsHash(status *RemoteServerStatus) string {
+	var actionable []Alert
+	if status != nil {
+		for _, a := range status.Alerts {
+			if a.Level == AlertCritical || a.Level == AlertError {
+				actionable = append(actionable, a)
+			}
+		}
+	}
+	return hashAlerts(actionable)
 }
 
 // FormatRemoteAlerts formats critical/error alerts from a remote check for direct Telegram notification.

@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"log/slog"
 	"time"
 
@@ -97,8 +95,7 @@ func remoteCheckTick(ctx context.Context, cfg engine.Config, notify func(string)
 		return
 	}
 
-	h := sha256.Sum256([]byte(msg))
-	hash := hex.EncodeToString(h[:8])
+	hash := engine.RemoteAlertsHash(status)
 
 	now := time.Now()
 	if hash == *lastHash && now.Sub(*lastTime) < repeatAfter {
