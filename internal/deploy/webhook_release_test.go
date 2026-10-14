@@ -43,7 +43,7 @@ func releasePayload(repo, tagName, targetCommitish string) string {
 	return string(out)
 }
 
-func postRelease(h *Handler, body string) *httptest.ResponseRecorder {
+func postRelease(h http.Handler, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/deploy/github", strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "release")
 	w := httptest.NewRecorder()
@@ -133,7 +133,7 @@ func TestHandler_Release_PathFilter_SkipsChangelogOnlyRelease(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 	h.shaResolver = func(string) string { return deployedSHA }
 
@@ -172,7 +172,7 @@ func TestHandler_Release_PathFilter_BuildsOnRelevantChange(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 	h.shaResolver = func(string) string { return deployedSHA }
 
@@ -210,7 +210,7 @@ func TestHandler_Release_PathFilter_FallsBackToBuildWhenSHAUnresolvable(t *testi
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 	h.shaResolver = func(string) string { return "unknown" }
 
@@ -254,7 +254,7 @@ func TestHandler_Release_PathFilter_FallsBackToBuildWhenTargetCommitishInvalid(t
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 	h.shaResolver = func(string) string { return deployedSHA }
 
@@ -317,7 +317,7 @@ func TestHandler_Release_PathFilter_MultiRepo_DiffsInSourceClone(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 	h.shaResolver = func(string) string { return deployedSHA }
 
@@ -364,7 +364,7 @@ func TestHandler_Release_PathFilter_UnresolvableSHA_LogsError(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 	h.shaResolver = func(string) string { return deployedSHA }
 

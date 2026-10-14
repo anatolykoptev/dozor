@@ -51,7 +51,7 @@ func TestHandler_DeployOnOnDemand_Push_Ignored(t *testing.T) {
 		},
 	}}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	w := postPush(h, pushPayloadWithFiles("anatolykoptev/ox-od-push", "refs/heads/main", "abc1234567890",
@@ -96,7 +96,7 @@ func TestHandler_DeployOnOnDemand_ReleaseEvent_RoutesOnlyReleaseLanes(t *testing
 	}
 
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	w := postRelease(h, releasePayload("anatolykoptev/ox-od-rel", "v1.0.0", "main"))

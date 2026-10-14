@@ -60,7 +60,7 @@ func TestConfig_LookupAll(t *testing.T) {
 func TestHandler_MultiTarget_DispatchesIndependently(t *testing.T) {
 	t.Parallel()
 
-	newHandler := func() *Handler {
+	newHandler := func() *signingHandler {
 		cfg := &Config{Repos: map[string]RepoConfig{
 			"anatolykoptev/piter-now": {
 				ComposePath: "/tmp", SourcePath: "/tmp",
@@ -74,7 +74,7 @@ func TestHandler_MultiTarget_DispatchesIndependently(t *testing.T) {
 			},
 		}}
 		q, _ := newTestQueue()
-		return NewHandler(cfg, q, func(string) {})
+		return newTestHandler(cfg, q, func(string) {})
 	}
 
 	statusFor := func(t *testing.T, files []string) string {

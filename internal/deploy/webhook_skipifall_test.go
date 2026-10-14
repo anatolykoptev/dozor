@@ -148,7 +148,7 @@ func TestHandler_PathFilter_SkipIfAll(t *testing.T) {
 				},
 			}
 			q, _ := newTestQueue()
-			h := NewHandler(cfg, q, func(string) {})
+			h := newTestHandler(cfg, q, func(string) {})
 			defer h.Close()
 
 			var body string

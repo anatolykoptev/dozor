@@ -35,7 +35,7 @@ func pushPayloadWithFiles(repo, ref, sha string, modified []string) string {
 	return string(out)
 }
 
-func postPush(h *Handler, body string) *httptest.ResponseRecorder {
+func postPush(h http.Handler, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/deploy/github", strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "push")
 	w := httptest.NewRecorder()
@@ -57,7 +57,7 @@ func TestHandler_PathFilter_SkipsIrrelevant(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",
@@ -88,7 +88,7 @@ func TestHandler_PathFilter_BuildsOnRelevantChange(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",
@@ -120,7 +120,7 @@ func TestHandler_PathFilter_SkipIfAny_VetoOnFullLanePath(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/oxpulse-chat", "refs/heads/main", "abc1234567890",
@@ -151,7 +151,7 @@ func TestHandler_PathFilter_SkipIfAny_BuildsOnWebOnlyPush(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/oxpulse-chat", "refs/heads/main", "abc1234567890",
@@ -184,7 +184,7 @@ func TestHandler_PathFilter_SkipIfAny_SkipsOnCargoLockOnly(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/oxpulse-chat", "refs/heads/main", "abc1234567890",
@@ -217,7 +217,7 @@ func TestHandler_PathFilter_SkipIfAny_VetoWithEmptyBuildPaths(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",
@@ -247,7 +247,7 @@ func TestHandler_PathFilter_NoCommitsBypassesFilter(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayload("anatolykoptev/memdb", "refs/heads/main", "abc1234567890")
@@ -278,7 +278,7 @@ repos:
 	}
 
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/svc", "refs/heads/main", "abc1234567890",
@@ -314,7 +314,7 @@ repos:
 	}
 
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/svc", "refs/heads/main", "abc1234567890",
@@ -351,7 +351,7 @@ func TestHandler_Static_PathFilter_SkipsIrrelevant(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	// Push that only touches docs — must NOT trigger the deploy script.
@@ -386,7 +386,7 @@ func TestHandler_Static_PathFilter_BuildsOnCaddyfileChange(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	// Push touching config/caddy/Caddyfile — must trigger the deploy script.
@@ -421,7 +421,7 @@ func TestHandler_Static_PathFilter_BuildsOnDeployScriptChange(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/krolik-server", "refs/heads/main", "ghi9012",
@@ -484,7 +484,9 @@ func TestHandler_DebounceCoalescesBurst(t *testing.T) {
 	q, _ := newTestQueue()
 
 	// Hand-build the handler so we can inject the fake clock into its debouncer.
-	h := &Handler{config: cfg, queue: q, notify: func(string) {}}
+	cfg.Secret = autoSignSecret
+	raw := &Handler{config: cfg, queue: q, notify: func(string) {}}
+	h := &signingHandler{Handler: raw, autoSign: true}
 	var mu sync.Mutex
 	var dispatched []PendingEvent
 	h.debouncer = NewDebouncer(clock, func(ev PendingEvent) {
@@ -554,7 +556,7 @@ func TestHandler_SkipPaths_AllChangedAreSkipped(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",
@@ -584,7 +586,7 @@ func TestHandler_SkipPaths_PartialSkipBuildsOnRemaining(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",
@@ -614,7 +616,7 @@ func TestHandler_SkipPaths_RemainingNotInBuildPathsSkips(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",
@@ -642,7 +644,7 @@ func TestHandler_SkipPaths_EmptySkipPreservesLegacyBehaviour(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 
 	body := pushPayloadWithFiles("anatolykoptev/memdb", "refs/heads/main", "abc1234567890",

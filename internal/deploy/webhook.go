@@ -69,6 +69,11 @@ func NewHandler(config *Config, queue *Queue, notify func(string)) *Handler {
 	if config.GitHubToken == "" {
 		slog.Warn("DOZOR_GITHUB_TOKEN not set; PR label check disabled (marker-only mode)")
 	}
+	if config.Secret == "" {
+		// Fail closed (issue #256): without a secret no request can be
+		// authenticated, so ServeHTTP rejects everything. Say so loudly once.
+		slog.Error("DOZOR_GITHUB_WEBHOOK_SECRET not set; POST /deploy/github is DISABLED and rejects every request with 503 until it is configured")
+	}
 	h.debouncer = NewDebouncer(nil, h.dispatch)
 	// Durable debounce: mirror the pending set to ~/.dozor/deploy-debounce.json
 	// so queued builds survive a dozor restart (graceful self-deploy or crash).
@@ -105,6 +110,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fail closed: an empty secret must never mean "skip authentication"
+	// (issue #256). The endpoint is public, so with no secret configured the
+	// only safe behaviour is to refuse every request.
+	if h.config.Secret == "" {
+		WebhookRejectedTotal.WithLabelValues("no_secret").Inc()
+		slog.Warn("deploy/webhook: rejecting request, no webhook secret configured",
+			"remote", r.RemoteAddr)
+		http.Error(w, "webhook disabled: no secret configured", http.StatusServiceUnavailable)
+		return
+	}
+
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBody))
 	if err != nil {
 		http.Error(w, "read body failed", http.StatusBadRequest)
@@ -112,26 +128,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify HMAC signature.
-	if h.config.Secret != "" {
-		// Try both X-Hub-Signature-256 and X-Hub-Signature headers
-		sig := r.Header.Get("X-Hub-Signature-256")
-		if sig == "" {
-			sig = r.Header.Get("X-Hub-Signature")
-		}
-		if sig == "" {
-			slog.Warn("deploy/webhook: missing signature, rejecting",
-				"remote", r.RemoteAddr)
-			http.Error(w, "missing signature", http.StatusUnauthorized)
-			return
-		}
-		if !verifySignature(body, sig, h.config.Secret) {
-			slog.Warn("deploy/webhook: invalid signature, rejecting",
-				"remote", r.RemoteAddr,
-				"signature_header", r.Header.Get("X-Hub-Signature-256"),
-				"legacy_header", r.Header.Get("X-Hub-Signature"))
-			http.Error(w, "invalid signature", http.StatusUnauthorized)
-			return
-		}
+	// Try both X-Hub-Signature-256 and X-Hub-Signature headers
+	sig := r.Header.Get("X-Hub-Signature-256")
+	if sig == "" {
+		sig = r.Header.Get("X-Hub-Signature")
+	}
+	if sig == "" {
+		WebhookRejectedTotal.WithLabelValues("missing_signature").Inc()
+		slog.Warn("deploy/webhook: missing signature, rejecting",
+			"remote", r.RemoteAddr)
+		http.Error(w, "missing signature", http.StatusUnauthorized)
+		return
+	}
+	if !verifySignature(body, sig, h.config.Secret) {
+		WebhookRejectedTotal.WithLabelValues("invalid_signature").Inc()
+		slog.Warn("deploy/webhook: invalid signature, rejecting",
+			"remote", r.RemoteAddr,
+			"signature_header", r.Header.Get("X-Hub-Signature-256"),
+			"legacy_header", r.Header.Get("X-Hub-Signature"))
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
 	}
 
 	// Handle ping event.

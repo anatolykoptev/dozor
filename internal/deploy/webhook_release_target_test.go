@@ -51,7 +51,7 @@ func TestHandler_ReleaseTarget_OneReleaseOnePush_DeploysReleaseTarget(t *testing
 
 	for i := 0; i < 50; i++ {
 		q, _ := newTestQueue()
-		h := NewHandler(cfg, q, func(string) {})
+		h := newTestHandler(cfg, q, func(string) {})
 		h.shaResolver = noResolveSHA
 
 		body := releasePayload("anatolykoptev/oxpulse-chat", "v1.0.0", "main")
@@ -109,7 +109,7 @@ func TestHandler_ReleaseTarget_NoReleaseTarget_Ignored(t *testing.T) {
 
 	for i := 0; i < 50; i++ {
 		q, _ := newTestQueue()
-		h := NewHandler(cfg, q, func(string) {})
+		h := newTestHandler(cfg, q, func(string) {})
 		h.shaResolver = noResolveSHA
 
 		body := releasePayload("anatolykoptev/multi", "v1.0.0", "main")
@@ -162,7 +162,7 @@ func TestHandler_ReleaseTarget_MultipleReleaseTargets_DeploysAll(t *testing.T) {
 	}
 
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 	h.shaResolver = noResolveSHA
 
@@ -204,7 +204,7 @@ func TestHandler_ReleaseTarget_SingleEntry_DeploysUnchanged(t *testing.T) {
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 	h.shaResolver = noResolveSHA
 
@@ -294,7 +294,7 @@ func TestHandler_ReleaseTarget_MultiTarget_DiffDoesNotLeakBetweenTargets(t *test
 		},
 	}
 	q, _ := newTestQueue()
-	h := NewHandler(cfg, q, func(string) {})
+	h := newTestHandler(cfg, q, func(string) {})
 	defer h.Close()
 	// Resolve a real deployed SHA for A's clone; "unknown" for B's clone so
 	// B's diff cannot be resolved (attachReleaseDiff no-op for B).
