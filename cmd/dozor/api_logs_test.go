@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
@@ -21,9 +22,15 @@ type fakeContainerLogger struct {
 	logsBody   string // raw (non-multiplexed) log content
 	listErr    error
 	logsErr    error
+	// listCalls, when non-nil, counts ContainerList invocations — lets
+	// fail-closed tests assert the docker backend was never reached.
+	listCalls *atomic.Int32
 }
 
 func (f *fakeContainerLogger) ContainerList(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+	if f.listCalls != nil {
+		f.listCalls.Add(1)
+	}
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -58,6 +65,21 @@ func (f *fakeContainerLogger) ContainerLogs(_ context.Context, _ string, _ conta
 // Compile-time check: *dockerclient.Client satisfies containerLogger.
 var _ containerLogger = (*dockerclient.Client)(nil)
 
+// newLogsMux registers the REAL route via registerLogsHandler with the
+// DOZOR_API_ALLOW_INSECURE dev override active: tests that exercise the logs
+// pipeline (filtering, limits, resolution) stay deterministic under the
+// fail-closed default added by #233. Auth behaviour itself is covered by
+// TestLogsHandler_AuthRequired_401 and the fail-closed tests, which register
+// the route directly instead of using this helper.
+func newLogsMux(t *testing.T, fake *fakeContainerLogger) *http.ServeMux {
+	t.Helper()
+	t.Setenv("DOZOR_API_TOKEN", "")
+	t.Setenv("DOZOR_API_ALLOW_INSECURE", "true")
+	mux := http.NewServeMux()
+	registerLogsHandler(mux, fake)
+	return mux
+}
+
 // makeContainer builds a minimal container.Summary for tests.
 func makeContainer(id, name, composeService string) container.Summary {
 	return container.Summary{
@@ -87,8 +109,7 @@ func TestLogsHandler_HappyPathJSONLines(t *testing.T) {
 		logsBody:   tsLine(fakeTS1, jsonLine),
 	}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 
@@ -132,8 +153,7 @@ func TestLogsHandler_FallbackRawLine(t *testing.T) {
 		logsBody:   tsLine(fakeTS1, "not json at all ERROR happened"),
 	}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 
@@ -171,8 +191,7 @@ func TestLogsHandler_GrepFilter(t *testing.T) {
 		}, "\n"),
 	}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 
@@ -204,8 +223,7 @@ func TestLogsHandler_DefaultGrepHeuristic(t *testing.T) {
 		}, "\n"),
 	}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 
@@ -235,8 +253,7 @@ func TestLogsHandler_LimitAndTruncate(t *testing.T) {
 		logsBody:   strings.Join(rawLines, "\n"),
 	}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 
@@ -263,8 +280,7 @@ func TestLogsHandler_ServiceNotFound_404(t *testing.T) {
 		containers: []container.Summary{}, // no containers
 	}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 
@@ -284,8 +300,7 @@ func TestLogsHandler_BadLimit_400(t *testing.T) {
 		containers: []container.Summary{makeContainer("id1", "svc", "svc")},
 	}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 
@@ -317,8 +332,7 @@ func TestLogsHandler_DockerUnavailable_502(t *testing.T) {
 		listErr: fmt.Errorf("dial unix /var/run/docker.sock: connect: no such file"),
 	}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 
@@ -336,8 +350,7 @@ func TestLogsHandler_DockerUnavailable_502(t *testing.T) {
 func TestLogsHandler_MissingService_400(t *testing.T) {
 	fake := &fakeContainerLogger{}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 
@@ -384,8 +397,7 @@ func TestFetchAndFilterLogs_BoundedStreaming(t *testing.T) {
 		logsBody:   sb.String(),
 	}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 
@@ -459,8 +471,7 @@ func TestLogsHandler_AuthRequired_401(t *testing.T) {
 func TestLogsHandler_SanitizeServiceName_400(t *testing.T) {
 	fake := &fakeContainerLogger{}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 
@@ -491,8 +502,7 @@ func TestLogsHandler_SanitizeServiceName_400(t *testing.T) {
 func TestLogsHandler_InvertedWindow_400(t *testing.T) {
 	fake := &fakeContainerLogger{}
 
-	mx := http.NewServeMux()
-	registerLogsHandler(mx, fake)
+	mx := newLogsMux(t, fake)
 	srv := httptest.NewServer(mx)
 	defer srv.Close()
 

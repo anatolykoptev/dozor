@@ -81,8 +81,22 @@ func TestWebhookHandler_HMAC(t *testing.T) {
 		}
 	})
 
-	t.Run("no_check_when_secret_unset_back_compat", func(t *testing.T) {
-		handler, _ := makeHandler(t, "") // empty secret
+	t.Run("no_secret_fails_closed_503", func(t *testing.T) {
+		handler, _ := makeHandler(t, "") // empty secret, no override
+		req := httptest.NewRequest(http.MethodPost, "/webhook",
+			strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		// No signature header at all.
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("no secret: expected 503 (fail-closed), got %d body=%s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("allow_insecure_override_restores_open_mode", func(t *testing.T) {
+		t.Setenv("DOZOR_WEBHOOK_ALLOW_INSECURE", "true")
+		handler, _ := makeHandler(t, "") // empty secret + dev override
 		req := httptest.NewRequest(http.MethodPost, "/webhook",
 			strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -90,7 +104,7 @@ func TestWebhookHandler_HMAC(t *testing.T) {
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
-			t.Fatalf("no secret: expected 200 (back-compat), got %d body=%s", rr.Code, rr.Body.String())
+			t.Fatalf("allow-insecure override: expected 200, got %d body=%s", rr.Code, rr.Body.String())
 		}
 	})
 }
@@ -154,6 +168,10 @@ func TestWebhookHandler_EventClassifier(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// The /webhook routes fail closed on an empty secret since #260;
+			// sign each request so this test exercises the production path.
+			const secret = "classifier-test-secret"
+			t.Setenv("DOZOR_WEBHOOK_SECRET", secret)
 			msgBus := bus.New()
 			defer msgBus.Close()
 
@@ -184,6 +202,7 @@ func TestWebhookHandler_EventClassifier(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, tc.path,
 				bytes.NewReader([]byte(tc.body)))
 			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Dozor-Webhook-Signature", signBody(secret, tc.body))
 			rr := httptest.NewRecorder()
 			mx.ServeHTTP(rr, req)
 
@@ -269,6 +288,9 @@ func TestMonitorHealthcheckHandler_RendersCardNeverLLM(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Signed route since #260: set a secret and sign the body.
+			const secret = "monitor-test-secret"
+			t.Setenv("DOZOR_WEBHOOK_SECRET", secret)
 			msgBus := bus.New()
 			defer msgBus.Close()
 
@@ -302,6 +324,7 @@ func TestMonitorHealthcheckHandler_RendersCardNeverLLM(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/webhook/monitor/healthcheck",
 				bytes.NewReader([]byte(tc.body)))
 			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Dozor-Webhook-Signature", signBody(secret, tc.body))
 			rr := httptest.NewRecorder()
 			mx.ServeHTTP(rr, req)
 

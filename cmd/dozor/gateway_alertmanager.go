@@ -47,6 +47,11 @@ type alertmanagerAlertItem struct {
 // not send HMAC signatures. Set DOZOR_ALERTMANAGER_REQUIRE_SIG=true when you
 // configure Alertmanager with a matching secret.
 //
+// This route is intentionally EXEMPT from the fail-closed change that covers
+// the other /webhook* paths (issues #233/#260): an empty DOZOR_WEBHOOK_SECRET
+// does not disable it and the unsigned default is preserved — tightening it
+// is tracked separately as issue #234.
+//
 // The notifyAlertFn callback matches the signature in gateway.go so both the
 // alert card renderer (satori sidecar) and its plain-text fallback are reused
 // transparently.
