@@ -11,6 +11,7 @@ import (
 
 	"github.com/anatolykoptev/dozor/internal/agent"
 	"github.com/anatolykoptev/dozor/internal/engine"
+	"github.com/anatolykoptev/dozor/internal/identity"
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/provider"
 	"github.com/anatolykoptev/dozor/internal/skills"
@@ -146,6 +147,9 @@ func buildMCPServer(eng *engine.ServerAgent, execOpts tools.ExecOptions) *mcp.Se
 	}, mcpserver.Config{
 		SchemaCache: mcp.NewSchemaCache(),
 	})
+	// First added = outermost: every tools/call, including ones a later
+	// middleware refuses, leaves one audit line and one counter sample.
+	server.AddReceivingMiddleware(identity.Audit(slog.Default()))
 	tools.RegisterAllWithOpts(server, eng, execOpts)
 	return server
 }
