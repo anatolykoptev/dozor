@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // Issue #262: the GitHub signature must be the "sha256=" envelope. A bare hex
@@ -234,5 +236,79 @@ func TestLoadConfig_ShortSecret_FailsClosed(t *testing.T) {
 				t.Errorf("status = %d, want %d", w.Code, want)
 			}
 		})
+	}
+}
+
+// GitHub's published example (docs: "Validating webhook deliveries"). An oracle
+// not derived from our own computeSignature helper.
+func TestVerifySignature_GitHubPublishedVector(t *testing.T) {
+	t.Parallel()
+	const (
+		secret  = "It's a Secret to Everybody"
+		payload = "Hello, World!"
+		want    = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
+	)
+	if !verifySignature([]byte(payload), want, secret) {
+		t.Error("GitHub's documented signature did not verify")
+	}
+	if computeSignature(payload, secret) != want {
+		t.Errorf("computeSignature = %s, want %s", computeSignature(payload, secret), want)
+	}
+}
+
+// A body over the cap is answered 413 (counted), never HMAC-ed truncated - even
+// when the signature covers exactly the first maxWebhookBody bytes.
+func TestHandler_OversizedBody_413AndCounted(t *testing.T) {
+	// Not parallel: asserts on a process-global counter delta.
+	const secret = "0123456789abcdef-secret"
+	before := testutil.ToFloat64(WebhookRejectedTotal.WithLabelValues("body_too_large"))
+	q, _ := newTestQueue()
+	h := NewHandler(testConfig(secret), q, func(string) {})
+	t.Cleanup(h.Close)
+
+	large := strings.Repeat("x", maxWebhookBody+1)
+	req := httptest.NewRequest(http.MethodPost, "/deploy/github", strings.NewReader(large))
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Hub-Signature-256", computeSignature(large[:maxWebhookBody], secret))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", w.Code)
+	}
+	if got := testutil.ToFloat64(WebhookRejectedTotal.WithLabelValues("body_too_large")) - before; got != 1 {
+		t.Errorf("body_too_large rejections = %v, want 1", got)
+	}
+}
+
+// Defence in depth: a Config built directly (not via LoadConfig) with a short
+// secret must still fail closed.
+func TestNewHandler_ShortSecret_FailsClosed(t *testing.T) {
+	t.Parallel()
+	for _, secret := range []string{"short", "  " + strings.Repeat("a", 10) + "\n"} {
+		q, _ := newTestQueue()
+		h := NewHandler(&Config{Secret: secret, Repos: testConfig("").Repos}, q, func(string) {})
+		t.Cleanup(h.Close)
+		body := pushPayload("anatolykoptev/dozor", "refs/heads/main", "abc1234567890")
+		req := httptest.NewRequest(http.MethodPost, "/deploy/github", strings.NewReader(body))
+		req.Header.Set("X-GitHub-Event", "push")
+		req.Header.Set("X-Hub-Signature-256", computeSignature(body, strings.TrimSpace(secret)))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("secret %q: status = %d, want 503", secret, w.Code)
+		}
+	}
+}
+
+// The "too short" ERROR belongs to the gateway path (NewHandler, once), not to
+// every LoadConfig call made by the MCP tools.
+func TestLoadConfig_ShortSecret_DoesNotLog(t *testing.T) {
+	logs := captureDeploySlog(t)
+	t.Setenv("DOZOR_GITHUB_WEBHOOK_SECRET", "short")
+	if _, err := LoadConfig(writeYAML(t, t.TempDir(), minimalDeployYAML)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "DOZOR_GITHUB_WEBHOOK_SECRET") {
+		t.Errorf("LoadConfig logged about the secret:\n%s", logs.String())
 	}
 }

@@ -631,9 +631,9 @@ const minWebhookSecretLen = 16
 // closed with 503 (issue #262).
 func normalizeWebhookSecret(raw string) string {
 	secret := strings.TrimSpace(raw)
-	if secret != "" && len(secret) < minWebhookSecretLen {
-		slog.Error("DOZOR_GITHUB_WEBHOOK_SECRET is too short; treating it as unset",
-			"min_bytes", minWebhookSecretLen, "got_bytes", len(secret))
+	if len(secret) < minWebhookSecretLen {
+		// Silent on purpose: LoadConfig also runs from the MCP tools. The
+		// gateway's NewHandler logs the ERROR once.
 		return ""
 	}
 	return secret

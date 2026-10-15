@@ -100,3 +100,30 @@ func TestCheckProxyModel_Unreachable_DescriptionHasNoURL(t *testing.T) {
 		t.Errorf("Description leaks the request URL: %q", a.Description)
 	}
 }
+
+// Operators need to map an alert's fp-xxxxxxxx label back to a configured key
+// without the key ever being logged: one line per key, index only.
+func TestLogGeminiKeyFingerprints(t *testing.T) {
+	logs := captureSlog(t)
+	keys := []string{fakeGeminiKey, "AIzaSyTestKey12345"}
+	LogGeminiKeyFingerprints(Config{GeminiAPIKeys: keys})
+	out := logs.String()
+	for i, k := range keys {
+		if !strings.Contains(out, "gemini key #"+string(rune('0'+i))) || !strings.Contains(out, maskKey(k)) {
+			t.Errorf("log lacks index %d / fingerprint %s:\n%s", i, maskKey(k), out)
+		}
+		if strings.Contains(out, k) || strings.Contains(out, k[:6]) {
+			t.Errorf("log leaks key material:\n%s", out)
+		}
+	}
+}
+
+// The documented shell recipe must produce exactly maskKey's label.
+func TestMaskKey_MatchesDocumentedShellRecipe(t *testing.T) {
+	t.Parallel()
+	// printf %s "AIzaSyTestKey12345" | sha256sum | cut -c1-8   (computed on krolik)
+	const digest8 = "988993b6"
+	if got := maskKey("AIzaSyTestKey12345"); got != "fp-"+digest8 {
+		t.Errorf("maskKey = %q, want fp-%s", got, digest8)
+	}
+}

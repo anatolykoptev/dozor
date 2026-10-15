@@ -51,8 +51,9 @@ func TestHandler_PutMethod_Returns405(t *testing.T) {
 func TestHandler_OversizedBody_IsHandledGracefully(t *testing.T) {
 	t.Parallel()
 
-	// Body larger than maxWebhookBody (64KB) — LimitReader should prevent OOM
-	// and the remainder of the (truncated) body will fail JSON parse → 400.
+	// Body larger than maxWebhookBody: rejected with an explicit 413 instead of
+	// HMAC-ing a silently truncated prefix (which let a signed prefix pass auth
+	// with an attacker-chosen tail dropped).
 	cfg := testConfig("")
 	q, _ := newTestQueue()
 	h := newTestHandler(cfg, q, func(string) {})
@@ -66,16 +67,12 @@ func TestHandler_OversizedBody_IsHandledGracefully(t *testing.T) {
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/deploy/github", bytes.NewReader(large))
 	req.Header.Set("X-GitHub-Event", "push")
-	// The handler verifies the HMAC over the bytes it read (capped at
-	// maxWebhookBody), so sign exactly that prefix.
 	req.Header.Set("X-Hub-Signature-256", computeSignature(string(large[:maxWebhookBody]), autoSignSecret))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
-	// Body is not valid JSON after truncation → 400. The key invariant is that
-	// the server does not block forever or OOM — it responds within the test.
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("oversized body: expected 400 (invalid JSON after truncation), got %d", w.Code)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("oversized body: expected 413, got %d", w.Code)
 	}
 }
 
@@ -84,7 +81,7 @@ func TestHandler_OversizedBody_IsHandledGracefully(t *testing.T) {
 func TestHandler_MissingSignature_WhenSecretConfigured_Returns401(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfig("my-secret")
+	cfg := testConfig("my-secret-0123456789")
 	q, _ := newTestQueue()
 	h := newTestHandler(cfg, q, func(string) {})
 

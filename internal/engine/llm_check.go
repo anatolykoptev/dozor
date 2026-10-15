@@ -368,3 +368,13 @@ func maskKey(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return "fp-" + hex.EncodeToString(sum[:])[:maskKeyFingerprintLen]
 }
+
+// LogGeminiKeyFingerprints logs, once, the fp-xxxxxxxx label of every
+// configured Gemini key by index, so an operator can map an alert's Service
+// label back to a key (recipe in docs/CONFIGURATION.md). No key material is
+// logged.
+func LogGeminiKeyFingerprints(cfg Config) {
+	for i, key := range cfg.GeminiAPIKeys {
+		slog.Info(fmt.Sprintf("gemini key #%d fingerprint %s", i, maskKey(key)))
+	}
+}

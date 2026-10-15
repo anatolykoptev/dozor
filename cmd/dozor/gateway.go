@@ -53,6 +53,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	slog.SetDefault(slog.New(slogh.NewHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))))
 
 	port := cfg.MCPPort
+	engine.LogGeminiKeyFingerprints(cfg)
 	if p := getFlagValue("--port"); p != "" {
 		port = p
 	}
@@ -162,6 +163,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		_ = traceShutdown(shutdownCtx)
 	}()
 	defer webhookLimiter.Close()
+	defer deployWebhookLimiter.Close()
 
 	// 4. HTTP mux: build via mcpserver.Build (MCP + health + middleware) with
 	// custom gateway routes (webhooks, A2A, metrics, logs) via Routes func.

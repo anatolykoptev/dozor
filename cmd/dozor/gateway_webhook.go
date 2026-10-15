@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/bus"
@@ -58,7 +60,7 @@ var webhookRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 
 func init() {
 	webhookLimiter.StartCleanup(10*time.Minute, 30*time.Minute)
-	trustProxy = os.Getenv("DOZOR_TRUST_PROXY") == "1"
+	trustProxy = parseTrustProxy(os.Getenv("DOZOR_TRUST_PROXY"))
 }
 
 // checkWebhookSignature verifies X-Dozor-Webhook-Signature (plain hex-encoded
@@ -89,34 +91,69 @@ func checkWebhookSignature(body []byte, r *http.Request, secret string) bool {
 	return hmac.Equal(sigBytes, mac.Sum(nil))
 }
 
-// webhookSourceKey derives the rate-limit key from the request. Defaults
-// to net.SplitHostPort(RemoteAddr); X-Forwarded-For is consulted ONLY when
-// DOZOR_TRUST_PROXY=1, because dozor's HTTP server binds *:8765 (publicly
-// listenable) and trusting XFF without a real ingress lets any client pin
-// itself to a fresh bucket per request, defeating the rate limit entirely.
-//
-// Set DOZOR_TRUST_PROXY=1 only when dozor is fronted by a proxy that
-// strips and re-injects XFF (e.g. Caddy, nginx with `proxy_set_header
-// X-Forwarded-For $proxy_add_x_forwarded_for`).
-func webhookSourceKey(r *http.Request) string {
-	if trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if comma := strings.IndexByte(xff, ','); comma > 0 {
-				return strings.TrimSpace(xff[:comma])
-			}
-			return strings.TrimSpace(xff)
-		}
+// webhookSourceKey derives the rate-limit key / client IP from the request.
+// See sourceKey for the trust rules.
+func webhookSourceKey(r *http.Request) string { return sourceKey(r, trustProxy) }
+
+// parseTrustProxy interprets DOZOR_TRUST_PROXY: unset, "1" or "true" keep the
+// default (honour X-Forwarded-For when the TCP peer is loopback); "0"/"false"
+// disable X-Forwarded-For entirely.
+func parseTrustProxy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "false":
+		return false
 	}
+	return true
+}
+
+// sourceKey returns the client address used as the rate-limit key and in logs.
+//
+// X-Forwarded-For is honoured ONLY when trust is on AND the TCP peer is a
+// loopback address, i.e. the request came through a reverse proxy on this host
+// (Caddy on 127.0.0.1 here, which overwrites the header with the real client
+// IP). dozor binds *:8765, reachable from docker bridges and the LAN: a
+// non-loopback peer's X-Forwarded-For is attacker-controlled and is never
+// trusted, otherwise any client could pin itself to a fresh bucket per request.
+//
+// The RIGHTMOST entry is used - what the nearest proxy appended - not the
+// leftmost, which a client can pre-seed. It must parse as an IP address;
+// anything else falls back to the peer.
+func sourceKey(r *http.Request, trust bool) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil || host == "" {
 		return "unknown"
 	}
+	if !trust {
+		return host
+	}
+	peer, err := netip.ParseAddr(host)
+	if err != nil || !peer.Unmap().IsLoopback() {
+		return host
+	}
+	xff := strings.Join(r.Header.Values("X-Forwarded-For"), ",")
+	last := strings.TrimSpace(xff[strings.LastIndexByte(xff, ',')+1:])
+	if ip, err := netip.ParseAddr(last); err == nil {
+		return ip.Unmap().String()
+	}
 	return host
 }
 
-// trustProxy is set at package init from DOZOR_TRUST_PROXY. Default false
-// so the publicly-bound default deployment is safe out of the box.
-var trustProxy = false
+// trustProxy is set at package init from DOZOR_TRUST_PROXY. The default (true)
+// is safe because sourceKey additionally requires a loopback peer.
+var trustProxy = true
+
+// warnGate lets a flood-path WARN through at most once per interval.
+type warnGate struct{ last atomic.Int64 }
+
+func (g *warnGate) allow() bool {
+	now := time.Now().UnixNano()
+	last := g.last.Load()
+	return now-last >= int64(time.Minute) && g.last.CompareAndSwap(last, now)
+}
+
+// webhookLimitedWarn samples "rate limited" logs for the /webhook* routes; the
+// request count is visible via the HTTP 429s, not one log line each.
+var webhookLimitedWarn warnGate
 
 // registerWebhookHandler adds POST /webhook and POST /webhook/ to the mux.
 //
@@ -164,9 +201,11 @@ func registerWebhookHandler(mx *http.ServeMux, msgBus *bus.Bus, notifyFn func(st
 		}
 		key := webhookSourceKey(r)
 		if !webhookLimiter.Allow(key) {
-			slog.Warn("webhook rate-limited",
-				slog.String("source", key),
-				slog.String("path", r.URL.Path))
+			if webhookLimitedWarn.allow() {
+				slog.Warn("webhook rate-limited (sampled: at most once a minute)",
+					slog.String("source", key),
+					slog.String("path", r.URL.Path))
+			}
 			http.Error(w, "rate limited", http.StatusTooManyRequests)
 			return
 		}
@@ -277,9 +316,11 @@ func monitorHealthcheckHandler(secret string, disabled bool, notifyAlertFn func(
 		}
 		key := webhookSourceKey(r)
 		if !webhookLimiter.Allow(key) {
-			slog.Warn("monitor webhook rate-limited",
-				slog.String("source", key),
-				slog.String("path", r.URL.Path))
+			if webhookLimitedWarn.allow() {
+				slog.Warn("webhook rate-limited (sampled: at most once a minute)",
+					slog.String("source", key),
+					slog.String("path", r.URL.Path))
+			}
 			http.Error(w, "rate limited", http.StatusTooManyRequests)
 			return
 		}

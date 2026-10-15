@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -66,6 +67,9 @@ type Handler struct {
 // uses a Debouncer; per-repo dispatch falls back to immediate Submit when the
 // configured debounce window is zero.
 func NewHandler(config *Config, queue *Queue, notify func(string)) *Handler {
+	// Defence in depth: a Config built without LoadConfig must not authenticate
+	// with a short (guessable) secret either.
+	config.Secret = normalizeWebhookSecret(config.Secret)
 	h := &Handler{
 		config:      config,
 		queue:       queue,
@@ -145,8 +149,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBody))
+	// MaxBytesReader (not LimitReader): an over-limit body is rejected, never
+	// silently truncated and HMAC-ed as if it were the whole payload.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBody))
 	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			WebhookRejectedTotal.WithLabelValues("body_too_large").Inc()
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "read body failed", http.StatusBadRequest)
 		return
 	}
