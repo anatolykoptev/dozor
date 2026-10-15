@@ -140,7 +140,11 @@ func filterToolList(
 	if err != nil || result == nil {
 		return result, err
 	}
-	lr := result.(*mcp.ListToolsResult)
+	lr, ok := result.(*mcp.ListToolsResult)
+	if !ok {
+		// Unknown result shape: fail closed rather than panic or leak the list.
+		return &mcp.ListToolsResult{Tools: []*mcp.Tool{}}, nil
+	}
 	filtered := make([]*mcp.Tool, 0, len(lr.Tools))
 	for _, t := range lr.Tools {
 		if filter(ctx, t.Name, info) {
@@ -155,7 +159,15 @@ func filterToolCall(
 	ctx context.Context, method string, req mcp.Request,
 	next mcp.MethodHandler, filter func(context.Context, string, *TokenInfo) bool, info *TokenInfo,
 ) (mcp.Result, error) {
-	name := req.GetParams().(*mcp.CallToolParamsRaw).Name
+	params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
+	if !ok {
+		// Unknown params shape: fail closed rather than panic.
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: "tool not permitted"}},
+		}, nil
+	}
+	name := params.Name
 	if !filter(ctx, name, info) {
 		return &mcp.CallToolResult{
 			IsError: true,

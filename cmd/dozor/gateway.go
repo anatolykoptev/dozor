@@ -25,7 +25,6 @@ import (
 	"github.com/anatolykoptev/go-kit/tracing"
 	"github.com/anatolykoptev/go-kit/tracing/httpmw"
 	"github.com/anatolykoptev/go-kit/tracing/slogh"
-	"github.com/anatolykoptev/go-mcpserver"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -187,7 +186,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 			os.Exit(1)
 		}
 	}
-	mcpHandler, err := mcpserver.Build(mcpServer, mcpCfg)
+	mcpHandler, err := buildOperatorHandler(mcpServer, mcpCfg)
 	if err != nil {
 		slog.Error("MCP handler build failed", slog.Any("error", err))
 		os.Exit(1)
@@ -247,6 +246,11 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 
 	// 9c. Vendor quota probes.
 	go runQuotasWatch(sigCtx, quotas.LoadConfigFrom(cfg.LLMCfg), notifyFn)
+
+	// 9d. Optional identity listener (loopback, key-file keys, agent tools only).
+	// Non-fatal by construction: a failure here is logged and never stops the
+	// operator listener below.
+	_, _ = maybeStartIdentityListener(sigCtx, mcpServer, port)
 
 	// 10. HTTP server (blocks until shutdown).
 	bindHost := resolveBindHost()

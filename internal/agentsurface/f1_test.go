@@ -177,7 +177,7 @@ func TestF1_NoInternalImport_Worker(t *testing.T) {
 
 // TestF1_NoLoopReachesAgentSurface: the Telegram, A2A and claudecode loops
 // connect to dozor's operator endpoint themselves; none may reach the agent
-// surface or the worker through imports.
+// surface, the worker or the identity layer through imports.
 func TestF1_NoLoopReachesAgentSurface(t *testing.T) {
 	roots := []string{
 		modPath + "/internal/toolreg",
@@ -187,7 +187,9 @@ func TestF1_NoLoopReachesAgentSurface(t *testing.T) {
 	for _, root := range roots {
 		for _, goos := range targets {
 			pkgs := closure(t, goos, root)
-			for _, banned := range []string{modPath + "/internal/agentsurface", modPath + "/internal/agentworker"} {
+			for _, banned := range []string{
+				modPath + "/internal/agentsurface", modPath + "/internal/agentworker", modPath + "/internal/identity",
+			} {
 				if _, ok := pkgs[banned]; ok {
 					t.Errorf("GOOS=%s: %s depends on %s", goos, root, banned)
 				}

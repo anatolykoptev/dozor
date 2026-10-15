@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
+	"github.com/anatolykoptev/dozor/internal/identity"
 	"github.com/anatolykoptev/dozor/internal/tools"
 	"github.com/anatolykoptev/go-mcpserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -29,6 +30,7 @@ func runServe(cfg engine.Config, eng *engine.ServerAgent) {
 		slog.String("mode", map[bool]string{true: "stdio", false: "http"}[stdio]))
 
 	if stdio {
+		server.AddReceivingMiddleware(identity.Audit(slog.Default()))
 		slog.Info("running in stdio mode")
 		if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 			slog.Error("stdio server failed", slog.Any("error", err))
@@ -50,7 +52,12 @@ func runServe(cfg engine.Config, eng *engine.ServerAgent) {
 			slog.String("hint", "set DOZOR_BIND_HOST=127.0.0.1 for loopback-only binding"))
 	}
 
-	if err := mcpserver.Run(server, baseMCPConfig(bindHost, port)); err != nil {
+	mcpCfg := baseMCPConfig(bindHost, port)
+	// mcpserver.Run builds the handler itself, so Audit cannot be added after
+	// Build here; it runs inside the tool-timeout layer. `gateway` is the
+	// production path and gets the outermost placement.
+	mcpCfg.MCPReceivingMiddleware = append(mcpCfg.MCPReceivingMiddleware, identity.Audit(slog.Default()))
+	if err := mcpserver.Run(server, mcpCfg); err != nil {
 		slog.Error("MCP server failed", slog.Any("error", err))
 	}
 }

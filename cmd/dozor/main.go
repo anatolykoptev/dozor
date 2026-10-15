@@ -11,6 +11,10 @@ import (
 var version = "dev"
 
 func main() {
+	// mcp-key is an offline tool: no dotenv, no engine, no Docker.
+	if len(os.Args) > 1 && os.Args[1] == "mcp-key" {
+		os.Exit(runMCPKey(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	loadDotenv(".env")
 
 	cfg := engine.Init()
@@ -73,5 +77,6 @@ Usage:
   dozor gateway [--port PORT]                Full agent: MCP + A2A + Telegram
   dozor check [--json] [--services s1,s2]    One-shot diagnostics
   dozor watch [--interval 4h] [--smart]      Periodic monitoring daemon
+  dozor mcp-key mint|lint                    Identity (key-file) MCP keys
 `)
 }
