@@ -25,6 +25,9 @@ jobs:
       BINARY_NAME: dozor
       INSTALL_DIR: /home/krolik/.local/bin
       SERVICE_USER: krolik
+      # Root-owned directory: the per-identity agent workers run this binary
+      # as another uid, so the user dozor runs as must not be able to replace it.
+      WORKER_DIR: /usr/libexec/dozor
     steps:
       - name: Checkout ${{ inputs.ref }}
         uses: actions/checkout@v5
@@ -37,8 +40,11 @@ jobs:
         with:
           go-version: stable
 
-      - name: Build (version-stamped via make)
-        run: make build  # LDFLAGS: -X main.version=$(git describe --tags) → the tag on a release
+      - name: Build dozor and dozor-worker (version-stamped via make)
+        # LDFLAGS: -X main.version=$(git describe --tags) → the tag on a release, and the
+        # same value as agentproto.BuildID in both binaries. check-pair fails the job
+        # if the two binaries are not stamped with one build ID.
+        run: make check-pair
 
       - name: Setup SSH
         env:
@@ -61,6 +67,28 @@ jobs:
             IdentityFile ~/.ssh/id_rsa
             StrictHostKeyChecking no
           EOF
+
+      # Before dozor is touched: a failed worker install fails the job with the
+      # running dozor unchanged.
+      #
+      # Skew: a client accepts a worker speaking protocol N or N-1. Worker-first
+      # is therefore safe only when the release does not bump the protocol.
+      # A release that raises ProtoVersion makes the old dozor refuse the new
+      # worker (calls answer "unavailable") for the seconds until dozor restarts
+      # below; that window is accepted. Single-bump rule: a release raises
+      # ProtoVersion by at most one, with additive wire changes, so a pair is
+      # never more than one apart; two bumps between deploys would leave the
+      # old and the new side unable to talk until both are replaced.
+      - name: Install agent worker
+        run: |
+          scp dozor-worker server:/tmp/dozor-worker
+          ssh server "
+            set -e
+            sudo install -d -o root -g root -m 0755 $WORKER_DIR
+            sudo install -o root -g root -m 0755 /tmp/dozor-worker $WORKER_DIR/dozor-worker
+            rm -f /tmp/dozor-worker
+            $WORKER_DIR/dozor-worker --protocol
+          "
 
       - name: Deploy binary
         run: |
