@@ -1,4 +1,4 @@
-.PHONY: build install clean check serve lint dev preflight
+.PHONY: build build-worker install clean check serve lint dev preflight
 
 BINARY=dozor
 INSTALL_PATH=$(HOME)/.local/bin
@@ -7,6 +7,11 @@ LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION)"
 
 build:
 	GOWORK=off go build $(LDFLAGS) -o $(BINARY) ./cmd/dozor
+
+# The per-identity agent worker. BuildID is stamped so the client can detect
+# a dozor/worker pair built from different revisions.
+build-worker:
+	GOWORK=off go build -ldflags "-s -w -X github.com/anatolykoptev/dozor/internal/agentproto.BuildID=$(VERSION)" -o dozor-worker ./cmd/dozor-worker
 
 # Pre-merge gate (mirrors the fleet standard). No -race here: a pre-existing
 # data race in TestCanaryDeploy is tracked separately; -race belongs in a
@@ -34,7 +39,7 @@ lint:
 	GOWORK=off golangci-lint run ./...
 
 clean:
-	rm -f $(BINARY)
+	rm -f $(BINARY) dozor-worker
 
 check: build
 	./$(BINARY) check
