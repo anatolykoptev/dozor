@@ -13,6 +13,26 @@ builds:
     ldflags:
       - -s -w
       - -X main.version={{ .Version }}
+      - -X github.com/anatolykoptev/dozor/internal/agentproto.BuildID={{ .Tag }}
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+  # The per-identity agent worker ships beside dozor, stamped with the same
+  # BuildID so the client can tell a mismatched pair. The ID is the tag
+  # ("v1.2.3"), the same text `git describe --tags` gives on the tagged commit
+  # in the deploy workflow; {{ .Version }} drops the "v", which would make a
+  # pair from the two channels read as mismatched forever.
+  - id: dozor-worker
+    main: ./cmd/dozor-worker
+    binary: dozor-worker
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X github.com/anatolykoptev/dozor/internal/agentproto.BuildID={{ .Tag }}
     goos:
       - linux
     goarch:
