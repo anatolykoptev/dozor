@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.20.0](https://github.com/anatolykoptev/dozor/compare/v1.19.3...v1.20.0) (2026-10-15)
+
+
+### Added
+
+* **agent:** per-identity agent worker and the four agent tools (client side) ([#280](https://github.com/anatolykoptev/dozor/issues/280)) ([ec3fdad](https://github.com/anatolykoptev/dozor/commit/ec3fdad854cb6b40fbe2de70478d2d393c4ca33b))
+* **identity:** loopback key-file listener serving only the agent tools ([#285](https://github.com/anatolykoptev/dozor/issues/285)) ([a4cffee](https://github.com/anatolykoptev/dozor/commit/a4cffee2aaa7f33f1f246a05a72e17a283169971))
+* **mcp:** stamp master token as operator and audit every tool call ([#283](https://github.com/anatolykoptev/dozor/issues/283)) ([1083b9b](https://github.com/anatolykoptev/dozor/commit/1083b9b04ec6e404b0cb91c3c5696e01cbd72126))
+* **worker:** confine agent processes to TCP bind ports 30000-30999 (Landlock) ([#286](https://github.com/anatolykoptev/dozor/issues/286)) ([75df837](https://github.com/anatolykoptev/dozor/commit/75df83776c8e1fdc9f547c0ff3c33d4583cfc917))
+
 ## [1.19.3](https://github.com/anatolykoptev/dozor/compare/v1.19.2...v1.19.3) (2026-10-15)
 
 
