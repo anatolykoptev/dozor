@@ -41,6 +41,8 @@ preflight:
 	GOWORK=off go build ./...
 	@echo "==> go test -count=1 ./..."
 	GOWORK=off go test -count=1 ./...
+	@echo "==> dozor and dozor-worker carry one build ID"
+	@$(MAKE) --no-print-directory check-pair
 
 install: build
 	mkdir -p $(INSTALL_PATH)

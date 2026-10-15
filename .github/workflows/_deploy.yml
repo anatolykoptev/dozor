@@ -69,7 +69,16 @@ jobs:
           EOF
 
       # Before dozor is touched: a failed worker install fails the job with the
-      # running dozor still on the old pair (a client accepts protocol N and N-1).
+      # running dozor unchanged.
+      #
+      # Skew: a client accepts a worker speaking protocol N or N-1. Worker-first
+      # is therefore safe only when the release does not bump the protocol.
+      # A release that raises ProtoVersion makes the old dozor refuse the new
+      # worker (calls answer "unavailable") for the seconds until dozor restarts
+      # below; that window is accepted. Single-bump rule: a release raises
+      # ProtoVersion by at most one, with additive wire changes, so a pair is
+      # never more than one apart; two bumps between deploys would leave the
+      # old and the new side unable to talk until both are replaced.
       - name: Install agent worker
         run: |
           scp dozor-worker server:/tmp/dozor-worker
