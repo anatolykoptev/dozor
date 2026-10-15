@@ -19,6 +19,9 @@ permissions:
 
 env:
   GOWORK: "off"
+  # The worker's Landlock tests must run here, not skip: a kernel without
+  # Landlock ABI 4 fails them instead.
+  DOZOR_REQUIRE_LANDLOCK: "1"
 
 jobs:
   preflight:

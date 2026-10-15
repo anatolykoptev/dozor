@@ -131,6 +131,11 @@ github.com/grpc-ecosystem/grpc-gateway/v2/utilities
 # github.com/kylelemons/godebug v1.1.0
 ## explicit; go 1.11
 github.com/kylelemons/godebug/diff
+# github.com/landlock-lsm/go-landlock v0.10.1
+## explicit; go 1.24.0
+github.com/landlock-lsm/go-landlock/landlock
+github.com/landlock-lsm/go-landlock/landlock/internal
+github.com/landlock-lsm/go-landlock/landlock/syscall
 # github.com/moby/docker-image-spec v1.3.1
 ## explicit; go 1.18
 github.com/moby/docker-image-spec/specs-go/v1
@@ -449,3 +454,6 @@ google.golang.org/protobuf/types/known/wrapperspb
 gopkg.in/yaml.v3
 # gotest.tools/v3 v3.5.2
 ## explicit; go 1.17
+# kernel.org/pub/linux/libs/security/libcap/psx v1.2.77
+## explicit; go 1.11
+kernel.org/pub/linux/libs/security/libcap/psx
