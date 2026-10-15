@@ -354,7 +354,9 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 	// and enqueue the drift (issue #174). Queue dedup makes it a no-op for
 	// builds RecoverQueue already re-enqueued.
 	go deploy.ReconcileMissedReleases(ctx, cfg, queue)
-	mx.Handle("POST /deploy/github", handler)
+	// Log the trusted-proxy aware client IP, not the Caddy hop (127.0.0.1).
+	handler.ClientIP = webhookSourceKey
+	mountDeployWebhook(mx, handler)
 
 	// Tear down debouncer goroutines when the gateway shuts down.
 	go func() {
