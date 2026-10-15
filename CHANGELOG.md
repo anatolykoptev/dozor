@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.3](https://github.com/anatolykoptev/dozor/compare/v1.19.2...v1.19.3) (2026-10-15)
+
+
+### Fixed
+
+* **security:** validate caller-supplied names and paths before shell interpolation ([#276](https://github.com/anatolykoptev/dozor/issues/276)) ([793c360](https://github.com/anatolykoptev/dozor/commit/793c3600af4e90a6384aa35d76f528e683729807))
+
 ## [1.19.2](https://github.com/anatolykoptev/dozor/compare/v1.19.1...v1.19.2) (2026-10-15)
 
 
