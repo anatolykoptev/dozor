@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/agentproto"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // fakeWorker listens on dir/<id>.sock and calls serve for every connection.
@@ -524,5 +525,27 @@ func TestClassify(t *testing.T) {
 		if got := Classify(err); got != want {
 			t.Errorf("Classify(%v) = %s, want %s", err, got, want)
 		}
+	}
+}
+
+func TestTools_PathCapsAreEnforcedBeforeDialling(t *testing.T) {
+	dir := newDir(t)
+	fw := startFake(t, dir, "ray", okReply)
+	tl := &tools{client: testClient(dir), resolve: func(context.Context, *mcp.CallToolRequest) (string, error) { return "ray", nil }}
+	long := strings.Repeat("a", agentproto.MaxPathBytes+1)
+	ctx := context.Background()
+	if _, _, err := tl.exec(ctx, nil, ExecInput{Command: "true", Cwd: long}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("exec cwd: %v", err)
+	}
+	if _, _, err := tl.readFile(ctx, nil, ReadFileInput{Path: long}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("read path: %v", err)
+	}
+	if _, _, err := tl.writeFile(ctx, nil, WriteFileInput{Path: long, Text: new(string)}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("write path: %v", err)
+	}
+	select {
+	case <-fw.reads:
+		t.Fatal("an over-long path reached the worker")
+	case <-time.After(200 * time.Millisecond):
 	}
 }

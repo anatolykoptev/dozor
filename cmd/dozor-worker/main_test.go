@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/anatolykoptev/dozor/internal/agentproto"
+	"golang.org/x/sys/unix"
 )
 
 // okDeps passes every check except what a test overrides. euid is an agent
@@ -71,6 +72,18 @@ func serveOnce(t *testing.T, args []string, d deps, request string) (int, agentp
 }
 
 const helloReq = `{"v":2,"op":"hello"}`
+
+// devNull is a stdin that is not a socket: a run that gets past argument
+// validation fails cleanly (exit 1) instead of dereferencing a nil file.
+func devNull(t *testing.T) *os.File {
+	t.Helper()
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	return f
+}
 
 func callerArg(uid int) []string {
 	return []string{"--caller-uid", strconv.Itoa(uid), "--no-mount-check"}
@@ -167,7 +180,7 @@ func TestWorker_MountFlagsAreMandatory(t *testing.T) {
 		"neither flag": {"--caller-uid", strconv.Itoa(os.Getuid())},
 		"both flags":   {"--caller-uid", strconv.Itoa(os.Getuid()), "--require-mount", "/srv/x", "--no-mount-check"},
 	} {
-		if code := run(args, nil, io.Discard, io.Discard, d); code != 2 {
+		if code := run(args, devNull(t), io.Discard, io.Discard, d); code != 2 {
 			t.Errorf("%s: exit %d, want 2 (usage)", name, code)
 		}
 	}
@@ -214,7 +227,7 @@ func TestWorker_RefusesHomeOutsideTheMount(t *testing.T) {
 func TestWorker_CallerUIDMustFitAUint32(t *testing.T) {
 	d := okDeps(t)
 	for _, v := range []string{"4294967296", "99999999999", "-2"} {
-		if code := run([]string{"--caller-uid", v, "--no-mount-check"}, nil, io.Discard, io.Discard, d); code != 2 {
+		if code := run([]string{"--caller-uid", v, "--no-mount-check"}, devNull(t), io.Discard, io.Discard, d); code != 2 {
 			t.Errorf("--caller-uid %s: exit %d, want 2", v, code)
 		}
 	}
@@ -351,5 +364,22 @@ func TestWorker_ProtocolFlag(t *testing.T) {
 func TestWorker_RequiresCallerUID(t *testing.T) {
 	if code := run(nil, nil, io.Discard, io.Discard, okDeps(t)); code == 0 {
 		t.Fatal("started without --caller-uid")
+	}
+}
+
+func TestWorker_SealsInheritedDescriptors(t *testing.T) {
+	fd, err := syscall.Open("/dev/null", syscall.O_RDONLY, 0) // inherited-style: no O_CLOEXEC
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	if flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil || flags&unix.FD_CLOEXEC != 0 {
+		t.Fatalf("setup: flags=%d err=%v", flags, err)
+	}
+	if code, resp, _ := serveOnce(t, callerArg(os.Getuid()), okDeps(t), helloReq); code != 0 || resp.Error != nil {
+		t.Fatalf("code=%d %+v", code, resp)
+	}
+	if flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil || flags&unix.FD_CLOEXEC == 0 {
+		t.Fatalf("the worker left descriptor %d inheritable: flags=%d err=%v", fd, flags, err)
 	}
 }
