@@ -91,6 +91,12 @@ func (n *NucleiCollector) IsAvailable(ctx context.Context) bool {
 
 // ScanTarget scans a single target (URL or host).
 func (n *NucleiCollector) ScanTarget(ctx context.Context, target string) ([]NucleiFinding, error) {
+	if ok, reason := ValidateScanTarget(target); !ok {
+		return nil, errors.New(reason)
+	}
+	if ok, reason := ValidateNucleiSeverities(n.cfg.NucleiSeverities); !ok {
+		return nil, errors.New(reason)
+	}
 	if !n.IsAvailable(ctx) {
 		return nil, errors.New("nuclei not installed")
 	}

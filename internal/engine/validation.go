@@ -1,6 +1,9 @@
 package engine
 
 import (
+	"fmt"
+	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -191,4 +194,111 @@ func ValidateDeployID(id string) (bool, string) {
 // SanitizeForShell wraps a value in single quotes for shell safety.
 func SanitizeForShell(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+// unitNameRe covers systemd units (including template instances such as
+// user@1000.service) and docker container names. The first character is
+// alphanumeric so a name can never be parsed as a command-line option.
+var unitNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9@._:-]{0,254}$`)
+
+// ValidateUnitName checks a caller-supplied systemd unit or container name
+// before it is placed into a shell command. It is wider than
+// ValidateServiceName (which keeps its narrower 63-char compose-service rule
+// for its existing callers) because unit names legitimately contain '@' and ':'.
+func ValidateUnitName(name string) (bool, string) {
+	if name == "" {
+		return false, "unit name is required"
+	}
+	if !unitNameRe.MatchString(name) {
+		return false, "invalid unit name: must start with a letter or digit and contain only letters, digits, '@', '.', '_', ':' or '-' (max 255 characters)"
+	}
+	return true, ""
+}
+
+// ValidateUnitNames validates every name in names and reports the first failure.
+func ValidateUnitNames(names []string) (bool, string) {
+	for _, n := range names {
+		if ok, reason := ValidateUnitName(n); !ok {
+			return false, fmt.Sprintf("%q: %s", n, reason)
+		}
+	}
+	return true, ""
+}
+
+var absPathRe = regexp.MustCompile(`^/[A-Za-z0-9/._-]+$`)
+
+// ValidateRepoPath checks a caller-supplied filesystem path before it is
+// placed into a shell command: absolute, already clean (no "..", no doubled
+// or trailing slash), a conservative character set, and never option-shaped.
+func ValidateRepoPath(path string) (bool, string) {
+	if path == "" {
+		return false, "path is required"
+	}
+	if strings.HasPrefix(path, "-") {
+		return false, "invalid path: must not start with '-'"
+	}
+	if !absPathRe.MatchString(path) {
+		return false, "invalid path: must be absolute and contain only letters, digits, '/', '.', '_' or '-'"
+	}
+	if filepath.Clean(path) != path {
+		return false, "invalid path: must be clean (no '..', '.', or repeated '/')"
+	}
+	return true, ""
+}
+
+var (
+	scanHostRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`)
+	scanPathRe = regexp.MustCompile(`^[A-Za-z0-9._~/%+-]*$`)
+	portRe     = regexp.MustCompile(`^[0-9]{1,5}$`)
+)
+
+// ValidateScanTarget checks a caller-supplied vulnerability-scan target: an
+// http(s) URL with a plain host (hostname or IPv4), optional port and path,
+// and no userinfo, query or fragment.
+func ValidateScanTarget(target string) (bool, string) {
+	const reason = "invalid scan target: must be an http(s) URL with a plain host, optional port and path"
+	if target == "" {
+		return false, "scan target is required"
+	}
+	u, err := url.Parse(target)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false, reason
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || strings.Contains(target, "#") || strings.Contains(target, "?") {
+		return false, reason
+	}
+	host := u.Hostname()
+	if host == "" || !scanHostRe.MatchString(host) {
+		return false, reason
+	}
+	if p := u.Port(); p != "" && !portRe.MatchString(p) {
+		return false, reason
+	}
+	if !scanPathRe.MatchString(u.EscapedPath()) {
+		return false, reason
+	}
+	// Reject anything the parser normalised away (spaces, control characters,
+	// shell metacharacters in the authority): re-assemble and compare.
+	rebuilt := u.Scheme + "://" + u.Host + u.EscapedPath()
+	if rebuilt != target {
+		return false, reason
+	}
+	return true, ""
+}
+
+var nucleiSeverities = map[string]bool{
+	"info": true, "low": true, "medium": true, "high": true, "critical": true, "unknown": true,
+}
+
+// ValidateNucleiSeverities checks a comma-separated nuclei severity list.
+func ValidateNucleiSeverities(csv string) (bool, string) {
+	if csv == "" {
+		return true, ""
+	}
+	for _, s := range strings.Split(csv, ",") {
+		if !nucleiSeverities[s] {
+			return false, "invalid severities: each entry must be one of info, low, medium, high, critical, unknown"
+		}
+	}
+	return true, ""
 }

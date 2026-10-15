@@ -27,9 +27,18 @@ Note: Nuclei must be installed on the server. Install: go install github.com/pro
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.NucleiInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		cfg := agent.GetConfig()
 
-		// Create nuclei collector
-		t := engine.NewTransport(cfg)
-		collector := engine.NewNucleiCollector(t, cfg)
+		// Validate caller input before any command runs.
+		if input.Target != "" {
+			if ok, reason := engine.ValidateScanTarget(input.Target); !ok {
+				return nil, engine.TextOutput{}, errors.New(reason)
+			}
+		}
+		if ok, reason := engine.ValidateNucleiSeverities(input.Severities); !ok {
+			return nil, engine.TextOutput{}, errors.New(reason)
+		}
+
+		// Create nuclei collector on the agent's own transport
+		collector := agent.NewNucleiCollector(cfg)
 
 		// Check if nuclei is available
 		if !collector.IsAvailable(ctx) {
@@ -39,7 +48,7 @@ Note: Nuclei must be installed on the server. Install: go install github.com/pro
 		// Set severity filter
 		if input.Severities != "" {
 			cfg.NucleiSeverities = input.Severities
-			collector = engine.NewNucleiCollector(t, cfg)
+			collector = agent.NewNucleiCollector(cfg)
 		}
 
 		var findings []engine.NucleiFinding

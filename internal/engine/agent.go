@@ -297,9 +297,20 @@ func (a *ServerAgent) ScanPorts(ctx context.Context) []PortInfo {
 	return ScanPorts(ctx, a.transport)
 }
 
+// NewNucleiCollector returns a nuclei collector bound to the agent's transport.
+func (a *ServerAgent) NewNucleiCollector(cfg Config) *NucleiCollector {
+	return NewNucleiCollector(a.transport, cfg)
+}
+
 // GetGitStatusAt returns git deployment status for a repository path.
 // Falls back to the directory containing the compose file, then ".".
 func (a *ServerAgent) GetGitStatusAt(ctx context.Context, path string) GitStatus {
+	// A caller-supplied path reaches `git -C <path>` through bash.
+	if path != "" {
+		if ok, _ := ValidateRepoPath(path); !ok {
+			return GitStatus{Path: path}
+		}
+	}
 	if path == "" && a.cfg.ComposePath != "" {
 		// Use the directory containing docker-compose.yml
 		idx := strings.LastIndex(a.cfg.ComposePath, "/")

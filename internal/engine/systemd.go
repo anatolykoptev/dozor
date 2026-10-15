@@ -55,6 +55,11 @@ func (a *ServerAgent) GetSystemdStatus(ctx context.Context, services []string) s
 	fmt.Fprintf(&b, "Systemd Services (%d)\n\n", len(services))
 
 	for _, svc := range services {
+		// Unit names reach `bash -c`; reject anything that is not a plain unit name.
+		if ok, reason := ValidateUnitName(svc); !ok {
+			fmt.Fprintf(&b, "[!!] %q: %s\n", svc, reason)
+			continue
+		}
 		state := a.systemctlIsActive(ctx, svc)
 		icon := "OK"
 		if state != "active" {

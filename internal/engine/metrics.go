@@ -193,6 +193,10 @@ func metricsWriteVnstat(ctx context.Context, b *strings.Builder, a *ServerAgent,
 
 // metricsWritePidstat writes per-process stats for a given service.
 func metricsWritePidstat(ctx context.Context, b *strings.Builder, a *ServerAgent, service string) {
+	if ok, _ := ValidateUnitName(service); !ok {
+		b.WriteString("Process Stats: invalid service name\n\n")
+		return
+	}
 	// Find PID(s) for the service via docker or systemctl
 	pidCmd := fmt.Sprintf(
 		`docker inspect --format '{{.State.Pid}}' %s 2>/dev/null || systemctl show --property=MainPID --value %s 2>/dev/null`,
