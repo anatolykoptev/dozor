@@ -26,7 +26,6 @@ import (
 	"github.com/anatolykoptev/go-kit/tracing"
 	"github.com/anatolykoptev/go-kit/tracing/httpmw"
 	"github.com/anatolykoptev/go-kit/tracing/slogh"
-	"github.com/anatolykoptev/go-mcpserver"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -188,7 +187,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 			os.Exit(1)
 		}
 	}
-	mcpHandler, err := mcpserver.Build(mcpServer, mcpCfg)
+	mcpHandler, err := buildOperatorHandler(mcpServer, mcpCfg)
 	if err != nil {
 		slog.Error("MCP handler build failed", slog.Any("error", err))
 		os.Exit(1)
