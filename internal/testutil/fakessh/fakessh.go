@@ -15,12 +15,14 @@ import (
 var HostileNames = []string{
 	"x; id", "$(id)", "`id`", "a|b", "a&&b", "a\nb", "-h", "--help",
 	"a b", `a"b`, "a'b", "../x", "x/../y", "a>b", "a<b", "a#b", "a*b",
+	"dozor\n", "a\x00b", "é", "a\u200bb",
 }
 
 // HostilePaths are hostile or malformed repository paths.
 var HostilePaths = []string{
 	"/tmp/x; id", "/tmp/$(id)", "/tmp/`id`", "/tmp/a|b", "/tmp/a&&b", "/tmp/a\nb",
 	"-h", "--help", "/tmp/a b", `/tmp/a"b`, "/tmp/a'b", "../x", "/tmp/../etc", "relative/path", "/tmp//x", "/tmp/x/",
+	"~/x; id", "~/../x", "~x", "~", "/tmp/dozor\n", "/tmp/é", "/tmp/a\u200bb",
 }
 
 // Install puts a recording fake "ssh" first on PATH and returns a function

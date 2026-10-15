@@ -193,7 +193,7 @@ func metricsWriteVnstat(ctx context.Context, b *strings.Builder, a *ServerAgent,
 
 // metricsWritePidstat writes per-process stats for a given service.
 func metricsWritePidstat(ctx context.Context, b *strings.Builder, a *ServerAgent, service string) {
-	if ok, _ := ValidateUnitName(service); !ok {
+	if ok, _ := guardUnit("metrics", service); !ok {
 		b.WriteString("Process Stats: invalid service name\n\n")
 		return
 	}

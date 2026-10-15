@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 func newRecordingAgent(t *testing.T) (*engine.ServerAgent, func() []string) {
 	t.Helper()
 	cmds := fakessh.Install(t)
-	a := engine.NewAgent(engine.Config{Host: "fake.invalid", SSHPort: 22, Timeout: 5 * time.Second, LogLines: 10})
+	a := engine.NewAgent(engine.Config{Host: "fake.invalid", SSHPort: 22, Timeout: 5 * time.Second, LogLines: 10, ComposePath: "/srv/app"})
 	t.Cleanup(a.Close)
 	return a, cmds
 }
@@ -157,5 +158,40 @@ func TestMCPTool_ServerVulnScan_HostileInputsRejected(t *testing.T) {
 			t.Errorf("hostile severities %q: expected a tool error", sev)
 		}
 		assertNoHostile(t, cmds(), sev)
+	}
+}
+
+func TestHandleDeploy_HomeRelativeProjectPathStillPasses(t *testing.T) {
+	a, cmds := newRecordingAgent(t)
+	if _, err := HandleDeploy(context.Background(), a, engine.DeployInput{ProjectPath: "~/src/x", Services: []string{"x"}}); err != nil {
+		t.Fatalf("valid ~/ project_path rejected: %v", err)
+	}
+	if _, ok := fakessh.Contains(cmds(), "cd $HOME/src/x"); !ok {
+		t.Errorf("valid ~/ deploy must still run, commands: %q", cmds())
+	}
+}
+
+func TestMCPTool_ServerGit_HomeRelativePathStillRuns(t *testing.T) {
+	a, cmds := newRecordingAgent(t)
+	callTool(t, a, registerGit, "server_git", map[string]any{"path": "~/src/dozor"})
+	if _, ok := fakessh.Contains(cmds(), "git -C ~/src/dozor "); !ok {
+		t.Errorf("~/ path must still run, commands: %q", cmds())
+	}
+	for _, rel := range []string{".", "src/dozor", "~"} {
+		a2, cmds2 := newRecordingAgent(t)
+		res := callTool(t, a2, registerGit, "server_git", map[string]any{"path": rel})
+		if !res.IsError || len(cmds2()) != 0 {
+			t.Errorf("relative path %q must be rejected with no command (isError=%v, cmds=%q)", rel, res.IsError, cmds2())
+		}
+	}
+}
+
+func TestFormatNucleiResults_ReportsSkippedTargets(t *testing.T) {
+	out := formatNucleiResults(nil, []string{"http://x;id: invalid scan target"})
+	if out == "No vulnerabilities found." || !strings.Contains(out, "NOT scanned") {
+		t.Errorf("skipped targets must be reported, got %q", out)
+	}
+	if got := formatNucleiResults(nil, nil); got != "No vulnerabilities found." {
+		t.Errorf("clean result changed: %q", got)
 	}
 }

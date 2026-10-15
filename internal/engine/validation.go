@@ -2,9 +2,11 @@ package engine
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -228,20 +230,59 @@ func ValidateUnitNames(names []string) (bool, string) {
 var absPathRe = regexp.MustCompile(`^/[A-Za-z0-9/._-]+$`)
 
 // ValidateRepoPath checks a caller-supplied filesystem path before it is
-// placed into a shell command: absolute, already clean (no "..", no doubled
-// or trailing slash), a conservative character set, and never option-shaped.
+// placed into a shell command: absolute (or "~/..." for the user's home, which
+// bash expands), already clean (no "..", no doubled or trailing slash), a
+// conservative character set, and never option-shaped. It is the single place
+// that understands the "~/" form, so every sink accepts and rejects the same set.
 func ValidateRepoPath(path string) (bool, string) {
+	const reason = "invalid path: absolute path or ~/ required, using only letters, digits, '/', '.', '_' or '-'"
 	if path == "" {
 		return false, "path is required"
 	}
 	if strings.HasPrefix(path, "-") {
 		return false, "invalid path: must not start with '-'"
 	}
-	if !absPathRe.MatchString(path) {
-		return false, "invalid path: must be absolute and contain only letters, digits, '/', '.', '_' or '-'"
+	rest := path
+	if strings.HasPrefix(path, "~/") {
+		rest = path[1:]
 	}
-	if filepath.Clean(path) != path {
+	if !absPathRe.MatchString(rest) {
+		return false, reason
+	}
+	if filepath.Clean(rest) != rest {
 		return false, "invalid path: must be clean (no '..', '.', or repeated '/')"
+	}
+	return true, ""
+}
+
+// LogRejectedInput records a rejected caller-supplied value at WARN. The value
+// is logged only as its length and a quoted prefix of at most 32 runes.
+func LogRejectedInput(sink, reason, value string) {
+	r := []rune(value)
+	if len(r) > maxLoggedRunes {
+		r = r[:maxLoggedRunes]
+	}
+	slog.Warn("shell sink: rejected caller-supplied value",
+		"sink", sink, "reason", reason, "value_len", len(value), "value", strconv.Quote(string(r)))
+}
+
+const maxLoggedRunes = 32
+
+// guardUnit validates a unit/container name for the named sink, logging a rejection.
+func guardUnit(sink, name string) (bool, string) {
+	ok, reason := ValidateUnitName(name)
+	if !ok {
+		LogRejectedInput(sink, reason, name)
+	}
+	return ok, reason
+}
+
+// guardUnits validates every name for the named sink, logging the first rejection.
+func guardUnits(sink string, names []string) (bool, string) {
+	for _, n := range names {
+		if ok, reason := guardUnit(sink, n); !ok {
+			return false, fmt.Sprintf("%q: %s", n, reason)
+		}
 	}
 	return true, ""
 }

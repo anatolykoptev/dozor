@@ -30,10 +30,12 @@ Note: Nuclei must be installed on the server. Install: go install github.com/pro
 		// Validate caller input before any command runs.
 		if input.Target != "" {
 			if ok, reason := engine.ValidateScanTarget(input.Target); !ok {
+				engine.LogRejectedInput("vuln_scan_target", reason, input.Target)
 				return nil, engine.TextOutput{}, errors.New(reason)
 			}
 		}
 		if ok, reason := engine.ValidateNucleiSeverities(input.Severities); !ok {
+			engine.LogRejectedInput("vuln_scan_severities", reason, input.Severities)
 			return nil, engine.TextOutput{}, errors.New(reason)
 		}
 
@@ -52,6 +54,7 @@ Note: Nuclei must be installed on the server. Install: go install github.com/pro
 		}
 
 		var findings []engine.NucleiFinding
+		var skipped []string
 		var err error
 
 		if input.Target != "" {
@@ -60,7 +63,7 @@ Note: Nuclei must be installed on the server. Install: go install github.com/pro
 		} else {
 			// Scan all configured services
 			report := agent.Diagnose(ctx, nil)
-			findings, err = collector.ScanServices(ctx, report.Services)
+			findings, skipped, err = collector.ScanServicesReport(ctx, report.Services)
 		}
 
 		if err != nil {
@@ -68,15 +71,18 @@ Note: Nuclei must be installed on the server. Install: go install github.com/pro
 		}
 
 		// Format results
-		text := formatNucleiResults(findings)
+		text := formatNucleiResults(findings, skipped)
 		return nil, engine.TextOutput{Text: text}, nil
 	})
 }
 
 // formatNucleiResults formats nuclei findings for display.
-func formatNucleiResults(findings []engine.NucleiFinding) string {
+func formatNucleiResults(findings []engine.NucleiFinding, skipped []string) string {
 	if len(findings) == 0 {
-		return "No vulnerabilities found."
+		if len(skipped) == 0 {
+			return "No vulnerabilities found."
+		}
+		return "No vulnerabilities found in the targets that were scanned.\n" + formatSkippedTargets(skipped)
 	}
 
 	var b strings.Builder
@@ -101,5 +107,14 @@ func formatNucleiResults(findings []engine.NucleiFinding) string {
 		b.WriteString("\n")
 	}
 
+	if len(skipped) > 0 {
+		b.WriteString(formatSkippedTargets(skipped))
+	}
 	return b.String()
+}
+
+// formatSkippedTargets lists targets that were not scanned, so they are not
+// mistaken for clean ones.
+func formatSkippedTargets(skipped []string) string {
+	return fmt.Sprintf("Skipped %d target(s), NOT scanned:\n  - %s\n", len(skipped), strings.Join(skipped, "\n  - "))
 }

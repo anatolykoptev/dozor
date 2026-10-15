@@ -61,7 +61,7 @@ func (c *LogCollector) GetLogs(ctx context.Context, service string, lines int, e
 		tailN = 100
 	}
 
-	if ok, _ := ValidateUnitName(service); !ok {
+	if ok, _ := guardUnit("compose_logs", service); !ok {
 		return nil
 	}
 	cmd := fmt.Sprintf("logs --tail %d --since %s --timestamps %s 2>&1", tailN, logsSinceWindow, service)
@@ -100,7 +100,7 @@ func (c *LogCollector) GetContainerLogs(ctx context.Context, container string, l
 	if lines <= 0 {
 		lines = 100
 	}
-	if ok, _ := ValidateUnitName(container); !ok {
+	if ok, _ := guardUnit("container_logs", container); !ok {
 		return nil
 	}
 	cmd := fmt.Sprintf("docker logs --tail %d --timestamps %s 2>&1", lines, container)

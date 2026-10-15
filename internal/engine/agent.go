@@ -305,12 +305,6 @@ func (a *ServerAgent) NewNucleiCollector(cfg Config) *NucleiCollector {
 // GetGitStatusAt returns git deployment status for a repository path.
 // Falls back to the directory containing the compose file, then ".".
 func (a *ServerAgent) GetGitStatusAt(ctx context.Context, path string) GitStatus {
-	// A caller-supplied path reaches `git -C <path>` through bash.
-	if path != "" {
-		if ok, _ := ValidateRepoPath(path); !ok {
-			return GitStatus{Path: path}
-		}
-	}
 	if path == "" && a.cfg.ComposePath != "" {
 		// Use the directory containing docker-compose.yml
 		idx := strings.LastIndex(a.cfg.ComposePath, "/")

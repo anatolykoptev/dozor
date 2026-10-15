@@ -15,7 +15,7 @@ import (
 func newRemoteAgent(t *testing.T) (*engine.ServerAgent, func() []string) {
 	t.Helper()
 	cmds := fakessh.Install(t)
-	a := engine.NewAgent(engine.Config{Host: "fake.invalid", SSHPort: 22, Timeout: 5 * time.Second, LogLines: 10})
+	a := engine.NewAgent(engine.Config{Host: "fake.invalid", SSHPort: 22, Timeout: 5 * time.Second, LogLines: 10, ComposePath: "/srv/app", RemoteHost: "remote.invalid", RemoteSSHPort: 22})
 	t.Cleanup(a.Close)
 	return a, cmds
 }
@@ -104,6 +104,9 @@ func TestShellSink_ContainerStatusCLI_ValidNamesStillRun(t *testing.T) {
 }
 
 func TestShellSink_DeployHealth_HostileServicesRunNothing(t *testing.T) {
+	// Shorten the settle delay so a regressed guard fails in milliseconds
+	// instead of sleeping 30s per hostile name.
+	defer engine.SetDeployHealthDelay(0)()
 	for _, h := range fakessh.HostileNames {
 		a, cmds := newRemoteAgent(t)
 		out := a.CheckDeployHealth(context.Background(), []string{h})
@@ -208,5 +211,120 @@ func TestShellSink_LegacyDeploy_ValidInputsStillRun(t *testing.T) {
 	}
 	if _, ok := fakessh.Contains(cmds(), "docker compose up -d --build dozor go-wp"); !ok {
 		t.Errorf("valid deploy must still run, commands: %q", cmds())
+	}
+}
+
+func TestShellSink_ComposeLogs_HostileNamesRunNothing(t *testing.T) {
+	for _, h := range fakessh.HostileNames {
+		a, cmds := newRemoteAgent(t)
+		a.GetLogs(context.Background(), h, 10, false)
+		assertNoRaw(t, cmds(), h)
+		if len(cmds()) != 0 {
+			t.Errorf("hostile compose service %q: expected no command, got %q", h, cmds())
+		}
+	}
+}
+
+func TestShellSink_ComposeLogs_ValidNamesStillRun(t *testing.T) {
+	a, cmds := newRemoteAgent(t)
+	a.GetLogs(context.Background(), "go-wp", 10, false)
+	if _, ok := fakessh.Contains(cmds(), "--timestamps go-wp"); !ok {
+		t.Errorf("valid service must still be queried, commands: %q", cmds())
+	}
+}
+
+func TestShellSink_RestartService_HostileNamesRunNothing(t *testing.T) {
+	for _, h := range fakessh.HostileNames {
+		a, cmds := newRemoteAgent(t)
+		res := a.RestartService(context.Background(), h)
+		if res.Success {
+			t.Errorf("hostile service %q: restart reported success", h)
+		}
+		assertNoRaw(t, cmds(), h)
+		if len(cmds()) != 0 {
+			t.Errorf("hostile service %q: expected no command, got %q", h, cmds())
+		}
+	}
+}
+
+func TestShellSink_RestartService_ValidNameStillRuns(t *testing.T) {
+	a, cmds := newRemoteAgent(t)
+	a.RestartService(context.Background(), "go-wp")
+	if _, ok := fakessh.Contains(cmds(), "docker compose restart go-wp"); !ok {
+		t.Errorf("valid restart must still run, commands: %q", cmds())
+	}
+}
+
+func TestShellSink_ContainerEnv_HostileNamesRunNothing(t *testing.T) {
+	for _, h := range fakessh.HostileNames {
+		a, cmds := newRemoteAgent(t)
+		a.CheckContainerEnv(context.Background(), h, nil)
+		assertNoRaw(t, cmds(), h)
+		if len(cmds()) != 0 {
+			t.Errorf("hostile service %q: expected no command, got %q", h, cmds())
+		}
+	}
+}
+
+func TestShellSink_RemoteRestartAndLogs_HostileNamesRunNothing(t *testing.T) {
+	for _, h := range fakessh.HostileNames {
+		a, cmds := newRemoteAgent(t)
+		cfg := a.GetConfig()
+		engine.RemoteRestart(context.Background(), cfg, h)
+		engine.RemoteLogs(context.Background(), cfg, h, 10)
+		assertNoRaw(t, cmds(), h)
+		if len(cmds()) != 0 {
+			t.Errorf("hostile remote service %q: expected no command, got %q", h, cmds())
+		}
+	}
+}
+
+func TestShellSink_RemoteRestartAndLogs_ValidNameStillRuns(t *testing.T) {
+	a, cmds := newRemoteAgent(t)
+	engine.RemoteRestart(context.Background(), a.GetConfig(), "nginx.service")
+	engine.RemoteLogs(context.Background(), a.GetConfig(), "user@1000.service", 5)
+	for _, want := range []string{"systemctl restart nginx.service", "journalctl -u user@1000.service"} {
+		if _, ok := fakessh.Contains(cmds(), want); !ok {
+			t.Errorf("expected a command containing %q, got %q", want, cmds())
+		}
+	}
+}
+
+// GetGitStatus is exported, so the guard must hold for a direct call too, not
+// only through the GetGitStatusAt wrapper.
+func TestShellSink_GitStatusDirect_HostilePathsRunNothing(t *testing.T) {
+	for _, h := range fakessh.HostilePaths {
+		a, cmds := newRemoteAgent(t)
+		a.GetGitStatus(context.Background(), h)
+		assertNoRaw(t, cmds(), h)
+		if len(cmds()) != 0 {
+			t.Errorf("hostile path %q: expected no command, got %q", h, cmds())
+		}
+	}
+}
+
+func TestShellSink_GitPath_HomeRelativeAndFallbackStillRun(t *testing.T) {
+	a, cmds := newRemoteAgent(t)
+	a.GetGitStatusAt(context.Background(), "~/src/dozor")
+	a.GetGitStatusAt(context.Background(), "") // ComposePath-derived fallback
+	for _, want := range []string{"git -C ~/src/dozor ", "git -C /srv "} {
+		if _, ok := fakessh.Contains(cmds(), want); !ok {
+			t.Errorf("expected a command containing %q, got %q", want, cmds())
+		}
+	}
+}
+
+func TestShellSink_ScanServicesReport_ReportsSkippedTargets(t *testing.T) {
+	a, cmds := newRemoteAgent(t)
+	svcs := []engine.ServiceStatus{{Name: "bad", HealthcheckURL: "http://x;id"}}
+	findings, skipped, err := a.NewNucleiCollector(a.GetConfig()).ScanServicesReport(context.Background(), svcs)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("unexpected result: %v %v", findings, err)
+	}
+	if len(skipped) != 1 || !strings.Contains(skipped[0], "http://x;id") {
+		t.Errorf("a rejected target must be reported as skipped, got %q", skipped)
+	}
+	if len(cmds()) != 0 {
+		t.Errorf("expected no command, got %q", cmds())
 	}
 }

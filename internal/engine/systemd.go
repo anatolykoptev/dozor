@@ -56,7 +56,7 @@ func (a *ServerAgent) GetSystemdStatus(ctx context.Context, services []string) s
 
 	for _, svc := range services {
 		// Unit names reach `bash -c`; reject anything that is not a plain unit name.
-		if ok, reason := ValidateUnitName(svc); !ok {
+		if ok, reason := guardUnit("systemd", svc); !ok {
 			fmt.Fprintf(&b, "[!!] %q: %s\n", svc, reason)
 			continue
 		}

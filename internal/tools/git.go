@@ -18,6 +18,7 @@ Defaults to the directory containing docker-compose.yml if no path is given.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.GitInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		if input.Path != "" {
 			if ok, reason := engine.ValidateRepoPath(input.Path); !ok {
+				engine.LogRejectedInput("git_path", reason, input.Path)
 				return nil, engine.TextOutput{}, errors.New(reason)
 			}
 		}

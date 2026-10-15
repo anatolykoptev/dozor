@@ -25,6 +25,15 @@ type GitStatus struct {
 func (a *ServerAgent) GetGitStatus(ctx context.Context, path string) GitStatus {
 	s := GitStatus{Path: path}
 
+	// path reaches `git -C <path>` through bash. "." is the engine's own
+	// fallback when no path is configured, never a caller value.
+	if path != "." {
+		if ok, reason := ValidateRepoPath(path); !ok {
+			LogRejectedInput("git_path", reason, path)
+			return s
+		}
+	}
+
 	run := func(cmd string) string {
 		res := a.transport.ExecuteUnsafe(ctx, fmt.Sprintf("git -C %s %s 2>/dev/null", path, cmd))
 		if !res.Success {

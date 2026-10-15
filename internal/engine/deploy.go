@@ -136,15 +136,12 @@ func (a *ServerAgent) StartManualDeploy(ctx context.Context, req deploy.ManualDe
 func (a *ServerAgent) StartDeploy(ctx context.Context, projectPath string, services []string, build, pull bool) DeployResult {
 	// Both values are spliced into a bash script; reject anything but plain names/paths.
 	if projectPath != "" {
-		check := projectPath
-		if strings.HasPrefix(check, "~/") {
-			check = check[1:] // "~/x" is expanded to "$HOME/x" below
-		}
-		if ok, reason := ValidateRepoPath(check); !ok {
+		if ok, reason := ValidateRepoPath(projectPath); !ok {
+			LogRejectedInput("legacy_deploy_path", reason, projectPath)
 			return DeployResult{Success: false, Error: "invalid project_path: " + reason}
 		}
 	}
-	if ok, reason := ValidateUnitNames(services); !ok {
+	if ok, reason := guardUnits("legacy_deploy_services", services); !ok {
 		return DeployResult{Success: false, Error: "invalid services: " + reason}
 	}
 	path := projectPath
@@ -196,13 +193,17 @@ func (a *ServerAgent) StartDeploy(ctx context.Context, projectPath string, servi
 	}
 }
 
+// deployHealthDelay is how long CheckDeployHealth waits for containers to settle.
+// It is a variable only so tests can shorten it.
+var deployHealthDelay = 30 * time.Second
+
 // CheckDeployHealth verifies all services are running after a deploy.
 // Returns a summary string with OK/FAIL per service.
 func (a *ServerAgent) CheckDeployHealth(ctx context.Context, services []string) string {
-	if ok, reason := ValidateUnitNames(services); !ok {
+	if ok, reason := guardUnits("deploy_health", services); !ok {
 		return "Post-deploy check: invalid services: " + reason
 	}
-	time.Sleep(30 * time.Second)
+	time.Sleep(deployHealthDelay)
 	services = a.resolveServices(ctx, services)
 	if len(services) == 0 {
 		return "Post-deploy check: no services found."

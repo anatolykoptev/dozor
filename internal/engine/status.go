@@ -64,7 +64,7 @@ func (c *StatusCollector) getContainerStatusCLI(ctx context.Context, service str
 	status := ServiceStatus{Name: service, State: StateUnknown}
 
 	// The name is interpolated into docker CLI commands run through bash.
-	if ok, _ := ValidateUnitName(service); !ok {
+	if ok, _ := guardUnit("container_status", service); !ok {
 		return status
 	}
 
