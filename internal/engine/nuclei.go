@@ -91,6 +91,14 @@ func (n *NucleiCollector) IsAvailable(ctx context.Context) bool {
 
 // ScanTarget scans a single target (URL or host).
 func (n *NucleiCollector) ScanTarget(ctx context.Context, target string) ([]NucleiFinding, error) {
+	if ok, reason := ValidateScanTarget(target); !ok {
+		LogRejectedInput("vuln_scan_target", reason, target)
+		return nil, errors.New(reason)
+	}
+	if ok, reason := ValidateNucleiSeverities(n.cfg.NucleiSeverities); !ok {
+		LogRejectedInput("vuln_scan_severities", reason, n.cfg.NucleiSeverities)
+		return nil, errors.New(reason)
+	}
 	if !n.IsAvailable(ctx) {
 		return nil, errors.New("nuclei not installed")
 	}
@@ -113,8 +121,13 @@ func (n *NucleiCollector) ScanTarget(ctx context.Context, target string) ([]Nucl
 
 // ScanServices scans exposed web services from service statuses.
 func (n *NucleiCollector) ScanServices(ctx context.Context, services []ServiceStatus) ([]NucleiFinding, error) {
-	var allFindings []NucleiFinding
+	findings, _, err := n.ScanServicesReport(ctx, services)
+	return findings, err
+}
 
+// ScanServicesReport is ScanServices that also reports the targets it could not
+// scan ("<target>: <reason>"), so a skipped target is not mistaken for a clean one.
+func (n *NucleiCollector) ScanServicesReport(ctx context.Context, services []ServiceStatus) (findings []NucleiFinding, skipped []string, err error) {
 	for _, svc := range services {
 		// Only scan services with healthcheck URLs or known web ports
 		target := n.getScanTarget(svc)
@@ -122,15 +135,15 @@ func (n *NucleiCollector) ScanServices(ctx context.Context, services []ServiceSt
 			continue
 		}
 
-		findings, err := n.ScanTarget(ctx, target)
-		if err != nil {
-			// Log error but continue scanning other services
+		f, scanErr := n.ScanTarget(ctx, target)
+		if scanErr != nil {
+			skipped = append(skipped, fmt.Sprintf("%s: %v", target, scanErr))
 			continue
 		}
-		allFindings = append(allFindings, findings...)
+		findings = append(findings, f...)
 	}
 
-	return allFindings, nil
+	return findings, skipped, nil
 }
 
 // getScanTarget determines the scan target for a service.

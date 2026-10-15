@@ -34,6 +34,9 @@ func isSensitive(name string) bool {
 
 // CheckContainerEnv inspects a container's environment variables.
 func (a *ServerAgent) CheckContainerEnv(ctx context.Context, service string, required []string) string {
+	if ok, reason := guardUnit("container_env", service); !ok {
+		return "Invalid service: " + reason + "\n"
+	}
 	containerID := a.findContainerByService(ctx, service)
 	if containerID == "" {
 		return fmt.Sprintf("Container for service %q not found or not running.\n", service)

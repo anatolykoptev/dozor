@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"github.com/anatolykoptev/dozor/internal/engine"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,8 +17,9 @@ Defaults to the directory containing docker-compose.yml if no path is given.`,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input engine.GitInput) (*mcp.CallToolResult, engine.TextOutput, error) {
 		if input.Path != "" {
-			if strings.Contains(input.Path, "..") {
-				return nil, engine.TextOutput{}, errors.New("path must not contain '..'")
+			if ok, reason := engine.ValidateRepoPath(input.Path); !ok {
+				engine.LogRejectedInput("git_path", reason, input.Path)
+				return nil, engine.TextOutput{}, errors.New(reason)
 			}
 		}
 		status := agent.GetGitStatusAt(ctx, input.Path)

@@ -50,6 +50,9 @@ func HandleInspect(ctx context.Context, agent *engine.ServerAgent, input engine.
 		return engine.FormatStatus(agent.GetServiceStatus(ctx, input.Service)), nil
 
 	case "diagnose":
+		if err := validateServices("inspect_services", input.Services); err != nil {
+			return "", err
+		}
 		report := agent.Diagnose(ctx, input.Services)
 		text := engine.FormatReport(report)
 		if report.NeedsAttention() {
@@ -77,6 +80,9 @@ func HandleInspect(ctx context.Context, agent *engine.ServerAgent, input engine.
 		return agent.GetRemoteStatus(ctx), nil
 
 	case "systemd":
+		if err := validateServices("inspect_services", input.Services); err != nil {
+			return "", err
+		}
 		return agent.GetSystemdStatus(ctx, input.Services), nil
 
 	case "connections":
@@ -93,6 +99,11 @@ func HandleInspect(ctx context.Context, agent *engine.ServerAgent, input engine.
 		return engine.FormatGroups(groups), nil
 
 	case "metrics":
+		if input.Service != "" {
+			if err := validateService("inspect_metrics", input.Service); err != nil {
+				return "", err
+			}
+		}
 		period := input.Period
 		if period == "" {
 			period = "today"
@@ -105,6 +116,9 @@ func HandleInspect(ctx context.Context, agent *engine.ServerAgent, input engine.
 	case "container_logs":
 		if input.Service == "" {
 			return "", errors.New("service (container name) is required for container_logs mode")
+		}
+		if err := validateService("inspect_container_logs", input.Service); err != nil {
+			return "", err
 		}
 		lines := input.Lines
 		if lines <= 0 {
@@ -216,6 +230,15 @@ func HandleRestart(ctx context.Context, agent *engine.ServerAgent, service strin
 //     This is a permanent two-path design — operators rely on ad-hoc deploys for
 //     paths not tracked in deploy-repos.yaml.
 func HandleDeploy(ctx context.Context, agent *engine.ServerAgent, input engine.DeployInput) (string, error) {
+	if err := validateServices("deploy_services", input.Services); err != nil {
+		return "", err
+	}
+	if input.ProjectPath != "" {
+		if ok, reason := engine.ValidateRepoPath(input.ProjectPath); !ok {
+			engine.LogRejectedInput("deploy_path", reason, input.ProjectPath)
+			return "", fmt.Errorf("invalid project_path: %s", reason)
+		}
+	}
 	if input.Action == "health" {
 		return agent.CheckDeployHealth(ctx, input.Services), nil
 	}
@@ -602,4 +625,24 @@ func handleInspectAnalyze(ctx context.Context, agent *engine.ServerAgent, input 
 	}
 	result := engine.AnalyzeLogs(entries, input.Service, extra...)
 	return engine.FormatAnalysisEnriched(result, entries), nil
+}
+
+// validateService rejects a caller-supplied unit/container name with a clean
+// error and a WARN log (length and a truncated quoted prefix, never the raw value).
+func validateService(sink, name string) error {
+	if ok, reason := engine.ValidateUnitName(name); !ok {
+		engine.LogRejectedInput(sink, reason, name)
+		return fmt.Errorf("invalid service: %s", reason)
+	}
+	return nil
+}
+
+// validateServices is validateService for a list.
+func validateServices(sink string, names []string) error {
+	for _, n := range names {
+		if err := validateService(sink, n); err != nil {
+			return err
+		}
+	}
+	return nil
 }

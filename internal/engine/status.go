@@ -63,6 +63,11 @@ func containerNameMatches(names, service string) bool {
 func (c *StatusCollector) getContainerStatusCLI(ctx context.Context, service string) ServiceStatus {
 	status := ServiceStatus{Name: service, State: StateUnknown}
 
+	// The name is interpolated into docker CLI commands run through bash.
+	if ok, _ := guardUnit("container_status", service); !ok {
+		return status
+	}
+
 	// Get from docker ps
 	res := c.transport.DockerCommand(ctx, "ps --format json --filter name="+service)
 	if !res.Success {

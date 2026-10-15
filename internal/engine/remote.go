@@ -215,6 +215,9 @@ func remoteServiceStatus(ctx context.Context, cfg Config, exec remoteExecFunc) s
 
 // RemoteRestart restarts a service on the remote server and verifies it's active.
 func RemoteRestart(ctx context.Context, cfg Config, service string) string {
+	if ok, reason := guardUnit("remote_restart", service); !ok {
+		return "Invalid service: " + reason
+	}
 	t := newRemoteTransport(cfg)
 
 	res := t.ExecuteUnsafe(ctx, "sudo systemctl restart "+service)
@@ -233,6 +236,9 @@ func RemoteRestart(ctx context.Context, cfg Config, service string) string {
 
 // RemoteLogs returns recent journal logs for a remote service.
 func RemoteLogs(ctx context.Context, cfg Config, service string, lines int) string {
+	if ok, reason := guardUnit("remote_logs", service); !ok {
+		return "Invalid service: " + reason
+	}
 	t := newRemoteTransport(cfg)
 
 	res := t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo journalctl -u %s --no-pager -n %d", service, lines))

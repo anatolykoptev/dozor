@@ -10,6 +10,10 @@ import (
 // If the primary restart fails, returns immediately. If no dozor.depends_on labels
 // exist, behaves identically to before (single service restart).
 func (a *ServerAgent) RestartService(ctx context.Context, service string) CommandResult {
+	// service can come from free-text triage output, not only from a tool call.
+	if ok, reason := guardUnit("restart_service", service); !ok {
+		return CommandResult{Stderr: "invalid service: " + reason, ReturnCode: -1}
+	}
 	result := a.transport.DockerComposeCommand(ctx, "restart "+service)
 	if !result.Success {
 		return result
