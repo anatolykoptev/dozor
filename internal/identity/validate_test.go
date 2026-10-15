@@ -41,7 +41,7 @@ func TestValidate_RequiredAttrs(t *testing.T) {
 // RED-on-revert: delete the roleOperator case in ValidateAttrs.
 func TestValidate_OperatorRoleRejected(t *testing.T) {
 	err := ValidateAttrs("k", attrs("role", "operator", "run_as", "muse"))
-	if err == nil || !strings.Contains(err.Error(), "operator") {
+	if err == nil || !strings.Contains(err.Error(), "not allowed") {
 		t.Fatalf("role=operator: %v", err)
 	}
 }
