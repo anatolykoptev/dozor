@@ -5,6 +5,8 @@ package identity
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"time"
@@ -64,43 +66,104 @@ func label(s string) string {
 // tool handler's Go error is still the typed error when the result is
 // classified (the SDK keeps it on CallToolResult for exactly this use).
 //
+// Register it AFTER mcpserver.Build: receiving middleware wraps what is
+// already there, so the one added last is outermost. Added before Build it
+// would sit inside the tool-timeout layer, which runs the tool in its own
+// goroutine and answers the client at the deadline: the call would be
+// audited only when the tool finally returned, with the tool's duration,
+// and never if it hung. Outermost, it records what the caller saw, once,
+// at the moment the caller saw it, including calls a later layer refuses.
+//
 // It never reads Arguments, never logs an error string, and never touches
 // token material: the only inputs are the verified UserID, the tool name,
-// the error kind and the clock.
+// the error kind and the clock. A panic that reaches it is counted as an
+// error and returned as an error result (the panic value is not logged: it
+// may carry caller data). Panics inside the tool-timeout goroutine are
+// recovered by [Recover], which must be registered before Build.
 func Audit(log *slog.Logger) mcp.Middleware {
 	if log == nil {
 		log = slog.Default()
 	}
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
-		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
 			if method != "tools/call" {
 				return next(ctx, method, req)
 			}
 			start := time.Now()
-			res, err := next(ctx, method, req)
-			dur := time.Since(start)
+			id, tool := callerAndTool(req)
+			defer func() {
+				result := ""
+				if r := recover(); r != nil {
+					res, err = panicResult(), nil
+					result = agentsurface.ResultError
+				} else {
+					result = resultOf(res, err)
+					if isUnknownTool(err) {
+						tool = Unknown
+					}
+				}
+				dur := time.Since(start)
+				callsTotal.WithLabelValues(id, tool, result).Inc()
+				callDuration.WithLabelValues(id, tool).Observe(dur.Seconds())
+				log.LogAttrs(ctx, slog.LevelInfo, "mcp call",
+					slog.String("identity", id),
+					slog.String("tool", tool),
+					slog.String("result", result),
+					slog.Duration("dur", dur.Round(time.Millisecond)),
+				)
+			}()
+			return next(ctx, method, req)
+		}
+	}
+}
 
-			id, tool := Anonymous, Unknown
-			if extra := req.GetExtra(); extra != nil && extra.TokenInfo != nil {
-				id = label(extra.TokenInfo.UserID)
-			}
-			if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
-				tool = label(p.Name)
-			}
-			result := resultOf(res, err)
-			if isUnknownTool(err) {
-				tool = Unknown
-			}
+// callerAndTool returns the audit labels of a request: the verified identity
+// and the tool name, each a plain token or Unknown.
+func callerAndTool(req mcp.Request) (id, tool string) {
+	id, tool = Anonymous, Unknown
+	if extra := req.GetExtra(); extra != nil && extra.TokenInfo != nil {
+		id = label(extra.TokenInfo.UserID)
+	}
+	if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
+		tool = label(p.Name)
+	}
+	return id, tool
+}
 
-			callsTotal.WithLabelValues(id, tool, result).Inc()
-			callDuration.WithLabelValues(id, tool).Observe(dur.Seconds())
-			log.LogAttrs(ctx, slog.LevelInfo, "mcp call",
-				slog.String("identity", id),
-				slog.String("tool", tool),
-				slog.String("result", result),
-				slog.Duration("dur", dur.Round(time.Millisecond)),
-			)
-			return res, err
+var errToolPanic = errors.New("internal error: the tool panicked")
+
+func panicResult() *mcp.CallToolResult {
+	var r mcp.CallToolResult
+	r.SetError(errToolPanic)
+	return &r
+}
+
+// Recover returns receiving middleware that turns a panic below it into an
+// error result. Register it BEFORE mcpserver.Build: the tool-timeout layer
+// runs the tool in its own goroutine, where only a recover installed inside
+// that goroutine (that is, below it) can stop the panic from ending the
+// process. It logs the identity, the tool and the panic's type, never its
+// value or the arguments.
+func Recover(log *slog.Logger) mcp.Middleware {
+	if log == nil {
+		log = slog.Default()
+	}
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					id, tool := callerAndTool(req)
+					log.LogAttrs(ctx, slog.LevelError, "mcp handler panicked",
+						slog.String("identity", id), slog.String("tool", tool),
+						slog.String("method", label(method)), slog.String("panic_type", fmt.Sprintf("%T", r)))
+					if method == "tools/call" {
+						res, err = panicResult(), nil
+						return
+					}
+					res, err = nil, errToolPanic
+				}
+			}()
+			return next(ctx, method, req)
 		}
 	}
 }
