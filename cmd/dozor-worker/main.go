@@ -154,7 +154,7 @@ func bindSetup(d deps, noLandlock bool, lo, hi uint16) (note, unavailable string
 		return "agent_exec is DISABLED: TCP bind restriction (Landlock ABI 4) unavailable",
 			"TCP bind restriction unavailable (Landlock ABI 4 required); agent_exec is disabled until the kernel supports it or the worker is started with --no-landlock"
 	}
-	return fmt.Sprintf("TCP bind limited to ports %d-%d (Landlock)", lo, hi), ""
+	return fmt.Sprintf("TCP: explicit bind only on ports %d-%d or port 0 (ephemeral; listen() autobind is ephemeral too); UDP and other protocols are not restricted by Landlock", lo, hi), ""
 }
 
 // defaultBindPorts is the range reserved for agent-owned servers.

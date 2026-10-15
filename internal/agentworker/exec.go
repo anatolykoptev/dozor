@@ -60,7 +60,7 @@ func (t *tail) last(n int) (string, bool) {
 // fd 1/2 and no other descriptor: the connection never reaches it.
 func (c *Config) Exec(req *agentproto.ExecRequest) (*agentproto.ExecResult, *agentproto.Error) {
 	if c.ExecUnavailable != "" {
-		return nil, opErr(errors.New(c.ExecUnavailable))
+		return nil, &agentproto.Error{Code: agentproto.CodeExecDisabled, Message: c.ExecUnavailable}
 	}
 	timeout, cwd, perr := c.checkExec(req)
 	if perr != nil {

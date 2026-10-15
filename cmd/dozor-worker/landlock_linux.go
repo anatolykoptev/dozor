@@ -7,18 +7,25 @@ import (
 	llsyscall "github.com/landlock-lsm/go-landlock/landlock/syscall"
 )
 
-// restrictBindTCP limits bind(2) on TCP sockets to ports lo..hi, for every
-// thread of this process and for everything it starts afterwards. Only the
-// bind right is handled: connect(2), including the implicit bind it performs
-// to pick a source port, is not restricted here (nftables does that).
+// restrictBindTCP limits explicit bind(2) on TCP sockets to ports lo..hi and
+// to port 0, for every thread of this process and for everything it starts
+// afterwards. Port 0 asks the kernel for an ephemeral port: the agent cannot
+// choose which, the kernel picks from ip_local_port_range, which does not
+// include the reserved service ports, and tools that need any free port keep
+// working. The implicit bind of listen(2) on an unbound socket (autobind) also
+// takes an ephemeral port, as does the source-port bind of connect(2), which
+// is not restricted at all (nftables owns connect). Inbound exposure of what
+// the agent binds is closed at the network layer, not here.
 //
-// It also installs the Multipath TCP filter (see denyMPTCP): Landlock does not
-// see MPTCP sockets, so without it the restriction is a one-line bypass.
+// What Landlock does NOT restrict: UDP, and any protocol other than TCP. It
+// also does not see Multipath TCP sockets, so without the filter in denyMPTCP
+// the restriction would be a one-line bypass.
 //
 // The configuration is strict, not best-effort: a kernel without Landlock
 // ABI 4 returns an error and the caller fails closed.
 func restrictBindTCP(lo, hi uint16) error {
-	rules := make([]landlock.Rule, 0, int(hi)-int(lo)+1)
+	rules := make([]landlock.Rule, 0, int(hi)-int(lo)+2)
+	rules = append(rules, landlock.BindTCP(0))
 	for p := int(lo); p <= int(hi); p++ {
 		rules = append(rules, landlock.BindTCP(uint16(p))) //nolint:gosec // bounded by hi
 	}
@@ -26,5 +33,5 @@ func restrictBindTCP(lo, hi uint16) error {
 	if err := cfg.RestrictNet(rules...); err != nil {
 		return err
 	}
-	return denyMPTCP()
+	return denySockets()
 }

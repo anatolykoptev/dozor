@@ -283,3 +283,13 @@ func TestExec_PathAndCwdLengthCap(t *testing.T) {
 		t.Errorf("long path: %+v", perr)
 	}
 }
+
+// A switched-off exec is reported with its own code, so the client can count
+// it apart from an operation that failed.
+func TestExec_DisabledHasItsOwnCode(t *testing.T) {
+	c := &Config{Home: t.TempDir(), ExecUnavailable: "agent_exec is disabled: test"}
+	_, perr := c.Exec(&agentproto.ExecRequest{Command: "true"})
+	if perr == nil || perr.Code != agentproto.CodeExecDisabled || perr.Message == "" {
+		t.Fatalf("got %+v", perr)
+	}
+}

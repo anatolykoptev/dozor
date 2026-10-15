@@ -55,6 +55,10 @@ const (
 	CodeRefused = "refused"
 	// CodeBadRequest: malformed or out-of-policy request.
 	CodeBadRequest = "bad_request"
+	// CodeExecDisabled: the worker serves, but agent_exec is switched off
+	// (for example the kernel cannot confine TCP bind). The client reports it
+	// as "unavailable" and counts it under its own reject reason.
+	CodeExecDisabled = "exec_disabled"
 	// CodeOp: the operation itself failed (missing file, exec start failure).
 	CodeOp = "op"
 )

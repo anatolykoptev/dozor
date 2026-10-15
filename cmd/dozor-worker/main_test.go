@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -307,7 +308,7 @@ func TestWorker_AgentCommandsRunUnderChrtIdle(t *testing.T) {
 func TestWorker_MissingChrtFailsExecUnlessNoIdle(t *testing.T) {
 	d := okDeps(t) // findCommand fails
 	code, resp, _ := serveOnce(t, callerArg(os.Getuid()), d, execReq)
-	if code != 0 || resp.Exec != nil || resp.Error == nil || resp.Error.Code != agentproto.CodeOp {
+	if code != 0 || resp.Exec != nil || resp.Error == nil || resp.Error.Code != agentproto.CodeExecDisabled {
 		t.Fatalf("exec without chrt: code=%d resp=%+v", code, resp)
 	}
 	_, resp, _ = serveOnce(t, callerArg(os.Getuid()), d, `{"v":2,"op":"status"}`)
@@ -398,7 +399,7 @@ func TestWorker_AppliesBindRestrictionBeforeServing(t *testing.T) {
 	if len(calls) != 1 || calls[0] != [2]uint16{30000, 30999} {
 		t.Fatalf("restrictBind calls = %v, want one for 30000-30999", calls)
 	}
-	if resp.Status == nil || !strings.Contains(strings.Join(resp.Status.Notes, "|"), "TCP bind limited to ports 30000-30999") {
+	if resp.Status == nil || !strings.Contains(strings.Join(resp.Status.Notes, "|"), "explicit bind only on ports 30000-30999 or port 0") {
 		t.Fatalf("status does not report the restriction: %+v", resp.Status)
 	}
 
@@ -417,7 +418,7 @@ func TestWorker_FailsClosedWithoutLandlock(t *testing.T) {
 	d.restrictBind = func(_, _ uint16) error { return errors.New("landlock: kernel too old") }
 
 	code, resp, _ := serveOnce(t, callerArg(os.Getuid()), d, execReq)
-	if code != 0 || resp.Exec != nil || resp.Error == nil || resp.Error.Code != agentproto.CodeOp {
+	if code != 0 || resp.Exec != nil || resp.Error == nil || resp.Error.Code != agentproto.CodeExecDisabled {
 		t.Fatalf("exec without Landlock: code=%d resp=%+v", code, resp)
 	}
 	_, resp, _ = serveOnce(t, callerArg(os.Getuid()), d, statusReq)
@@ -465,4 +466,17 @@ func TestParsePortRange(t *testing.T) {
 
 func okDepsNoT() deps {
 	return deps{restrictBind: func(_, _ uint16) error { return nil }}
+}
+
+// realDeps must carry the real restriction: a nil or dummy restrictBind would
+// start the worker with no confinement at all.
+// RED-on-revert: remove `restrictBind: restrictBindTCP` from realDeps.
+func TestRealDeps_CarriesTheBindRestriction(t *testing.T) {
+	f := realDeps().restrictBind
+	if f == nil {
+		t.Fatal("realDeps().restrictBind is nil")
+	}
+	if reflect.ValueOf(f).Pointer() != reflect.ValueOf(restrictBindTCP).Pointer() {
+		t.Error("realDeps().restrictBind is not restrictBindTCP")
+	}
 }

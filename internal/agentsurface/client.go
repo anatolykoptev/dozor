@@ -66,6 +66,8 @@ const (
 	RejectSlots   = "slots"
 	RejectBudget  = "budget"
 	RejectBacklog = "backlog"
+	// RejectExecDisabled: the worker answered that agent_exec is switched off.
+	RejectExecDisabled = "exec-disabled"
 )
 
 // Config tunes the worker client. The zero value is production-correct:
@@ -92,7 +94,8 @@ type Config struct {
 	OnReply func(identity string, version int, buildMatches bool)
 	// OnReject is called when a call is answered "busy" without reaching a
 	// worker (RejectSlots, RejectBudget) or when the worker side refused to
-	// take the connection (RejectBacklog).
+	// take the connection (RejectBacklog), or when the worker reported
+	// agent_exec switched off (RejectExecDisabled).
 	OnReject func(identity, reason string)
 
 	now func() time.Time
@@ -322,6 +325,13 @@ func isReset(err error) bool {
 // "unavailable" (the worker declined to serve); other messages are shown to
 // the agent after clamping and sanitising, since the worker is untrusted.
 func (c *Client) workerError(identity, op string, e *agentproto.Error) error {
+	if e.Code == agentproto.CodeExecDisabled {
+		if c.cfg.OnReject != nil {
+			c.cfg.OnReject(identity, RejectExecDisabled)
+		}
+		c.cfg.Logger.Warn("agent_exec is disabled on the worker", slog.String("identity", clamp(identity)))
+		return fmt.Errorf("%s: %w: %s", op, ErrUnavailable, clamp(e.Message))
+	}
 	if e.Code == agentproto.CodeRefused {
 		return c.fail(identity, op, "worker refused: "+clamp(e.Message), nil)
 	}
