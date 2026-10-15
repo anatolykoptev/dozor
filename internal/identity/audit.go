@@ -32,7 +32,10 @@ const Unknown = "unknown"
 // agentsurface.Result* kinds.
 const ResultOK = "ok"
 
-const maxLabelLen = 64
+const (
+	maxLabelLen   = 64
+	labelIdentity = "identity"
+)
 
 var labelRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]*$`)
 
@@ -40,13 +43,13 @@ var (
 	callsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_mcp_calls_total",
 		Help: "MCP tool calls by verified identity, tool and result (ok, error, unavailable, busy, denied).",
-	}, []string{"identity", "tool", "result"})
+	}, []string{labelIdentity, "tool", "result"})
 
 	callDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "dozor_mcp_call_duration_seconds",
 		Help:    "MCP tool call duration by verified identity and tool.",
 		Buckets: []float64{0.01, 0.05, 0.25, 1, 5, 15, 60, 300, 900},
-	}, []string{"identity", "tool"})
+	}, []string{labelIdentity, "tool"})
 )
 
 // label returns s when it is a short plain token, otherwise Unknown. It keeps

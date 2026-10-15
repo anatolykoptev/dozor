@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/a2a"
+	"github.com/anatolykoptev/dozor/internal/agentsurface"
 	"github.com/anatolykoptev/dozor/internal/approvals"
 	"github.com/anatolykoptev/dozor/internal/bus"
 	"github.com/anatolykoptev/dozor/internal/deploy"
@@ -247,6 +248,13 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 
 	// 9c. Vendor quota probes.
 	go runQuotasWatch(sigCtx, quotas.LoadConfigFrom(cfg.LLMCfg), notifyFn)
+
+	// 9d. Optional identity listener (loopback, key-file keys, agent tools only).
+	// Non-fatal by construction: a failure here is logged and never stops the
+	// operator listener below.
+	if icfg, ok := identityConfigFromEnv(); ok {
+		_, _ = startIdentityListener(sigCtx, icfg, mcpServer, port, agentsurface.Config{})
+	}
 
 	// 10. HTTP server (blocks until shutdown).
 	bindHost := resolveBindHost()
