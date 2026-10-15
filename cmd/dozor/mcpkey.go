@@ -67,6 +67,17 @@ func isTerminal(w io.Writer) bool {
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
+// readableByOthers reports whether w is a regular file that group or others
+// can open: a token written there is readable by them.
+func readableByOthers(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o077 != 0
+}
+
 type mintOpts struct {
 	prefix, name, runAs, entryFile string
 	days                           int
@@ -136,6 +147,11 @@ func mintKey(args []string, stdout, stderr io.Writer) int {
 	if isTerminal(stdout) {
 		_, _ = fmt.Fprintln(stderr, "mcp-key: refusing to print a token to a terminal; redirect stdout into a 0600 file:\n"+
 			"  umask 077; dozor mcp-key mint ... > token.out")
+		return 1
+	}
+	if readableByOthers(stdout) {
+		_, _ = fmt.Fprintln(stderr, "mcp-key: refusing to write a token to a file that group or others can read; "+
+			"create it first with `umask 077` or chmod 600")
 		return 1
 	}
 	token, hash, err := keyfile.Mint(o.prefix)

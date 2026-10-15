@@ -19,7 +19,6 @@ import (
 	"github.com/anatolykoptev/go-mcpserver"
 	"github.com/anatolykoptev/go-mcpserver/keyfile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // The identity listener is a second, loopback-only MCP endpoint that accepts
@@ -35,10 +34,12 @@ const (
 	identityBindHost = "127.0.0.1"
 
 	identityMaxBody = 6 << 20 // agentproto.MaxRequestBytes plus JSON-RPC envelope slack
-	// An agent_exec call may run for MaxTimeoutS plus the client grace.
+	// An agent_exec call may run for MaxTimeoutS plus the client grace, which
+	// stays under the edge's 300 s idle limit; the other tools are bounded by
+	// the client's own 30 s deadline.
 	identityExecTimeout = (agentproto.MaxTimeoutS * time.Second) + agentproto.ExecGrace + selfCheckTimeout
 	identityToolTimeout = 45 * time.Second
-	identityWriteWindow = identityExecTimeout + time.Minute
+	identityWriteWindow = identityExecTimeout + selfCheckTimeout
 
 	selfCheckTimeout = 5 * time.Second
 	shutdownGrace    = 10 * time.Second
@@ -107,11 +108,11 @@ func assertDisjoint(agent, operator []string) error {
 // registers only the agent tools, authenticated by the key file alone. The
 // master token and every other credential are 401 here, because the only
 // verifier is the key file's.
-func buildIdentityHandler(kf *keyfile.Store, ccfg agentsurface.Config) (http.Handler, error) {
+func buildIdentityHandler(kf *keyfile.Store, ccfg agentsurface.Config, operatorTools []string) (http.Handler, error) {
 	server := mcpserver.NewServer(&mcp.Implementation{Name: "dozor-identity", Version: version},
 		mcpserver.Config{SchemaCache: mcp.NewSchemaCache()})
-	// Outermost, as on the operator server: every call is audited.
-	server.AddReceivingMiddleware(identity.Audit(slog.Default()))
+	// Innermost (see buildMCPServer); Audit is added after Build, below.
+	server.AddReceivingMiddleware(identity.Recover(slog.Default()))
 	identity.ClientHooks(&ccfg, slog.Default())
 	agentsurface.Register(server, identity.RunAsResolver, ccfg)
 
@@ -131,13 +132,26 @@ func buildIdentityHandler(kf *keyfile.Store, ccfg agentsurface.Config) (http.Han
 		return nil, err
 	}
 	cfg.BearerAuth.ToolFilter = identity.Ceiling(cfg.BearerAuth.ToolFilter)
-	return mcpserver.Build(server, cfg)
+	// A method-level refusal by the key file (non-tool methods) is audited too.
+	for i := range cfg.MCPReceivingMiddleware {
+		cfg.MCPReceivingMiddleware[i] = identity.MarkRefusals(cfg.MCPReceivingMiddleware[i])
+	}
+	h, err := mcpserver.Build(server, cfg)
+	if err != nil {
+		return nil, err
+	}
+	// After Build, so it is the outermost layer: every call, including ones
+	// the filter denies, is recorded once. Tool labels are clamped to the
+	// registered names of both servers, so a made-up name has no series.
+	server.AddReceivingMiddleware(identity.Audit(slog.Default(),
+		identity.WithKnownTools(agentsurface.ToolNames, operatorTools)))
+	return h, nil
 }
 
 // startAuxHTTPServer binds srv.Addr and serves it in the background until ctx
 // is done. Unlike startHTTPServer it is non-fatal: a bind or serve error is
 // logged at ERROR, up is set to 0, and the process keeps running.
-func startAuxHTTPServer(ctx context.Context, srv *http.Server, label string, up prometheus.Gauge) (net.Addr, error) {
+func startAuxHTTPServer(ctx context.Context, srv *http.Server, label string, up interface{ Set(float64) }) (net.Addr, error) {
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", srv.Addr)
 	if err != nil {
 		slog.Error(label+" cannot listen; continuing without it", slog.String("addr", srv.Addr), slog.Any("error", err))
@@ -202,7 +216,7 @@ func startIdentityListener(ctx context.Context, cfg identityConfig, operator *mc
 		return fail("cannot open the key file", err)
 	}
 	identity.ObserveKeyfile(kf)
-	h, err := buildIdentityHandler(kf, ccfg)
+	h, err := buildIdentityHandler(kf, ccfg, names)
 	if err != nil {
 		return fail("cannot build the handler", err)
 	}
@@ -215,4 +229,15 @@ func startIdentityListener(ctx context.Context, cfg identityConfig, operator *mc
 	}
 	addr, err = startAuxHTTPServer(ctx, srv, "identity listener", identity.ListenerUp)
 	return addr, err
+}
+
+// maybeStartIdentityListener is what the gateway calls: it starts the
+// identity listener if (and only if) it is configured. Failures are logged
+// and never returned to the caller's control flow.
+func maybeStartIdentityListener(ctx context.Context, operator *mcp.Server, operatorPort string) (net.Addr, error) {
+	cfg, ok := identityConfigFromEnv()
+	if !ok {
+		return nil, nil //nolint:nilnil // not configured is not an error
+	}
+	return startIdentityListener(ctx, cfg, operator, operatorPort, agentsurface.Config{})
 }

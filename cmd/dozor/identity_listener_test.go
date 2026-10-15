@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"net"
@@ -22,10 +25,7 @@ import (
 	"github.com/anatolykoptev/go-mcpserver/keyfile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 )
-
-const masterToken = "master-secret"
 
 // metricValue reads one counter or gauge sample by its exact label set.
 func metricValue(t *testing.T, name string, want map[string]string) float64 {
@@ -60,23 +60,10 @@ func metricValue(t *testing.T, name string, want map[string]string) float64 {
 	return -1
 }
 
-func gaugeNow(t *testing.T, g prometheus.Gauge) float64 {
+// gaugeNow reads dozor_identity_listener_up (-1 while the series is absent).
+func gaugeNow(t *testing.T, _ any) float64 {
 	t.Helper()
-	var m dto.Metric
-	if err := g.Write(&m); err != nil {
-		t.Fatal(err)
-	}
-	return m.GetGauge().GetValue()
-}
-
-// captureLogs routes slog.Default into a buffer for the test.
-func captureLogs(t *testing.T) *syncBuf {
-	t.Helper()
-	b := &syncBuf{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(b, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return b
+	return metricValue(t, "dozor_identity_listener_up", nil)
 }
 
 type testKey struct {
@@ -176,7 +163,8 @@ func newIDRig(t *testing.T, keys ...testKey) *idRig {
 		t.Fatal(err)
 	}
 	sockDir := shortDir(t)
-	h, err := buildIdentityHandler(kf, agentsurface.Config{SocketDir: sockDir, ExpectedPeerUID: uint32(os.Getuid()), DialTimeout: time.Second}) //nolint:gosec // test
+	h, err := buildIdentityHandler(kf, agentsurface.Config{SocketDir: sockDir, ExpectedPeerUID: uint32(os.Getuid()), DialTimeout: time.Second}, //nolint:gosec // test
+		[]string{"server_exec", "server_deploy"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,21 +203,6 @@ func toolNamesFrom(t *testing.T, body string) []string {
 	}
 	slices.Sort(names)
 	return names
-}
-
-// callSucceeded reports whether a tools/call response is a non-error result.
-func callSucceeded(t *testing.T, body string) bool {
-	t.Helper()
-	var out struct {
-		Result *struct {
-			IsError bool `json:"isError"`
-		} `json:"result"`
-		Error *struct{} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(body), &out); err != nil {
-		t.Fatalf("body: %v\n%s", err, body)
-	}
-	return out.Error == nil && out.Result != nil && !out.Result.IsError
 }
 
 // A key lists exactly the agent tools it was granted; the operator tools do
@@ -577,5 +550,208 @@ func TestKeyfileReloadGauge(t *testing.T) {
 		}
 		r.call(t, k.token, listBodyJSON) // a verification is what triggers the reload
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func postKey(t *testing.T, base, token, host, body string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "" {
+		req.Host = host
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+func countLines(s, sub string) int { return strings.Count(s, sub) }
+
+// A denied call is audited once under the caller's name, with the tool label
+// clamped to registered names, and the same goes for a method the key file
+// refuses. RED-on-revert: add Audit before Build (it would sit inside the
+// filter and never see a denial), drop the Ceiling's markDenied, or drop
+// MarkRefusals in buildIdentityHandler.
+func TestIdentityListener_DeniedCallsAreAudited(t *testing.T) {
+	logs := captureLogs(t) // before the handler is built: Audit binds slog.Default() then
+	k := newTestKey(t, "denied", "denied-agent", "agent_status")
+	r := newIDRig(t, k)
+	fakeWorker(t, r.sockDir, "denied-agent", statusReply(agentproto.BuildID))
+
+	const bogus = "made-up-tool-77aa"
+	cases := []struct{ name, call, tool string }{
+		{"operator tool", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"server_exec","arguments":{}}}`, "server_exec"},
+		{"ungranted agent tool", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"agent_read_file","arguments":{}}}`, "agent_read_file"},
+		{"made-up tool", `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"` + bogus + `","arguments":{}}}`, identity.Unknown},
+		{"refused method", `{"jsonrpc":"2.0","id":4,"method":"resources/list"}`, identity.Unknown},
+	}
+	for _, c := range cases {
+		before := callCount(t, "denied", c.tool, "denied")
+		lines := countLines(logs.String(), "identity=denied tool="+c.tool+" result=denied")
+		_, body := r.call(t, k.token, c.call)
+		if c.tool != identity.Unknown && callSucceeded(t, body) {
+			t.Errorf("%s: succeeded: %s", c.name, body)
+		}
+		if got := callCount(t, "denied", c.tool, "denied") - before; got != 1 {
+			t.Errorf("%s: denied samples for tool=%s changed by %v, want 1", c.name, c.tool, got)
+		}
+		if got := countLines(logs.String(), "identity=denied tool="+c.tool+" result=denied") - lines; got != 1 {
+			t.Errorf("%s: %d journal lines, want 1", c.name, got)
+		}
+	}
+	if scrape := logs.String(); strings.Contains(scrape, bogus) {
+		t.Errorf("made-up tool name reached the journal")
+	}
+	fams, _ := prometheus.DefaultGatherer.Gather()
+	for _, f := range fams {
+		if strings.Contains(f.String(), bogus) {
+			t.Errorf("made-up tool name became a metric label in %s", f.GetName())
+		}
+	}
+	// Granted calls are not denied.
+	before := callCount(t, "denied", "agent_status", "ok")
+	if _, body := r.call(t, k.token, statusCall); !callSucceeded(t, body) {
+		t.Fatalf("granted call failed: %s", body)
+	}
+	if callCount(t, "denied", "agent_status", "ok")-before != 1 {
+		t.Error("granted call not counted as ok")
+	}
+}
+
+// The production entry the gateway calls: it binds, serves /mcp, and exposes
+// the key-file reload gauge. RED-on-revert: drop identity.ObserveKeyfile in
+// startIdentityListener (the gauge stays 0).
+func TestMaybeStartIdentityListener(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	t.Setenv(identityPortEnv, "")
+	t.Setenv(keysFileEnv, "")
+	if addr, err := maybeStartIdentityListener(ctx, opServer(t), "8765"); addr != nil || err != nil {
+		t.Fatalf("unconfigured: addr=%v err=%v", addr, err)
+	}
+
+	k := newTestKey(t, "probe", "probe-agent", "agent_status")
+	cfg := idConfig(t, "0", k)
+	t.Setenv(identityPortEnv, cfg.port)
+	t.Setenv(keysFileEnv, cfg.keysFile)
+	identity.ObserveKeyfile(nil) // a previous test may have left its own store observed
+	addr, err := maybeStartIdentityListener(ctx, opServer(t, "server_probe"), "8765")
+	if err != nil || addr == nil {
+		t.Fatalf("addr=%v err=%v", addr, err)
+	}
+	base := "http://" + addr.String()
+	if code, _ := postKey(t, base, "", "", listBodyJSON); code != http.StatusUnauthorized {
+		t.Errorf("no token: %d, want 401", code)
+	}
+	if code, body := postKey(t, base, k.token, "", listBodyJSON); code != http.StatusOK || !slices.Equal(toolNamesFrom(t, body), []string{"agent_status"}) {
+		t.Errorf("with the key: %d %s", code, body)
+	}
+	if got := metricValue(t, "dozor_mcp_keyfile_last_reload_successful", nil); got != 1 {
+		t.Errorf("dozor_mcp_keyfile_last_reload_successful = %v after start, want 1", got)
+	}
+}
+
+// runGateway must start the identity listener, and before it blocks serving
+// the operator listener. RED-on-revert: delete the call in gateway.go.
+func TestGateway_WiresTheIdentityListener(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "gateway.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identityPos, servePos token.Pos
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "runGateway" {
+			continue
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if id, ok := call.Fun.(*ast.Ident); ok {
+					switch id.Name {
+					case "maybeStartIdentityListener":
+						identityPos = call.Pos()
+					case "startHTTPServer":
+						servePos = call.Pos()
+					}
+				}
+			}
+			return true
+		})
+	}
+	if servePos == 0 {
+		t.Fatal("runGateway no longer calls startHTTPServer; this check is stale")
+	}
+	if identityPos == 0 || identityPos > servePos {
+		t.Error("runGateway does not call maybeStartIdentityListener before startHTTPServer")
+	}
+}
+
+// Behind the edge proxy the Host header is the public name, not localhost.
+// RED-on-revert: DisableLocalhostProtection false in buildIdentityHandler (the
+// SDK then answers 403 to a loopback request with a foreign Host).
+func TestIdentityListener_AcceptsTheEdgesHostHeader(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	k := newTestKey(t, "probe", "probe-agent", "agent_status")
+	addr, err := startIdentityListener(ctx, idConfig(t, "0", k), opServer(t, "server_probe"), "8765", testClientCfg(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, body := postKey(t, "http://"+addr.String(), k.token, "mcp.example", listBodyJSON)
+	if code != http.StatusOK {
+		t.Errorf("Host: mcp.example over loopback: %d %s", code, body)
+	}
+}
+
+// dozor_identity_listener_up has no series until the listener first starts or
+// fails, so "never configured" differs from "down".
+// RED-on-revert: make Switch a plain Gauge (it then exports 0 from startup).
+func TestSwitch_AbsentUntilFirstSet(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	sw := identity.NewSwitch(reg)
+	count := func() int {
+		fams, err := reg.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, f := range fams {
+			n += len(f.GetMetric())
+		}
+		return n
+	}
+	if n := count(); n != 0 {
+		t.Fatalf("%d series before the first Set, want 0", n)
+	}
+	sw.Set(0)
+	if n := count(); n != 1 {
+		t.Fatalf("%d series after Set(0), want 1", n)
+	}
+}
+
+// One agent_exec call, with the client grace, must finish before the edge
+// proxy's 300 s idle limit (no byte flows while a tool runs).
+func TestExecCapStaysUnderTheEdgeIdleLimit(t *testing.T) {
+	const edgeIdle = 300 * time.Second
+	if agentproto.MaxTimeoutS != 270 || agentproto.DefaultTimeoutS != 60 {
+		t.Errorf("exec caps changed: default %d max %d, want 60 and 270", agentproto.DefaultTimeoutS, agentproto.MaxTimeoutS)
+	}
+	if identityExecTimeout >= edgeIdle {
+		t.Errorf("per-tool exec timeout %s reaches the edge idle limit", identityExecTimeout)
+	}
+	if identityWriteWindow >= edgeIdle || identityWriteWindow <= identityExecTimeout {
+		t.Errorf("write window %s must sit between the exec timeout and the edge limit", identityWriteWindow)
 	}
 }

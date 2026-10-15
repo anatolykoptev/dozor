@@ -51,7 +51,7 @@ func TestValidate_OperatorRoleRejected(t *testing.T) {
 func TestValidate_RunAsReserved(t *testing.T) {
 	for _, bad := range []string{
 		"root", "krolik", "ubuntu", // deployment accounts, agentproto.ValidRunAs
-		"operator", "operator-2", "env-prod", "system-core", // reserved namespaces
+		"operator", "operator-2", "env-prod", "system-core", "anonymous", "unknown", // reserved namespaces and sentinels
 		"", "a", "Muse", "1abc", "has space", "x;y", strings.Repeat("a", 40), "../etc",
 	} {
 		if err := ValidateAttrs("k", attrs("role", "agent-user", "run_as", bad)); err == nil {

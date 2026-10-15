@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sync/atomic"
 	"time"
 
 	"github.com/anatolykoptev/dozor/internal/agentsurface"
@@ -83,54 +84,150 @@ func label(s string) string {
 // error and returned as an error result (the panic value is not logged: it
 // may carry caller data). Panics inside the tool-timeout goroutine are
 // recovered by [Recover], which must be registered before Build.
-func Audit(log *slog.Logger) mcp.Middleware {
+func Audit(log *slog.Logger, opts ...AuditOption) mcp.Middleware {
 	if log == nil {
 		log = slog.Default()
 	}
+	var o auditOpts
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
-			if method != "tools/call" {
+			isCall := method == methodToolsCall
+			if !isCall && method == methodToolsList {
 				return next(ctx, method, req)
 			}
+			note := &denyNote{}
+			ctx = context.WithValue(ctx, denyKey{}, note)
 			start := time.Now()
-			id, tool := callerAndTool(req)
+			id, tool := callerAndTool(req, o.known)
+			c := &callAudit{log: log, id: id, tool: tool, isCall: isCall, start: start}
 			defer func() {
-				result := ""
-				if r := recover(); r != nil {
+				r := recover()
+				if r != nil {
 					res, err = panicResult(), nil
-					result = agentsurface.ResultError
-				} else {
-					result = resultOf(res, err)
-					if isUnknownTool(err) {
-						tool = Unknown
-					}
 				}
-				dur := time.Since(start)
-				callsTotal.WithLabelValues(id, tool, result).Inc()
-				callDuration.WithLabelValues(id, tool).Observe(dur.Seconds())
-				log.LogAttrs(ctx, slog.LevelInfo, "mcp call",
-					slog.String("identity", id),
-					slog.String("tool", tool),
-					slog.String("result", result),
-					slog.Duration("dur", dur.Round(time.Millisecond)),
-				)
+				c.finish(ctx, outcome(r != nil, note.denied.Load(), res, err), err)
 			}()
 			return next(ctx, method, req)
 		}
 	}
 }
 
+// callAudit is what one audited call knows when it ends.
+type callAudit struct {
+	log      *slog.Logger
+	id, tool string
+	isCall   bool
+	start    time.Time
+}
+
+// finish records the call: a counter and a histogram sample and one journal line.
+func (c *callAudit) finish(ctx context.Context, result string, err error) {
+	if result == agentsurface.ResultError && isUnknownTool(err) {
+		c.tool = Unknown
+	}
+	if !c.isCall {
+		// Only refusals of non-tool methods are audited; pings, initialize and
+		// notifications are not tool calls.
+		if result != agentsurface.ResultDenied {
+			return
+		}
+		c.tool = Unknown
+	}
+	dur := time.Since(c.start)
+	callsTotal.WithLabelValues(c.id, c.tool, result).Inc()
+	callDuration.WithLabelValues(c.id, c.tool).Observe(dur.Seconds())
+	c.log.LogAttrs(ctx, slog.LevelInfo, "mcp call",
+		slog.String("identity", c.id),
+		slog.String("tool", c.tool),
+		slog.String("result", result),
+		slog.Duration("dur", dur.Round(time.Millisecond)),
+	)
+}
+
+// outcome picks the audit result: a panic is an error, a refusal by a layer
+// below is denied, otherwise the result decides.
+func outcome(panicked, denied bool, res mcp.Result, err error) string {
+	switch {
+	case panicked:
+		return agentsurface.ResultError
+	case denied:
+		return agentsurface.ResultDenied
+	default:
+		return resultOf(res, err)
+	}
+}
+
 // callerAndTool returns the audit labels of a request: the verified identity
 // and the tool name, each a plain token or Unknown.
-func callerAndTool(req mcp.Request) (id, tool string) {
+func callerAndTool(req mcp.Request, known func(string) bool) (id, tool string) {
 	id, tool = Anonymous, Unknown
 	if extra := req.GetExtra(); extra != nil && extra.TokenInfo != nil {
 		id = label(extra.TokenInfo.UserID)
 	}
-	if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
+	if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok && (known == nil || known(p.Name)) {
 		tool = label(p.Name)
 	}
 	return id, tool
+}
+
+const (
+	methodToolsCall = "tools/call"
+	methodToolsList = "tools/list"
+)
+
+type auditOpts struct{ known func(string) bool }
+
+// AuditOption configures [Audit].
+type AuditOption func(*auditOpts)
+
+// WithKnownTools clamps the tool label to the given registered names: any
+// other name, including one a client made up, is labelled Unknown. Without it
+// any plain token is accepted as a label.
+func WithKnownTools(sets ...[]string) AuditOption {
+	known := map[string]struct{}{}
+	for _, set := range sets {
+		for _, n := range set {
+			known[n] = struct{}{}
+		}
+	}
+	return func(o *auditOpts) {
+		o.known = func(n string) bool { _, ok := known[n]; return ok }
+	}
+}
+
+type denyKey struct{}
+
+// denyNote lets a layer below [Audit] say "I refused this call", which a
+// refusal returns as an ordinary error result with no typed error to classify.
+type denyNote struct{ denied atomic.Bool }
+
+func markDenied(ctx context.Context) {
+	if n, ok := ctx.Value(denyKey{}).(*denyNote); ok {
+		n.denied.Store(true)
+	}
+}
+
+// MarkRefusals wraps a receiving middleware so that when it fails a request
+// without passing it on (a method-level refusal, e.g. keyfile's default-deny
+// of non-tool methods), the audit layer records the request as denied.
+func MarkRefusals(mw mcp.Middleware) mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			reached := false
+			inner := mw(func(c context.Context, m string, r mcp.Request) (mcp.Result, error) {
+				reached = true
+				return next(c, m, r)
+			})
+			res, err := inner(ctx, method, req)
+			if err != nil && !reached {
+				markDenied(ctx)
+			}
+			return res, err
+		}
+	}
 }
 
 var errToolPanic = errors.New("internal error: the tool panicked")
@@ -155,7 +252,7 @@ func Recover(log *slog.Logger) mcp.Middleware {
 		return func(ctx context.Context, method string, req mcp.Request) (res mcp.Result, err error) {
 			defer func() {
 				if r := recover(); r != nil {
-					id, tool := callerAndTool(req)
+					id, tool := callerAndTool(req, nil)
 					log.LogAttrs(ctx, slog.LevelError, "mcp handler panicked",
 						slog.String("identity", id), slog.String("tool", tool),
 						slog.String("method", label(method)), slog.String("panic_type", fmt.Sprintf("%T", r)))

@@ -70,7 +70,11 @@ const (
 	MaxPathBytes    = 4096
 	MaxStdinBytes   = 1 << 20
 	DefaultTimeoutS = 60
-	MaxTimeoutS     = 900
+	// MaxTimeoutS caps one agent_exec call. The edge proxy closes a connection
+	// idle for 300 s and, in JSON-response mode, no byte flows while a tool
+	// runs, so a call must finish (with the client grace) under that. Longer
+	// work is detached by the agent (the job helper) and polled.
+	MaxTimeoutS = 270
 	// OutputTailBytes caps each of stdout and stderr; the tail is kept.
 	OutputTailBytes = 128 << 10
 

@@ -62,8 +62,16 @@ func ValidateAttrs(_ string, attrs map[string]string) error {
 	return nil
 }
 
-// Reserved reports whether name falls under ReservedPrefixes.
+// reservedExact are the metric-label sentinels: no key and no run_as may use
+// them (keyfile reserves them as key names too; this keeps mint and the
+// run_as check in step).
+var reservedExact = []string{Anonymous, Unknown}
+
+// Reserved reports whether name falls under ReservedPrefixes or is a sentinel.
 func Reserved(name string) bool {
+	if slices.Contains(reservedExact, name) {
+		return true
+	}
 	for _, p := range ReservedPrefixes {
 		if strings.HasPrefix(name, p) {
 			return true

@@ -37,8 +37,9 @@ func Register(server *mcp.Server, resolve Resolver, cfg Config) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: ToolExec,
 		Description: "Run a shell command (bash -c) as your own unprivileged user on the host. " +
-			"Clean environment; default timeout 60 s, max 900 s; stdout and stderr keep their last 128 KiB. " +
-			"Use job-style detaching (setsid/nohup) for anything longer.",
+			"Clean environment; default timeout 60 s, max 270 s (the connection is closed if it is idle longer); " +
+			"stdout and stderr keep their last 128 KiB. " +
+			"For anything longer, detach it with the `job` helper (job start NAME -- CMD, then job logs NAME) and poll.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},
 	}, t.exec)
 	mcp.AddTool(server, &mcp.Tool{
@@ -70,7 +71,7 @@ type tools struct {
 type ExecInput struct {
 	Command  string `json:"command" jsonschema:"Shell command, at most 64 KiB"`
 	Cwd      string `json:"cwd,omitempty" jsonschema:"Working directory (default: your home)"`
-	TimeoutS int    `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds (default 60, max 900)"`
+	TimeoutS int    `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds (default 60, max 270)"`
 	Stdin    string `json:"stdin,omitempty" jsonschema:"Text fed to the command's stdin (at most 1 MiB)"`
 }
 
@@ -122,7 +123,7 @@ func (t *tools) exec(ctx context.Context, req *mcp.CallToolRequest, in ExecInput
 		return nil, out, invalid("stdin exceeds 1 MiB")
 	}
 	if in.TimeoutS < 0 || in.TimeoutS > agentproto.MaxTimeoutS {
-		return nil, out, invalid("timeout_s must be between 1 and 900")
+		return nil, out, invalid(fmt.Sprintf("timeout_s must be between 1 and %d", agentproto.MaxTimeoutS))
 	}
 	id, err := t.identity(ctx, req)
 	if err != nil {

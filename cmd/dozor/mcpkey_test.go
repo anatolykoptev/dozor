@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,7 +20,7 @@ var tokenRE = regexp.MustCompile(`^dzk1_[0-9A-Za-z]{49}$`)
 // way the operator runs it) and returns the token, the stderr text and the code.
 func mint(t *testing.T, args ...string) (token, stderr string, code int) {
 	t.Helper()
-	out, err := os.Create(filepath.Join(t.TempDir(), "token.out"))
+	out, err := os.OpenFile(filepath.Join(t.TempDir(), "token.out"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,5 +192,39 @@ func TestMintOutputPassesLint(t *testing.T) {
 	_, placeholder, _ := mint(t)
 	if _, _, code := lint(t, writeKeyFile(t, placeholder)); code == 0 {
 		t.Error("a placeholder entry passed lint")
+	}
+}
+
+// A token must not be written into a file that group or others can read.
+func TestMint_RefusesFileOthersCanRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token.out")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := f.Chmod(0o644); err != nil {
+		t.Fatal(err)
+	}
+	var errb bytes.Buffer
+	if code := runMCPKey([]string{"mint", "--name", "muse"}, f, &errb); code == 0 {
+		t.Fatalf("minted into a world-readable file: %s", errb.String())
+	}
+	if b, _ := os.ReadFile(path); len(b) != 0 {
+		t.Error("something was written to the readable file")
+	}
+	if err := f.Chmod(0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := runMCPKey([]string{"mint", "--name", "muse"}, f, io.Discard); code != 0 {
+		t.Errorf("a 0600 file was refused: %d", code)
+	}
+}
+
+func TestMint_ReservedSentinelNames(t *testing.T) {
+	for _, n := range []string{"anonymous", "unknown"} {
+		if _, _, code := mint(t, "--name", n); code == 0 {
+			t.Errorf("--name %s accepted", n)
+		}
 	}
 }

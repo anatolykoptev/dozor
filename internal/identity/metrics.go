@@ -15,10 +15,7 @@ var (
 	// ListenerUp is 1 while the identity listener is serving and 0 when it
 	// could not start or stopped on an error. The series is absent when the
 	// listener is not configured.
-	ListenerUp = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "dozor_identity_listener_up",
-		Help: "1 while the identity (key-file) MCP listener is serving, 0 after it failed to start or stopped on an error.",
-	})
+	ListenerUp Switch = NewSwitch(prometheus.DefaultRegisterer)
 
 	workerVersionMismatch = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "dozor_agent_worker_version_mismatch",
@@ -34,8 +31,27 @@ var (
 	keyfileGauges sync.Once
 )
 
+// Switch is a 0/1 gauge whose series does not exist until the first Set, so
+// "never configured" and "configured but down" are different on a dashboard.
+type Switch struct{ vec *prometheus.GaugeVec }
+
+// NewSwitch registers dozor_identity_listener_up on reg (a GaugeVec without
+// labels: a vector has no series until a child is created).
+func NewSwitch(reg prometheus.Registerer) Switch {
+	vec := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dozor_identity_listener_up",
+		Help: "1 while the identity (key-file) MCP listener is serving, 0 after it failed to start or stopped on an error. Absent when the listener was never started.",
+	}, nil)
+	reg.MustRegister(vec)
+	return Switch{vec}
+}
+
+// Set records the state.
+func (s Switch) Set(v float64) { s.vec.WithLabelValues().Set(v) }
+
 // ObserveKeyfile exposes dozor_mcp_keyfile_last_reload_successful for kf, read
-// from the store at scrape time. go-mcpserver's keyfile does not export it
+// from the store at scrape time. A nil store resets the observation (the
+// gauge then reads 0). go-mcpserver's keyfile does not export it
 // itself. The series exists only once a store is observed.
 func ObserveKeyfile(kf *keyfile.Store) {
 	keyfileStore.Store(kf)

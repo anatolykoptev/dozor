@@ -25,10 +25,11 @@ var roleTools = map[string][]string{
 // registered tools. A missing identity or an unknown role is denied.
 func Ceiling(next ToolFilter) ToolFilter {
 	return func(ctx context.Context, tool string, info *mcpserver.TokenInfo) bool {
-		if info == nil || !slices.Contains(roleTools[keyfile.AttrsOf(info)[AttrRole]], tool) {
+		if info == nil || !slices.Contains(roleTools[keyfile.AttrsOf(info)[AttrRole]], tool) || !next(ctx, tool, info) {
+			markDenied(ctx) // the audit layer above records a refusal as result=denied
 			return false
 		}
-		return next(ctx, tool, info)
+		return true
 	}
 }
 
