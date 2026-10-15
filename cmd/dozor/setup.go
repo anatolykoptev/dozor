@@ -11,6 +11,7 @@ import (
 
 	"github.com/anatolykoptev/dozor/internal/agent"
 	"github.com/anatolykoptev/dozor/internal/engine"
+	"github.com/anatolykoptev/dozor/internal/identity"
 	"github.com/anatolykoptev/dozor/internal/mcpclient"
 	"github.com/anatolykoptev/dozor/internal/provider"
 	"github.com/anatolykoptev/dozor/internal/skills"
@@ -138,6 +139,19 @@ func isLoopbackBind(host string) bool {
 	return false
 }
 
+// buildOperatorHandler builds the operator HTTP handler and then adds the audit
+// layer, so Audit is the outermost receiving middleware: every tools/call is
+// recorded once, as the caller saw it, including calls refused by a layer
+// inside it and calls cut off by the tool timeout.
+func buildOperatorHandler(server *mcp.Server, cfg mcpserver.Config) (http.Handler, error) {
+	h, err := mcpserver.Build(server, cfg)
+	if err != nil {
+		return nil, err
+	}
+	server.AddReceivingMiddleware(identity.Audit(slog.Default()))
+	return h, nil
+}
+
 // buildMCPServer creates an MCP server and registers all core tools.
 func buildMCPServer(eng *engine.ServerAgent, execOpts tools.ExecOptions) *mcp.Server {
 	server := mcpserver.NewServer(&mcp.Implementation{
@@ -146,6 +160,11 @@ func buildMCPServer(eng *engine.ServerAgent, execOpts tools.ExecOptions) *mcp.Se
 	}, mcpserver.Config{
 		SchemaCache: mcp.NewSchemaCache(),
 	})
+	// Innermost, on purpose: the tool-timeout layer added by mcpserver.Build
+	// runs the tool in its own goroutine, and only a recover below it can stop
+	// a tool panic from ending the process. Audit is added after Build, see
+	// buildOperatorHandler.
+	server.AddReceivingMiddleware(identity.Recover(slog.Default()))
 	tools.RegisterAllWithOpts(server, eng, execOpts)
 	return server
 }

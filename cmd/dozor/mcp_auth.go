@@ -1,12 +1,16 @@
 package main
 
 import (
-	"github.com/anatolykoptev/dozor/internal/mcpself"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"context"
 	"log/slog"
+	"net/http"
 	"os"
 
+	"github.com/anatolykoptev/dozor/internal/identity"
+	"github.com/anatolykoptev/dozor/internal/mcpself"
 	"github.com/anatolykoptev/go-mcpserver"
+	"github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // mcpTokenEnv names the pre-shared bearer token for the /mcp endpoint;
@@ -34,7 +38,21 @@ func mcpBearerAuth() *mcpserver.BearerAuth {
 			slog.String("hint", "set "+mcpTokenEnv+" and send it as 'Authorization: Bearer <token>'"))
 	}
 	// StaticTokenVerifier rejects every token when the expected one is empty.
-	return &mcpserver.BearerAuth{Verifier: mcpserver.StaticTokenVerifier(token)}
+	return &mcpserver.BearerAuth{Verifier: operatorVerifier(mcpserver.StaticTokenVerifier(token))}
+}
+
+// operatorVerifier stamps the identity "operator" on every token the master
+// verifier accepts, so the audit has a name for the calls on this listener.
+// It changes nothing about which tokens are accepted.
+func operatorVerifier(inner auth.TokenVerifier) auth.TokenVerifier {
+	return func(ctx context.Context, token string, r *http.Request) (*auth.TokenInfo, error) {
+		info, err := inner(ctx, token, r)
+		if err != nil || info == nil {
+			return info, err
+		}
+		info.UserID = identity.Operator
+		return info, nil
+	}
 }
 
 // baseMCPConfig is the HTTP MCP server config shared by `gateway` and `serve`.
