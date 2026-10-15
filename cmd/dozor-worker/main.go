@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/anatolykoptev/dozor/internal/agentproto"
@@ -35,6 +36,10 @@ type deps struct {
 	mountCheck  func(dir string) error
 	home, user  string
 	findCommand func(string) (string, error)
+	// restrictBind limits TCP bind(2) to ports lo..hi for this process and all
+	// its descendants (Landlock). Tests substitute it: the restriction is
+	// irreversible.
+	restrictBind func(lo, hi uint16) error
 }
 
 func realDeps() deps {
@@ -47,6 +52,8 @@ func realDeps() deps {
 		home:        os.Getenv("HOME"),
 		user:        os.Getenv("USER"),
 		findCommand: exec.LookPath,
+
+		restrictBind: restrictBindTCP,
 	}
 }
 
@@ -58,12 +65,19 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer, d deps) int {
 	mountDir := fs.String("require-mount", "", "directory that must be a separate ext4 mount; HOME must be under it")
 	noMount := fs.Bool("no-mount-check", false, "development/CI only: skip the mount requirement")
 	noIdle := fs.Bool("no-idle", false, "allow agent commands to run at normal CPU priority when chrt is unavailable")
+	bindPorts := fs.String("bind-ports", defaultBindPorts, "TCP ports agent processes may bind, LO-HI or PORT (Landlock)")
+	noLandlock := fs.Bool("no-landlock", false, "development/CI only: do not restrict TCP bind; without Landlock ABI 4 agent_exec is otherwise disabled")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *protocol {
 		_, _ = fmt.Fprintln(stdout, agentproto.ProtoVersion)
 		return 0
+	}
+	bindLo, bindHi, err := parsePortRange(*bindPorts)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "dozor-worker: --bind-ports: %v\n", err)
+		return 2
 	}
 	if *callerUID < 0 || *callerUID > math.MaxUint32 {
 		_, _ = fmt.Fprintln(stderr, "dozor-worker: --caller-uid is required and must be a valid uid")
@@ -96,6 +110,13 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer, d deps) int {
 	}
 	cfg := &agentworker.Config{Home: d.home, User: d.user}
 	cfg.ExecPrefix, cfg.ExecUnavailable, cfg.Notes = idleSetup(d, *noIdle)
+	// Before the first request is read, so before any child can exist: the
+	// restriction is inherited by everything the agent starts.
+	bindNote, bindUnavailable := bindSetup(d, *noLandlock, bindLo, bindHi)
+	cfg.Notes = append(cfg.Notes, bindNote)
+	if cfg.ExecUnavailable == "" {
+		cfg.ExecUnavailable = bindUnavailable
+	}
 	if err := cfg.Serve(context.Background(), conn, inherited...); err != nil {
 		_, _ = fmt.Fprintf(stderr, "dozor-worker: %v\n", err)
 		return 1
@@ -118,6 +139,41 @@ func idleSetup(d deps, noIdle bool) (prefix []string, unavailable string, notes 
 		return nil, "idle CPU scheduling unavailable (chrt not found); agent_exec is disabled until chrt is installed or the worker is started with --no-idle",
 			[]string{"agent_exec is DISABLED: chrt not found"}
 	}
+}
+
+// bindSetup applies the TCP bind restriction. Without Landlock ABI 4 the
+// worker cannot keep an agent off the host's service ports, so exec is
+// disabled (fail closed) unless --no-landlock was given. File operations do
+// not bind sockets and keep working. The state is always reported in
+// agent_status.
+func bindSetup(d deps, noLandlock bool, lo, hi uint16) (note, unavailable string) {
+	if noLandlock {
+		return "TCP bind is UNRESTRICTED (--no-landlock given)", ""
+	}
+	if err := d.restrictBind(lo, hi); err != nil {
+		return "agent_exec is DISABLED: TCP bind restriction (Landlock ABI 4) unavailable",
+			"TCP bind restriction unavailable (Landlock ABI 4 required); agent_exec is disabled until the kernel supports it or the worker is started with --no-landlock"
+	}
+	return fmt.Sprintf("TCP: explicit bind only on ports %d-%d or port 0 (ephemeral; listen() autobind is ephemeral too); UDP and other protocols are not restricted by Landlock", lo, hi), ""
+}
+
+// defaultBindPorts is the range reserved for agent-owned servers.
+const defaultBindPorts = "30000-30999"
+
+// parsePortRange parses "LO-HI" or "PORT". Port 0 is not a valid bound.
+func parsePortRange(s string) (lo, hi uint16, err error) {
+	a, b, isRange := strings.Cut(s, "-")
+	l, err := strconv.ParseUint(a, 10, 16)
+	if err != nil || l == 0 {
+		return 0, 0, fmt.Errorf("%q is not a port range", s)
+	}
+	h := l
+	if isRange {
+		if h, err = strconv.ParseUint(b, 10, 16); err != nil || h < l {
+			return 0, 0, fmt.Errorf("%q is not a port range", s)
+		}
+	}
+	return uint16(l), uint16(h), nil
 }
 
 // selfCheck is the authoritative gate of §"where run_as is checked": it runs

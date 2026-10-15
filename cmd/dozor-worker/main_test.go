@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,6 +37,8 @@ func okDeps(t *testing.T) deps {
 		home:        t.TempDir(),
 		user:        "tester",
 		findCommand: func(string) (string, error) { return "", errors.New("absent") },
+
+		restrictBind: func(_, _ uint16) error { return nil },
 	}
 }
 
@@ -305,7 +308,7 @@ func TestWorker_AgentCommandsRunUnderChrtIdle(t *testing.T) {
 func TestWorker_MissingChrtFailsExecUnlessNoIdle(t *testing.T) {
 	d := okDeps(t) // findCommand fails
 	code, resp, _ := serveOnce(t, callerArg(os.Getuid()), d, execReq)
-	if code != 0 || resp.Exec != nil || resp.Error == nil || resp.Error.Code != agentproto.CodeOp {
+	if code != 0 || resp.Exec != nil || resp.Error == nil || resp.Error.Code != agentproto.CodeExecDisabled {
 		t.Fatalf("exec without chrt: code=%d resp=%+v", code, resp)
 	}
 	_, resp, _ = serveOnce(t, callerArg(os.Getuid()), d, `{"v":2,"op":"status"}`)
@@ -381,5 +384,99 @@ func TestWorker_SealsInheritedDescriptors(t *testing.T) {
 	}
 	if flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil || flags&unix.FD_CLOEXEC == 0 {
 		t.Fatalf("the worker left descriptor %d inheritable: flags=%d err=%v", fd, flags, err)
+	}
+}
+
+const statusReq = `{"v":2,"op":"status"}`
+
+// The restriction is applied once per connection, before the request is read,
+// with the configured range; the state shows up in agent_status.
+func TestWorker_AppliesBindRestrictionBeforeServing(t *testing.T) {
+	d := okDeps(t)
+	var calls [][2]uint16
+	d.restrictBind = func(lo, hi uint16) error { calls = append(calls, [2]uint16{lo, hi}); return nil }
+	_, resp, _ := serveOnce(t, callerArg(os.Getuid()), d, statusReq)
+	if len(calls) != 1 || calls[0] != [2]uint16{30000, 30999} {
+		t.Fatalf("restrictBind calls = %v, want one for 30000-30999", calls)
+	}
+	if resp.Status == nil || !strings.Contains(strings.Join(resp.Status.Notes, "|"), "explicit bind only on ports 30000-30999 or port 0") {
+		t.Fatalf("status does not report the restriction: %+v", resp.Status)
+	}
+
+	calls = nil
+	_, _, _ = serveOnce(t, append(callerArg(os.Getuid()), "--bind-ports", "31000-31010"), d, statusReq)
+	if len(calls) != 1 || calls[0] != [2]uint16{31000, 31010} {
+		t.Errorf("--bind-ports ignored: %v", calls)
+	}
+}
+
+// Without Landlock ABI 4 exec is refused (fail closed) and says so; other
+// operations keep working. --no-landlock is the explicit dev override.
+func TestWorker_FailsClosedWithoutLandlock(t *testing.T) {
+	d := okDeps(t)
+	d.findCommand = func(string) (string, error) { return "/usr/bin/chrt", nil }
+	d.restrictBind = func(_, _ uint16) error { return errors.New("landlock: kernel too old") }
+
+	code, resp, _ := serveOnce(t, callerArg(os.Getuid()), d, execReq)
+	if code != 0 || resp.Exec != nil || resp.Error == nil || resp.Error.Code != agentproto.CodeExecDisabled {
+		t.Fatalf("exec without Landlock: code=%d resp=%+v", code, resp)
+	}
+	_, resp, _ = serveOnce(t, callerArg(os.Getuid()), d, statusReq)
+	notes := ""
+	if resp.Status != nil {
+		notes = strings.Join(resp.Status.Notes, "|")
+	}
+	if !strings.Contains(notes, "agent_exec is DISABLED: TCP bind restriction") {
+		t.Fatalf("status does not report disabled exec: %q", notes)
+	}
+	if _, resp, _ = serveOnce(t, callerArg(os.Getuid()), d, `{"v":2,"op":"write_file","write_file":{"path":"f","text":"x"}}`); resp.Error != nil {
+		t.Fatalf("file operations must keep working: %+v", resp.Error)
+	}
+
+	called := false
+	d.restrictBind = func(_, _ uint16) error { called = true; return errors.New("unavailable") }
+	args := append(callerArg(os.Getuid()), "--no-landlock")
+	_, resp, _ = serveOnce(t, args, d, statusReq)
+	if called {
+		t.Error("--no-landlock still attempted the restriction")
+	}
+	if resp.Status == nil || !strings.Contains(strings.Join(resp.Status.Notes, "|"), "UNRESTRICTED") {
+		t.Fatalf("--no-landlock not reported: %+v", resp.Status)
+	}
+}
+
+func TestParsePortRange(t *testing.T) {
+	for in, want := range map[string][2]uint16{
+		"30000-30999": {30000, 30999}, "8080": {8080, 8080}, "1-65535": {1, 65535},
+	} {
+		lo, hi, err := parsePortRange(in)
+		if err != nil || [2]uint16{lo, hi} != want {
+			t.Errorf("%q = %d-%d %v, want %v", in, lo, hi, err, want)
+		}
+	}
+	for _, bad := range []string{"", "0", "0-10", "-5", "10-5", "70000", "1-70000", "a-b", "1-2-3", " 80"} {
+		if _, _, err := parsePortRange(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if code := run(append(callerArg(1), "--bind-ports", "nope"), devNull(t), io.Discard, io.Discard, okDepsNoT()); code != 2 {
+		t.Errorf("bad --bind-ports: exit %d, want 2", code)
+	}
+}
+
+func okDepsNoT() deps {
+	return deps{restrictBind: func(_, _ uint16) error { return nil }}
+}
+
+// realDeps must carry the real restriction: a nil or dummy restrictBind would
+// start the worker with no confinement at all.
+// RED-on-revert: remove `restrictBind: restrictBindTCP` from realDeps.
+func TestRealDeps_CarriesTheBindRestriction(t *testing.T) {
+	f := realDeps().restrictBind
+	if f == nil {
+		t.Fatal("realDeps().restrictBind is nil")
+	}
+	if reflect.ValueOf(f).Pointer() != reflect.ValueOf(restrictBindTCP).Pointer() {
+		t.Error("realDeps().restrictBind is not restrictBindTCP")
 	}
 }

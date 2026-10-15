@@ -145,6 +145,14 @@ func TestF1_NoInternalImport_AgentSurface(t *testing.T) {
 	}
 }
 
+// workerModules is every third-party module the worker may depend on: x/sys,
+// and go-landlock (with its psx helper) for the TCP bind restriction.
+var workerModules = []string{
+	"golang.org/x/sys",
+	"github.com/landlock-lsm/go-landlock",
+	"kernel.org/pub/linux/libs/security/libcap/psx",
+}
+
 func TestF1_NoInternalImport_Worker(t *testing.T) {
 	for _, goos := range targets {
 		pkgs := closure(t, goos, modPath+"/cmd/dozor-worker")
@@ -160,7 +168,7 @@ func TestF1_NoInternalImport_Worker(t *testing.T) {
 			}
 		}
 		for mod := range thirdPartyModules(pkgs) {
-			if mod != "golang.org/x/sys" {
+			if !slices.Contains(workerModules, mod) {
 				t.Errorf("GOOS=%s: worker depends on third-party module %s", goos, mod)
 			}
 		}

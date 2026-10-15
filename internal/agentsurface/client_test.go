@@ -549,3 +549,27 @@ func TestTools_PathCapsAreEnforcedBeforeDialling(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+// exec disabled on the worker is "unavailable" with its own reject reason, not
+// a plain worker error. RED-on-revert: delete the CodeExecDisabled branch in
+// workerError.
+func TestClient_ExecDisabledIsDistinct(t *testing.T) {
+	var got []string
+	c := NewClient(Config{OnReject: func(id, reason string) { got = append(got, id+":"+reason) }})
+	err := c.workerError("alice", ToolExec, &agentproto.Error{Code: agentproto.CodeExecDisabled, Message: "agent_exec is disabled: no landlock"})
+	if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrWorker) || Classify(err) != ResultUnavailable {
+		t.Fatalf("err = %v (classified %s)", err, Classify(err))
+	}
+	if !strings.Contains(err.Error(), "no landlock") {
+		t.Errorf("the agent is not told why: %v", err)
+	}
+	if len(got) != 1 || got[0] != "alice:exec-disabled" {
+		t.Errorf("OnReject calls = %v", got)
+	}
+	// An ordinary operation failure stays a worker error and counts nothing.
+	got = nil
+	err = c.workerError("alice", ToolExec, &agentproto.Error{Code: agentproto.CodeOp, Message: "no such file"})
+	if !errors.Is(err, ErrWorker) || len(got) != 0 {
+		t.Errorf("op error: %v, rejects %v", err, got)
+	}
+}
