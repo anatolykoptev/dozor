@@ -24,6 +24,12 @@ type Config struct {
 	// so children run at idle CPU priority while the worker keeps normal
 	// priority.
 	ExecPrefix []string
+	// ExecUnavailable, when set, makes every exec fail with this message. The
+	// worker sets it when idle scheduling is required but cannot be provided,
+	// so a missing chrt is an error, never a silent change of priority.
+	ExecUnavailable string
+	// Notes are appended to the status reply (e.g. the exec CPU priority).
+	Notes []string
 	// CgroupRoot and ProcCgroup locate the cgroup v2 files for agent_status.
 	// Defaults: /sys/fs/cgroup and /proc/self/cgroup.
 	CgroupRoot string
@@ -66,6 +72,9 @@ func (c *Config) cleanEnv() []string {
 func (c *Config) resolve(p string) (string, error) {
 	if p == "" {
 		return "", errors.New("path is required")
+	}
+	if len(p) > agentproto.MaxPathBytes {
+		return "", errors.New("path too long")
 	}
 	if strings.ContainsRune(p, 0) {
 		return "", errors.New("path contains NUL")

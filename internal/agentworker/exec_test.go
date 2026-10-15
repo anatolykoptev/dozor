@@ -3,6 +3,7 @@ package agentworker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/anatolykoptev/dozor/internal/agentproto"
 )
@@ -219,5 +221,65 @@ func TestExec_ChildDoesNotInheritConn(t *testing.T) {
 	}
 	if resp.Exec == nil || resp.Exec.Stdout != "done\n" {
 		t.Fatalf("child saw a socket descriptor: %+v / %+v", resp.Exec, resp.Error)
+	}
+}
+
+func TestSealInherited_ChildSeesNoStrayDescriptor(t *testing.T) {
+	c := newCfg(t)
+	fd, err := syscall.Open("/dev/null", syscall.O_RDONLY, 0) // no O_CLOEXEC
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	probe := agentproto.ExecRequest{Command: fmt.Sprintf("[ -e /dev/fd/%d ] && echo open || echo closed", fd)}
+	if res := run(t, c, probe); res.Stdout != "open\n" {
+		t.Fatalf("control: the probe cannot see an inherited descriptor: %q", res.Stdout)
+	}
+	SealInherited()
+	if res := run(t, c, probe); res.Stdout != "closed\n" {
+		t.Fatalf("descriptor %d survived SealInherited into the child: %q", fd, res.Stdout)
+	}
+}
+
+func TestExec_TimeoutKillsChildrenThatIgnoreTerm(t *testing.T) {
+	c := newCfg(t)
+	// The subshell ignores SIGTERM and execs sleep, which inherits the
+	// ignore: only the group SIGKILL after the timeout can remove it.
+	res := run(t, c, agentproto.ExecRequest{Command: "(trap '' TERM; exec sleep 60) & echo $!; wait", TimeoutS: 1})
+	pid, err := strconv.Atoi(strings.TrimSpace(res.Stdout))
+	if err != nil || !res.TimedOut {
+		t.Fatalf("result %+v (pid err %v)", res, err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	deadline := time.Now().Add(3 * time.Second)
+	for alive(pid) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if alive(pid) {
+		t.Fatal("a child that ignores SIGTERM survived the timeout")
+	}
+}
+
+func TestExec_BinaryOutputIsValidAndWithinCap(t *testing.T) {
+	c := newCfg(t)
+	res := run(t, c, agentproto.ExecRequest{Command: "head -c 100000 /dev/urandom; head -c 100000 /dev/urandom >&2"})
+	for name, s := range map[string]string{"stdout": res.Stdout, "stderr": res.Stderr} {
+		if !utf8.ValidString(s) || len(s) > agentproto.OutputTailBytes {
+			t.Errorf("%s: valid=%v len=%d (cap %d)", name, utf8.ValidString(s), len(s), agentproto.OutputTailBytes)
+		}
+	}
+	if !res.Truncated {
+		t.Error("output that was replaced or trimmed must be flagged truncated")
+	}
+}
+
+func TestExec_PathAndCwdLengthCap(t *testing.T) {
+	c := newCfg(t)
+	long := strings.Repeat("a", agentproto.MaxPathBytes+1)
+	if _, perr := c.Exec(&agentproto.ExecRequest{Command: "true", Cwd: long}); perr == nil || perr.Code != agentproto.CodeBadRequest {
+		t.Errorf("long cwd: %+v", perr)
+	}
+	if _, perr := c.ReadFile(&agentproto.ReadFileRequest{Path: long}); perr == nil || perr.Code != agentproto.CodeBadRequest {
+		t.Errorf("long path: %+v", perr)
 	}
 }

@@ -33,24 +33,35 @@ func (t *tail) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// last returns the final n bytes, trimmed so it starts on a rune boundary.
-func (t *tail) last(n int) ([]byte, bool) {
+// last returns the final n bytes as valid UTF-8 that starts on a rune
+// boundary. Invalid bytes are replaced before the size is applied, so the
+// length the client sees after JSON decoding is the length measured here:
+// encoding/json would otherwise turn each invalid byte into a 3-byte U+FFFD
+// and push a within-cap tail over the cap.
+func (t *tail) last(n int) (string, bool) {
 	b := t.buf
 	cut := t.truncated
-	if len(b) > n {
-		b = b[len(b)-n:]
-		cut = true
-	}
 	for cut && len(b) > 0 && !utf8.RuneStart(b[0]) {
 		b = b[1:]
 	}
-	return b, cut
+	s := strings.ToValidUTF8(string(b), "\uFFFD")
+	if len(s) > n {
+		s = s[len(s)-n:]
+		for len(s) > 0 && !utf8.RuneStart(s[0]) {
+			s = s[1:]
+		}
+		cut = true
+	}
+	return s, cut
 }
 
 // Exec runs req.Command under bash as the worker's uid. The child gets a
 // clean environment, /dev/null (or the supplied stdin) on fd 0, pipes on
 // fd 1/2 and no other descriptor: the connection never reaches it.
 func (c *Config) Exec(req *agentproto.ExecRequest) (*agentproto.ExecResult, *agentproto.Error) {
+	if c.ExecUnavailable != "" {
+		return nil, opErr(errors.New(c.ExecUnavailable))
+	}
 	timeout, cwd, perr := c.checkExec(req)
 	if perr != nil {
 		return nil, perr
@@ -134,7 +145,7 @@ func fillOutput(res *agentproto.ExecResult, out, errb *tail) {
 	for {
 		so, c1 := out.last(n)
 		se, c2 := errb.last(n)
-		res.Stdout, res.Stderr, res.Truncated = string(so), string(se), c1 || c2
+		res.Stdout, res.Stderr, res.Truncated = so, se, c1 || c2
 		if n <= 1 || fits(&agentproto.Response{Build: agentproto.BuildID, Exec: res}) {
 			return
 		}

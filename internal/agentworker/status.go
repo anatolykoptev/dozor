@@ -30,6 +30,7 @@ func (c *Config) Status() *agentproto.StatusResult {
 			"localhost resolves to " + agentproto.LoopbackCIDR + "; programs that hardcode 127.0.0.1 cannot reach their own servers",
 		},
 	}
+	res.Notes = append(res.Notes, c.Notes...)
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(c.Home, &st); err == nil {
 		bs := uint64(st.Bsize) //nolint:gosec // block size is positive

@@ -66,6 +66,8 @@ const (
 	MaxJSONDepth    = 16
 
 	MaxCommandBytes = 64 << 10
+	// MaxPathBytes caps a path or working directory argument.
+	MaxPathBytes    = 4096
 	MaxStdinBytes   = 1 << 20
 	DefaultTimeoutS = 60
 	MaxTimeoutS     = 900

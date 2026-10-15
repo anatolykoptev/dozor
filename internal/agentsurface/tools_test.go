@@ -251,3 +251,34 @@ func TestTools_WorkerFailureModes(t *testing.T) {
 		t.Fatalf("timeout case: IsError=%v out=%v after %s", res.IsError, out, time.Since(start))
 	}
 }
+
+// Binary output used to be rejected as "unavailable": the worker measured raw
+// bytes while the client measures the decoded string, and encoding/json turns
+// every invalid byte into a 3-byte U+FFFD.
+func TestTools_BinaryExecOutputRoundTrips(t *testing.T) {
+	r := newRig(t, "alice")
+	res, out := r.call(t, "agent_exec", map[string]any{"command": "head -c 100000 /dev/urandom; head -c 100000 /dev/urandom >&2"})
+	if res.IsError {
+		t.Fatalf("binary output failed the call: %q", errText(res))
+	}
+	for _, k := range []string{"stdout", "stderr"} {
+		s, _ := out[k].(string)
+		if len(s) == 0 || len(s) > agentproto.OutputTailBytes {
+			t.Errorf("%s: %d bytes, want 1..%d", k, len(s), agentproto.OutputTailBytes)
+		}
+	}
+}
+
+func TestTools_PathAndCwdLengthCaps(t *testing.T) {
+	r := newRig(t, "alice")
+	long := strings.Repeat("a", agentproto.MaxPathBytes+1)
+	for tool, args := range map[string]map[string]any{
+		"agent_exec":       {"command": "true", "cwd": long},
+		"agent_read_file":  {"path": long},
+		"agent_write_file": {"path": long, "text": "x"},
+	} {
+		if res, _ := r.call(t, tool, args); !res.IsError {
+			t.Errorf("%s accepted an over-long path", tool)
+		}
+	}
+}

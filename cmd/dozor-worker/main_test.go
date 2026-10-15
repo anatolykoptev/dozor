@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,6 +28,8 @@ func okDeps(t *testing.T) deps {
 	}
 	return deps{
 		geteuid:     func() int { return euid },
+		getegid:     func() int { return euid },
+		getgroups:   func() ([]int, error) { return nil, nil },
 		procStatus:  func() (string, int, error) { return "0000000000000000", 1, nil },
 		mountCheck:  func(string) error { return nil },
 		home:        t.TempDir(),
@@ -68,7 +72,9 @@ func serveOnce(t *testing.T, args []string, d deps, request string) (int, agentp
 
 const helloReq = `{"v":2,"op":"hello"}`
 
-func callerArg(uid int) []string { return []string{"--caller-uid", strconv.Itoa(uid)} }
+func callerArg(uid int) []string {
+	return []string{"--caller-uid", strconv.Itoa(uid), "--no-mount-check"}
+}
 
 func TestWorker_ServesTheExpectedCaller(t *testing.T) {
 	code, resp, stderr := serveOnce(t, callerArg(os.Getuid()), okDeps(t), helloReq)
@@ -83,8 +89,27 @@ func TestWorker_RejectsWrongPeerUID(t *testing.T) {
 	if code == 0 || resp.Error == nil || resp.Error.Code != agentproto.CodeRefused {
 		t.Fatalf("code=%d resp=%+v, want refused", code, resp)
 	}
-	if !strings.Contains(resp.Error.Message, "peer uid") {
-		t.Fatalf("refused for the wrong reason: %q", resp.Error.Message)
+}
+
+func TestCheckPeer_TypedReason(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := os.NewFile(uintptr(fds[0]), "a")
+	defer f.Close()
+	other := os.NewFile(uintptr(fds[1]), "b")
+	defer other.Close()
+	c, err := net.FileConn(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := checkPeer(c, uint32(os.Getuid())); err != nil { //nolint:gosec // test
+		t.Fatalf("own uid refused: %v", err)
+	}
+	if err := checkPeer(c, uint32(os.Getuid())+1); !errors.Is(err, errPeerUID) { //nolint:gosec // test
+		t.Fatalf("err = %v, want errPeerUID", err)
 	}
 }
 
@@ -136,17 +161,157 @@ func TestWorker_RefusesPrivilegedProcess(t *testing.T) {
 	}
 }
 
+func TestWorker_MountFlagsAreMandatory(t *testing.T) {
+	d := okDeps(t)
+	for name, args := range map[string][]string{
+		"neither flag": {"--caller-uid", strconv.Itoa(os.Getuid())},
+		"both flags":   {"--caller-uid", strconv.Itoa(os.Getuid()), "--require-mount", "/srv/x", "--no-mount-check"},
+	} {
+		if code := run(args, nil, io.Discard, io.Discard, d); code != 2 {
+			t.Errorf("%s: exit %d, want 2 (usage)", name, code)
+		}
+	}
+}
+
 func TestWorker_RefusesWhenMountCheckFails(t *testing.T) {
 	d := okDeps(t)
 	d.mountCheck = func(dir string) error { return fmt.Errorf("%s is the root fs", dir) }
-	args := append(callerArg(os.Getuid()), "--require-mount", "/srv/x")
+	args := []string{"--caller-uid", strconv.Itoa(os.Getuid()), "--require-mount", filepath.Dir(d.home)}
 	code, resp, _ := serveOnce(t, args, d, helloReq)
 	if code == 0 || resp.Error == nil || resp.Error.Code != agentproto.CodeRefused {
 		t.Fatalf("code=%d %+v", code, resp)
 	}
-	// Without the flag the check is not consulted.
-	if code, resp, _ = serveOnce(t, callerArg(os.Getuid()), d, helloReq); code != 0 || resp.Error != nil {
-		t.Fatalf("code=%d %+v", code, resp)
+	d.mountCheck = func(string) error { return nil }
+	if code, resp, _ = serveOnce(t, args, d, helloReq); code != 0 || resp.Error != nil {
+		t.Fatalf("passing mount refused: code=%d %+v", code, resp)
+	}
+}
+
+func TestWorker_RefusesHomeOutsideTheMount(t *testing.T) {
+	d := okDeps(t)
+	other := t.TempDir()
+	args := []string{"--caller-uid", strconv.Itoa(os.Getuid()), "--require-mount", other}
+	code, resp, _ := serveOnce(t, args, d, helloReq)
+	if code == 0 || resp.Error == nil || resp.Error.Code != agentproto.CodeRefused {
+		t.Fatalf("home outside the mount served: code=%d %+v", code, resp)
+	}
+	if err := checkHomeUnder(d.home, other); !errors.Is(err, errHome) {
+		t.Fatalf("err = %v, want errHome", err)
+	}
+	if err := os.MkdirAll(filepath.Join(other, "a", "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, home := range []string{other, filepath.Join(other, "a", "b")} {
+		if err := checkHomeUnder(home, other); err != nil {
+			t.Errorf("home %s under %s refused: %v", home, other, err)
+		}
+	}
+	if err := checkHomeUnder(other+"-sibling", other); !errors.Is(err, errHome) {
+		t.Errorf("sibling prefix accepted: %v", err)
+	}
+}
+
+func TestWorker_CallerUIDMustFitAUint32(t *testing.T) {
+	d := okDeps(t)
+	for _, v := range []string{"4294967296", "99999999999", "-2"} {
+		if code := run([]string{"--caller-uid", v, "--no-mount-check"}, nil, io.Discard, io.Discard, d); code != 2 {
+			t.Errorf("--caller-uid %s: exit %d, want 2", v, code)
+		}
+	}
+}
+
+func TestWorker_RefusesForeignGroups(t *testing.T) {
+	cases := map[string]struct {
+		egid   int
+		groups []int
+		ok     bool
+	}{
+		"agent gid":             {2001, nil, true},
+		"agent gid and group":   {2001, []int{2001, 2002}, true},
+		"root gid":              {0, nil, false},
+		"ordinary gid":          {1002, nil, false},
+		"foreign supplementary": {2001, []int{2001, 4}, false},
+		"docker-like group":     {2001, []int{999}, false},
+	}
+	for name, tc := range cases {
+		err := checkGIDs(tc.egid, tc.groups)
+		if tc.ok != (err == nil) || (!tc.ok && !errors.Is(err, errGIDRange)) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	d := okDeps(t)
+	d.getgroups = func() ([]int, error) { return []int{4}, nil }
+	code, resp, _ := serveOnce(t, callerArg(os.Getuid()), d, helloReq)
+	if code == 0 || resp.Error == nil || resp.Error.Code != agentproto.CodeRefused {
+		t.Fatalf("foreign supplementary group served: code=%d %+v", code, resp)
+	}
+	d = okDeps(t)
+	d.getegid = func() int { return 0 }
+	if code, resp, _ = serveOnce(t, callerArg(os.Getuid()), d, helloReq); code == 0 || resp.Error == nil {
+		t.Fatalf("root egid served: code=%d %+v", code, resp)
+	}
+}
+
+// fakeChrt installs a chrt on PATH that records its argv, one per line, and
+// then runs the rest of the command line like the real one.
+func fakeChrt(t *testing.T) (rec string) {
+	t.Helper()
+	dir := t.TempDir()
+	rec = filepath.Join(dir, "argv")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + rec + "'\nshift 2\nexec \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "chrt"), []byte(script), 0o755); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return rec
+}
+
+const execReq = `{"v":2,"op":"exec","exec":{"command":"echo hi"}}`
+
+func TestWorker_AgentCommandsRunUnderChrtIdle(t *testing.T) {
+	rec := fakeChrt(t)
+	d := okDeps(t)
+	d.findCommand = exec.LookPath
+	code, resp, _ := serveOnce(t, callerArg(os.Getuid()), d, execReq)
+	if code != 0 || resp.Exec == nil || resp.Exec.Stdout != "hi\n" {
+		t.Fatalf("code=%d resp=%+v exec=%+v", code, resp, resp.Exec)
+	}
+	b, err := os.ReadFile(rec)
+	if err != nil {
+		t.Fatalf("the command did not go through chrt: %v", err)
+	}
+	if got, want := string(b), "--idle\n0\n/bin/bash\n-c\necho hi\n"; got != want {
+		t.Fatalf("chrt argv = %q, want %q", got, want)
+	}
+	_, resp, _ = serveOnce(t, callerArg(os.Getuid()), d, `{"v":2,"op":"status"}`)
+	if resp.Status == nil || !strings.Contains(strings.Join(resp.Status.Notes, "|"), "idle CPU priority") {
+		t.Fatalf("status does not report idle scheduling: %+v", resp.Status)
+	}
+}
+
+func TestWorker_MissingChrtFailsExecUnlessNoIdle(t *testing.T) {
+	d := okDeps(t) // findCommand fails
+	code, resp, _ := serveOnce(t, callerArg(os.Getuid()), d, execReq)
+	if code != 0 || resp.Exec != nil || resp.Error == nil || resp.Error.Code != agentproto.CodeOp {
+		t.Fatalf("exec without chrt: code=%d resp=%+v", code, resp)
+	}
+	_, resp, _ = serveOnce(t, callerArg(os.Getuid()), d, `{"v":2,"op":"status"}`)
+	if resp.Status == nil || !strings.Contains(strings.Join(resp.Status.Notes, "|"), "DISABLED") {
+		t.Fatalf("status does not report disabled exec: %+v", resp.Status)
+	}
+	// Other operations keep working.
+	if _, resp, _ = serveOnce(t, callerArg(os.Getuid()), d, `{"v":2,"op":"write_file","write_file":{"path":"f","text":"x"}}`); resp.Error != nil {
+		t.Fatalf("write without chrt: %+v", resp.Error)
+	}
+
+	args := append(callerArg(os.Getuid()), "--no-idle")
+	code, resp, _ = serveOnce(t, args, d, execReq)
+	if code != 0 || resp.Exec == nil || resp.Exec.Stdout != "hi\n" {
+		t.Fatalf("--no-idle: code=%d resp=%+v", code, resp)
+	}
+	_, resp, _ = serveOnce(t, args, d, `{"v":2,"op":"status"}`)
+	if resp.Status == nil || !strings.Contains(strings.Join(resp.Status.Notes, "|"), "NORMAL") {
+		t.Fatalf("status does not report normal priority: %+v", resp.Status)
 	}
 }
 

@@ -6,6 +6,7 @@
 package agentsurface
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,43 @@ var (
 	ErrUnavailable = errors.New("unavailable")
 	ErrBusy        = errors.New("busy")
 	ErrDenied      = errors.New("denied")
+	// ErrInvalid wraps client-side validation failures (bad arguments).
+	ErrInvalid = errors.New("invalid request")
+	// ErrTooLarge: the encoded request would exceed the protocol cap.
+	ErrTooLarge = errors.New("request too large (over 6 MiB once encoded)")
+	// ErrWorker wraps an operation failure reported by the worker.
+	ErrWorker = errors.New("worker error")
+)
+
+// Result kinds for the audit layer.
+const (
+	ResultUnavailable = "unavailable"
+	ResultBusy        = "busy"
+	ResultDenied      = "denied"
+	ResultError       = "error"
+)
+
+// Classify maps a tool error to its audit result kind. It matches typed
+// errors with errors.Is, never message text, so worker-supplied or
+// user-supplied strings cannot steer it.
+func Classify(err error) string {
+	switch {
+	case errors.Is(err, ErrUnavailable):
+		return ResultUnavailable
+	case errors.Is(err, ErrBusy):
+		return ResultBusy
+	case errors.Is(err, ErrDenied):
+		return ResultDenied
+	default:
+		return ResultError
+	}
+}
+
+// Reasons passed to Config.OnReject.
+const (
+	RejectSlots   = "slots"
+	RejectBudget  = "budget"
+	RejectBacklog = "backlog"
 )
 
 // Config tunes the worker client. The zero value is production-correct:
@@ -49,8 +87,13 @@ type Config struct {
 	// Logger receives one line per failed call, never arguments or output.
 	Logger *slog.Logger
 	// OnReply is called for every well-formed reply with the worker's
-	// protocol version and build, for skew metrics.
-	OnReply func(identity string, version int, build string)
+	// protocol version and whether its build equals ours. The raw build
+	// string is worker text and never leaves the client.
+	OnReply func(identity string, version int, buildMatches bool)
+	// OnReject is called when a call is answered "busy" without reaching a
+	// worker (RejectSlots, RejectBudget) or when the worker side refused to
+	// take the connection (RejectBacklog).
+	OnReject func(identity, reason string)
 
 	now func() time.Time
 }
@@ -146,14 +189,18 @@ func (c *Client) Do(ctx context.Context, identity string, req *agentproto.Reques
 	if err != nil {
 		return nil, ErrDenied
 	}
+	payload, err := encodeRequest(req)
+	if err != nil {
+		return nil, err
+	}
 	release, ok := c.acquire(identity)
-	if !ok || c.overBudget(identity) {
-		if ok {
-			release()
-		}
-		return nil, ErrBusy
+	if !ok {
+		return nil, c.busy(identity, RejectSlots)
 	}
 	defer release()
+	if c.overBudget(identity) {
+		return nil, c.busy(identity, RejectBudget)
+	}
 
 	conn, err := c.dial(ctx, identity, req.Op, sock)
 	if err != nil {
@@ -165,11 +212,10 @@ func (c *Client) Do(ctx context.Context, identity string, req *agentproto.Reques
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
 	defer stop()
 
-	data, err := c.exchange(conn, identity, req)
+	data, err := c.exchange(conn, identity, req.Op, payload)
 	if err != nil {
 		return nil, err
 	}
-	c.charge(identity, len(data))
 	var resp agentproto.Response
 	if err := agentproto.DecodeStrict(data, &resp); err != nil {
 		return nil, c.fail(identity, req.Op, "decode", err)
@@ -178,9 +224,32 @@ func (c *Client) Do(ctx context.Context, identity string, req *agentproto.Reques
 		return nil, c.fail(identity, req.Op, fmt.Sprintf("unsupported worker protocol version %d", resp.V), nil)
 	}
 	if c.cfg.OnReply != nil {
-		c.cfg.OnReply(identity, resp.V, clamp(resp.Build))
+		c.cfg.OnReply(identity, resp.V, resp.Build == agentproto.BuildID)
 	}
 	return &resp, nil
+}
+
+// busy reports a rejection and returns ErrBusy.
+func (c *Client) busy(identity, reason string) error {
+	if c.cfg.OnReject != nil {
+		c.cfg.OnReject(identity, reason)
+	}
+	return ErrBusy
+}
+
+// encodeRequest marshals without HTML escaping (which would inflate <, > and
+// & six-fold) and refuses a request the worker would reject as oversized.
+func encodeRequest(req *agentproto.Request) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(req); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if buf.Len() > agentproto.MaxRequestBytes {
+		return nil, ErrTooLarge
+	}
+	return buf.Bytes(), nil
 }
 
 // dial connects and proves we are talking to the socket's activator.
@@ -190,7 +259,7 @@ func (c *Client) dial(ctx context.Context, identity, op, sock string) (*net.Unix
 	raw, err := (&net.Dialer{}).DialContext(dctx, "unix", sock)
 	if err != nil {
 		if errors.Is(err, syscall.EAGAIN) {
-			return nil, ErrBusy
+			return nil, c.busy(identity, RejectBacklog)
 		}
 		return nil, c.fail(identity, op, "dial", err)
 	}
@@ -214,25 +283,39 @@ func (c *Client) dial(ctx context.Context, identity, op, sock string) (*net.Unix
 }
 
 // exchange sends the request, half-closes, and reads at most MaxReplyBytes.
-func (c *Client) exchange(conn *net.UnixConn, identity string, req *agentproto.Request) ([]byte, error) {
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return nil, c.fail(identity, req.Op, "encode", err)
-	}
+// A connection that is reset or closed before any reply byte is what systemd
+// does when MaxConnections is exceeded, so it is "busy", not "unavailable".
+func (c *Client) exchange(conn *net.UnixConn, identity, op string, payload []byte) ([]byte, error) {
 	if _, err := conn.Write(payload); err != nil {
-		return nil, c.fail(identity, req.Op, "write", err)
+		if isReset(err) {
+			return nil, c.busy(identity, RejectBacklog)
+		}
+		return nil, c.fail(identity, op, "write", err)
 	}
-	if err := conn.CloseWrite(); err != nil {
-		return nil, c.fail(identity, req.Op, "half-close", err)
+	if err := conn.CloseWrite(); err != nil && !isReset(err) {
+		return nil, c.fail(identity, op, "half-close", err)
 	}
 	data, err := io.ReadAll(io.LimitReader(conn, agentproto.MaxReplyBytes+1))
+	// Every byte read counts against the budget, including a reply that is
+	// then rejected for size or a read that failed half-way.
+	c.charge(identity, len(data))
 	if err != nil {
-		return nil, c.fail(identity, req.Op, "read", err)
+		if len(data) == 0 && isReset(err) {
+			return nil, c.busy(identity, RejectBacklog)
+		}
+		return nil, c.fail(identity, op, "read", err)
+	}
+	if len(data) == 0 {
+		return nil, c.busy(identity, RejectBacklog)
 	}
 	if len(data) > agentproto.MaxReplyBytes {
-		return nil, c.fail(identity, req.Op, "reply over the size cap", nil)
+		return nil, c.fail(identity, op, "reply over the size cap", nil)
 	}
 	return data, nil
+}
+
+func isReset(err error) bool {
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
 }
 
 // workerError turns a worker-reported error into a tool error. A refusal is
@@ -242,7 +325,7 @@ func (c *Client) workerError(identity, op string, e *agentproto.Error) error {
 	if e.Code == agentproto.CodeRefused {
 		return c.fail(identity, op, "worker refused: "+clamp(e.Message), nil)
 	}
-	return fmt.Errorf("%s: %s", op, clamp(e.Message))
+	return fmt.Errorf("%s: %w: %s", op, ErrWorker, clamp(e.Message))
 }
 
 // clamp makes untrusted text safe for a log line or an error message: it

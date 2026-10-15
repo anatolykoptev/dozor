@@ -11,9 +11,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/anatolykoptev/dozor/internal/agentproto"
@@ -27,6 +29,8 @@ func main() {
 // deps are the process facts the self-check reads; tests substitute them.
 type deps struct {
 	geteuid     func() int
+	getegid     func() int
+	getgroups   func() ([]int, error)
 	procStatus  func() (capEff string, noNewPrivs int, err error)
 	mountCheck  func(dir string) error
 	home, user  string
@@ -36,6 +40,8 @@ type deps struct {
 func realDeps() deps {
 	return deps{
 		geteuid:     os.Geteuid,
+		getegid:     os.Getegid,
+		getgroups:   os.Getgroups,
 		procStatus:  readProcStatus,
 		mountCheck:  checkMount,
 		home:        os.Getenv("HOME"),
@@ -49,7 +55,9 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer, d deps) int {
 	fs.SetOutput(stderr)
 	protocol := fs.Bool("protocol", false, "print the protocol version and exit")
 	callerUID := fs.Int64("caller-uid", -1, "uid of the only process allowed to connect (the dozor process)")
-	mountDir := fs.String("require-mount", "", "directory that must be a separate ext4 mount, not the root filesystem")
+	mountDir := fs.String("require-mount", "", "directory that must be a separate ext4 mount; HOME must be under it")
+	noMount := fs.Bool("no-mount-check", false, "development/CI only: skip the mount requirement")
+	noIdle := fs.Bool("no-idle", false, "allow agent commands to run at normal CPU priority when chrt is unavailable")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -57,10 +65,15 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer, d deps) int {
 		_, _ = fmt.Fprintln(stdout, agentproto.ProtoVersion)
 		return 0
 	}
-	if *callerUID < 0 {
-		_, _ = fmt.Fprintln(stderr, "dozor-worker: --caller-uid is required")
+	if *callerUID < 0 || *callerUID > math.MaxUint32 {
+		_, _ = fmt.Fprintln(stderr, "dozor-worker: --caller-uid is required and must be a valid uid")
 		return 2
 	}
+	if (*mountDir == "") == !*noMount { // exactly one of the two flags
+		_, _ = fmt.Fprintln(stderr, "dozor-worker: exactly one of --require-mount DIR and --no-mount-check is required")
+		return 2
+	}
+	agentworker.SealInherited()
 	conn, err := net.FileConn(stdin)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "dozor-worker: stdin is not a socket: %v\n", err)
@@ -68,7 +81,8 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer, d deps) int {
 	}
 	defer conn.Close()
 
-	if err := selfCheck(conn, uint32(*callerUID), *mountDir, d); err != nil { //nolint:gosec // range-checked above
+	caller := uint32(*callerUID) //nolint:gosec // bounded to MaxUint32 above
+	if err := selfCheck(conn, caller, *mountDir, d); err != nil {
 		_, _ = fmt.Fprintf(stderr, "dozor-worker: refused: %v\n", err)
 		_ = agentworker.Refuse(conn, err.Error())
 		return 1
@@ -80,7 +94,8 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer, d deps) int {
 			inherited = append(inherited, f)
 		}
 	}
-	cfg := &agentworker.Config{Home: d.home, User: d.user, ExecPrefix: idlePrefix(d, stderr)}
+	cfg := &agentworker.Config{Home: d.home, User: d.user}
+	cfg.ExecPrefix, cfg.ExecUnavailable, cfg.Notes = idleSetup(d, *noIdle)
 	if err := cfg.Serve(context.Background(), conn, inherited...); err != nil {
 		_, _ = fmt.Fprintf(stderr, "dozor-worker: %v\n", err)
 		return 1
@@ -88,15 +103,21 @@ func run(args []string, stdin *os.File, stdout, stderr io.Writer, d deps) int {
 	return 0
 }
 
-// idlePrefix runs agent commands under SCHED_IDLE while the worker itself
-// keeps normal priority. Without chrt the commands run at normal priority.
-func idlePrefix(d deps, stderr io.Writer) []string {
+// idleSetup decides how agent commands are scheduled. They run under
+// SCHED_IDLE (chrt --idle 0) while the worker keeps normal priority. If chrt
+// is missing, exec fails with an explicit error unless --no-idle was given;
+// the state is always reported in agent_status.
+func idleSetup(d deps, noIdle bool) (prefix []string, unavailable string, notes []string) {
 	path, err := d.findCommand("chrt")
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "dozor-worker: chrt not found; agent commands run at normal CPU priority")
-		return nil
+	switch {
+	case err == nil:
+		return []string{path, "--idle", "0"}, "", []string{"agent_exec runs at idle CPU priority (SCHED_IDLE)"}
+	case noIdle:
+		return nil, "", []string{"agent_exec runs at NORMAL CPU priority (chrt unavailable, --no-idle given)"}
+	default:
+		return nil, "idle CPU scheduling unavailable (chrt not found); agent_exec is disabled until chrt is installed or the worker is started with --no-idle",
+			[]string{"agent_exec is DISABLED: chrt not found"}
 	}
-	return []string{path, "--idle", "0"}
 }
 
 // selfCheck is the authoritative gate of §"where run_as is checked": it runs
@@ -108,6 +129,13 @@ func selfCheck(conn net.Conn, caller uint32, mountDir string, d deps) error {
 	if err := checkEUID(d.geteuid(), caller); err != nil {
 		return err
 	}
+	groups, err := d.getgroups()
+	if err != nil {
+		return fmt.Errorf("read groups: %w", err)
+	}
+	if err := checkGIDs(d.getegid(), groups); err != nil {
+		return err
+	}
 	if err := checkPrivileges(d.procStatus); err != nil {
 		return err
 	}
@@ -115,9 +143,25 @@ func selfCheck(conn net.Conn, caller uint32, mountDir string, d deps) error {
 		if err := d.mountCheck(mountDir); err != nil {
 			return fmt.Errorf("mount check: %w", err)
 		}
+		if err := checkHomeUnder(d.home, mountDir); err != nil {
+			return err
+		}
 	}
 	return nil
 }
+
+// Refusal reasons. The worker's reply text is built from these; code that
+// needs to branch uses errors.Is on them, never the message.
+var (
+	errPeerUID  = errors.New("peer uid is not the expected caller")
+	errRoot     = errors.New("running as root")
+	errSameUID  = errors.New("running as the caller's uid")
+	errUIDRange = errors.New("euid outside the agent range")
+	errGIDRange = errors.New("gid outside the agent range")
+	errCaps     = errors.New("effective capabilities are not empty")
+	errNNP      = errors.New("NoNewPrivs is not set")
+	errHome     = errors.New("HOME is not under the required mount")
+)
 
 // checkPeer: the process on the other end of the socket must be the expected
 // caller. Peer credentials are kernel-provided and cannot be forged.
@@ -131,7 +175,7 @@ func checkPeer(conn net.Conn, caller uint32) error {
 		return fmt.Errorf("peer credentials: %w", err)
 	}
 	if uid != caller {
-		return fmt.Errorf("peer uid %d is not the expected caller", uid)
+		return fmt.Errorf("%w (got %d)", errPeerUID, uid)
 	}
 	return nil
 }
@@ -142,11 +186,38 @@ func checkPeer(conn net.Conn, caller uint32) error {
 func checkEUID(euid int, caller uint32) error {
 	switch {
 	case euid == 0:
-		return errors.New("running as root")
+		return errRoot
 	case int64(euid) == int64(caller):
-		return errors.New("running as the caller's uid")
+		return errSameUID
 	case euid < agentproto.UIDMin || euid > agentproto.UIDMax:
-		return fmt.Errorf("euid %d outside the agent range %d-%d", euid, agentproto.UIDMin, agentproto.UIDMax)
+		return fmt.Errorf("%w: %d", errUIDRange, euid)
+	}
+	return nil
+}
+
+// checkGIDs: the egid and every supplementary group must be agent-range ids,
+// so the process holds no group access to anything outside the agent.
+func checkGIDs(egid int, groups []int) error {
+	for _, g := range append([]int{egid}, groups...) {
+		if g < agentproto.UIDMin || g > agentproto.UIDMax {
+			return fmt.Errorf("%w: %d", errGIDRange, g)
+		}
+	}
+	return nil
+}
+
+// checkHomeUnder requires home to be the checked mount or inside it, so the
+// mount check is about the directory the agent actually writes to.
+func checkHomeUnder(home, dir string) error {
+	resolve := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return filepath.Clean(p)
+	}
+	rel, err := filepath.Rel(resolve(dir), resolve(home))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return errHome
 	}
 	return nil
 }
@@ -157,10 +228,10 @@ func checkPrivileges(read func() (string, int, error)) error {
 		return fmt.Errorf("read process status: %w", err)
 	}
 	if strings.Trim(capEff, "0") != "" {
-		return errors.New("effective capabilities are not empty")
+		return errCaps
 	}
 	if nnp != 1 {
-		return errors.New("NoNewPrivs is not set")
+		return errNNP
 	}
 	return nil
 }

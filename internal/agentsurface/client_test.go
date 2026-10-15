@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -109,11 +111,6 @@ func TestClient_WorkerDownIsUnavailable(t *testing.T) {
 	_ = ln.Close() // socket file stays, nobody listens
 	if err := do("stale"); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("stale socket: %v", err)
-	}
-
-	startFake(t, dir, "mute", func(*net.UnixConn, []byte) {})
-	if err := do("mute"); !errors.Is(err, ErrUnavailable) {
-		t.Errorf("EOF without reply: %v", err)
 	}
 
 	startFake(t, dir, "hung", func(c *net.UnixConn, _ []byte) { time.Sleep(3 * time.Second) })
@@ -308,7 +305,7 @@ func TestClient_WorkerErrors(t *testing.T) {
 	}
 	werr := tl.client.workerError("ivy", ToolExec, resp.Error)
 	msg := werr.Error()
-	if len(msg) > agentproto.MaxErrorBytes+len(ToolExec)+8 || strings.ContainsAny(msg, "\x1b\n\u202e") {
+	if len(msg) > agentproto.MaxErrorBytes+len(ToolExec)+len(": worker error: ") || strings.ContainsAny(msg, "\x1b\n\u202e") {
 		t.Fatalf("worker text not clamped/sanitised: %q", msg)
 	}
 
@@ -321,17 +318,211 @@ func TestClient_WorkerErrors(t *testing.T) {
 	}
 }
 
-func TestClient_OnReplyReportsVersionAndBuild(t *testing.T) {
+func TestClient_OnReplyReportsVersionAndBuildMatch(t *testing.T) {
 	dir := newDir(t)
-	startFake(t, dir, "kim", okReply)
-	var gotID, gotBuild string
-	var gotV int
+	startFake(t, dir, "kim", okReply) // replies with build "b"
+	startFake(t, dir, "lee", func(c *net.UnixConn, _ []byte) {
+		reply(c, fmt.Sprintf(`{"v":%d,"build":%q}`, agentproto.ProtoVersion, agentproto.BuildID))
+	})
+	type seen struct {
+		id string
+		v  int
+		ok bool
+	}
+	var got []seen
 	c := NewClient(Config{SocketDir: dir, ExpectedPeerUID: uint32(os.Getuid()), //nolint:gosec // test
-		OnReply: func(id string, v int, build string) { gotID, gotV, gotBuild = id, v, build }})
-	if _, err := c.Do(context.Background(), "kim", hello(), time.Second); err != nil {
+		OnReply: func(id string, v int, match bool) { got = append(got, seen{id, v, match}) }})
+	for _, id := range []string{"kim", "lee"} {
+		if _, err := c.Do(context.Background(), id, hello(), time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []seen{{"kim", agentproto.ProtoVersion, false}, {"lee", agentproto.ProtoVersion, true}}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("OnReply saw %+v, want %+v", got, want)
+	}
+}
+
+// abort closes with SO_LINGER 0 so the peer sees a reset where the OS allows.
+func abort(c *net.UnixConn) {
+	if raw, err := c.SyscallConn(); err == nil {
+		_ = raw.Control(func(fd uintptr) {
+			_ = syscall.SetsockoptLinger(int(fd), syscall.SOL_SOCKET, syscall.SO_LINGER, &syscall.Linger{Onoff: 1})
+		})
+	}
+	_ = c.Close()
+}
+
+type lockedBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+func (l *lockedBuf) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+
+func logged(buf *lockedBuf) *slog.Logger { return slog.New(slog.NewTextHandler(buf, nil)) }
+
+func TestClient_HostileWorkerTextIsClampedInLogs(t *testing.T) {
+	dir := newDir(t)
+	hostileKey := strings.Repeat("K", 5000)
+	startFake(t, dir, "mal", func(c *net.UnixConn, _ []byte) {
+		reply(c, fmt.Sprintf(`{"v":%d,"build":"b","%s":1}`, agentproto.ProtoVersion, hostileKey))
+	})
+	var buf lockedBuf
+	c := NewClient(Config{SocketDir: dir, ExpectedPeerUID: uint32(os.Getuid()), Logger: logged(&buf)}) //nolint:gosec // test
+	if _, err := c.Do(context.Background(), "mal", hello(), time.Second); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v", err)
+	}
+	out := buf.String()
+	if out == "" || strings.Contains(out, strings.Repeat("K", agentproto.MaxErrorBytes+50)) {
+		t.Fatalf("worker-controlled text not clamped in the log (%d bytes): %.300s", len(out), out)
+	}
+
+	// The identity is clamped too, whatever reaches fail().
+	buf = lockedBuf{}
+	c = NewClient(Config{Logger: logged(&buf)})
+	_ = c.fail("evil\n"+strings.Repeat("I", 5000), "exec", "why", nil)
+	if out = buf.String(); strings.Contains(out, "\n\"") || strings.Contains(out, strings.Repeat("I", agentproto.MaxErrorBytes+50)) {
+		t.Fatalf("identity not clamped in the log: %.300s", out)
+	}
+}
+
+func TestClient_BuildStringNeverLeavesTheClient(t *testing.T) {
+	dir := newDir(t)
+	hostile := "evil\n" + strings.Repeat("B", 5000)
+	startFake(t, dir, "bld", func(c *net.UnixConn, _ []byte) {
+		b, _ := json.Marshal(agentproto.Response{V: agentproto.ProtoVersion, Build: hostile})
+		reply(c, string(b))
+	})
+	var buf lockedBuf
+	var calls int
+	c := NewClient(Config{SocketDir: dir, ExpectedPeerUID: uint32(os.Getuid()), Logger: logged(&buf), //nolint:gosec // test
+		OnReply: func(_ string, _ int, match bool) {
+			calls++
+			if match {
+				t.Error("hostile build reported as matching")
+			}
+		}})
+	if _, err := c.Do(context.Background(), "bld", hello(), time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if gotID != "kim" || gotV != agentproto.ProtoVersion || gotBuild != "b" {
-		t.Fatalf("OnReply got %q %d %q", gotID, gotV, gotBuild)
+	if calls != 1 || strings.Contains(buf.String(), "BBBB") {
+		t.Fatalf("calls=%d log=%q", calls, buf.String())
+	}
+}
+
+func TestClient_ZeroByteReplyOrResetIsBusy(t *testing.T) {
+	dir := newDir(t)
+	startFake(t, dir, "mute", func(*net.UnixConn, []byte) {})
+	startFake(t, dir, "rst", func(c *net.UnixConn, _ []byte) { abort(c) })
+	var reasons []string
+	var mu sync.Mutex
+	c := NewClient(Config{SocketDir: dir, ExpectedPeerUID: uint32(os.Getuid()), //nolint:gosec // test
+		OnReject: func(id, reason string) { mu.Lock(); reasons = append(reasons, id+":"+reason); mu.Unlock() }})
+	for _, id := range []string{"mute", "rst"} {
+		if _, err := c.Do(context.Background(), id, hello(), time.Second); !errors.Is(err, ErrBusy) {
+			t.Errorf("%s: err = %v, want busy", id, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reasons) != 2 || reasons[0] != "mute:"+RejectBacklog || reasons[1] != "rst:"+RejectBacklog {
+		t.Fatalf("reasons = %v", reasons)
+	}
+}
+
+func TestClient_OnRejectSlotsAndBudget(t *testing.T) {
+	dir := newDir(t)
+	gate := make(chan struct{})
+	fw := startFake(t, dir, "ned", func(c *net.UnixConn, b []byte) { <-gate; okReply(c, b) })
+	var mu sync.Mutex
+	got := map[string]int{}
+	c := NewClient(Config{SocketDir: dir, ExpectedPeerUID: uint32(os.Getuid()), MaxInFlight: 1, //nolint:gosec // test
+		ReplyBytesPerMinute: 10,
+		OnReject:            func(_, reason string) { mu.Lock(); got[reason]++; mu.Unlock() }})
+	done := make(chan error, 1)
+	go func() { _, err := c.Do(context.Background(), "ned", hello(), 5*time.Second); done <- err }()
+	<-fw.reads
+	if _, err := c.Do(context.Background(), "ned", hello(), time.Second); !errors.Is(err, ErrBusy) {
+		t.Fatalf("slots: %v", err)
+	}
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Do(context.Background(), "ned", hello(), time.Second); !errors.Is(err, ErrBusy) { // 19 bytes spent > 10
+		t.Fatalf("budget: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got[RejectSlots] != 1 || got[RejectBudget] != 1 {
+		t.Fatalf("rejections = %v", got)
+	}
+}
+
+func TestClient_RejectedRepliesStillCostBudget(t *testing.T) {
+	dir := newDir(t)
+	big := fmt.Sprintf(`{"v":%d,"build":"%s"}`, agentproto.ProtoVersion, strings.Repeat("a", agentproto.MaxReplyBytes))
+	startFake(t, dir, "ova", func(c *net.UnixConn, _ []byte) { reply(c, big) })
+	c := NewClient(Config{SocketDir: dir, ExpectedPeerUID: uint32(os.Getuid()), ReplyBytesPerMinute: 1000}) //nolint:gosec // test
+	if _, err := c.Do(context.Background(), "ova", hello(), 3*time.Second); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("over-cap reply: %v", err)
+	}
+	if _, err := c.Do(context.Background(), "ova", hello(), time.Second); !errors.Is(err, ErrBusy) {
+		t.Fatalf("an over-cap reply did not cost any budget: %v", err)
+	}
+}
+
+func TestClient_OversizedRequestRejectedBeforeDial(t *testing.T) {
+	dir := newDir(t)
+	fw := startFake(t, dir, "pat", okReply)
+	c := testClient(dir)
+	// 4 MiB of '<' would be 6 bytes each if HTML-escaped; unescaped it is the
+	// payload size, so use a request that is over the cap either way.
+	huge := strings.Repeat("\u0001", agentproto.MaxRequestBytes/6+10) // control bytes always escape
+	req := &agentproto.Request{V: agentproto.ProtoVersion, Op: agentproto.OpWriteFile,
+		WriteFile: &agentproto.WriteFileRequest{Path: "x", Text: &huge}}
+	if _, err := c.Do(context.Background(), "pat", req, time.Second); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+	select {
+	case <-fw.reads:
+		t.Fatal("an oversized request reached the worker")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestClient_RequestIsNotHTMLEscaped(t *testing.T) {
+	dir := newDir(t)
+	fw := startFake(t, dir, "quin", okReply)
+	text := "<a href='x'>&</a>"
+	req := &agentproto.Request{V: agentproto.ProtoVersion, Op: agentproto.OpWriteFile,
+		WriteFile: &agentproto.WriteFileRequest{Path: "x", Text: &text}}
+	if _, err := testClient(dir).Do(context.Background(), "quin", req, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if b := string(<-fw.reads); !strings.Contains(b, text) || strings.Contains(b, `\u003c`) {
+		t.Fatalf("request was HTML-escaped: %s", b)
+	}
+}
+
+func TestClassify(t *testing.T) {
+	for err, want := range map[error]string{
+		ErrUnavailable:                           ResultUnavailable,
+		ErrBusy:                                  ResultBusy,
+		ErrDenied:                                ResultDenied,
+		fmt.Errorf("x: %w", ErrBusy):             ResultBusy,
+		fmt.Errorf("%w: unavailable", ErrWorker): ResultError, // text never classifies
+		invalid("busy"):                          ResultError,
+		errors.New("denied"):                     ResultError,
+	} {
+		if got := Classify(err); got != want {
+			t.Errorf("Classify(%v) = %s, want %s", err, got, want)
+		}
 	}
 }

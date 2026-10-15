@@ -24,3 +24,11 @@ func seal(files ...*os.File) error {
 	}
 	return nil
 }
+
+// sealLoop is the portable fallback of SealInherited.
+func sealLoop() {
+	const maxFD = 4096
+	for fd := 3; fd < maxFD; fd++ {
+		syscall.CloseOnExec(fd)
+	}
+}

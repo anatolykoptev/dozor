@@ -3,7 +3,7 @@ package agentsurface
 import (
 	"context"
 	"encoding/base64"
-	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -96,6 +96,8 @@ type StatusInput struct{}
 
 const rpcTimeout = 30 * time.Second
 
+func invalid(msg string) error { return fmt.Errorf("%w: %s", ErrInvalid, msg) }
+
 func (t *tools) identity(ctx context.Context, req *mcp.CallToolRequest) (string, error) {
 	id, err := t.resolve(ctx, req)
 	if err != nil || !agentproto.ValidRunAs(id) {
@@ -108,16 +110,19 @@ func (t *tools) identity(ctx context.Context, req *mcp.CallToolRequest) (string,
 func (t *tools) exec(ctx context.Context, req *mcp.CallToolRequest, in ExecInput) (*mcp.CallToolResult, agentproto.ExecResult, error) {
 	var out agentproto.ExecResult
 	if in.Command == "" {
-		return nil, out, errors.New("command is required")
+		return nil, out, invalid("command is required")
+	}
+	if len(in.Cwd) > agentproto.MaxPathBytes {
+		return nil, out, invalid("cwd too long")
 	}
 	if len(in.Command) > agentproto.MaxCommandBytes {
-		return nil, out, errors.New("command exceeds 64 KiB")
+		return nil, out, invalid("command exceeds 64 KiB")
 	}
 	if len(in.Stdin) > agentproto.MaxStdinBytes {
-		return nil, out, errors.New("stdin exceeds 1 MiB")
+		return nil, out, invalid("stdin exceeds 1 MiB")
 	}
 	if in.TimeoutS < 0 || in.TimeoutS > agentproto.MaxTimeoutS {
-		return nil, out, errors.New("timeout_s must be between 1 and 900")
+		return nil, out, invalid("timeout_s must be between 1 and 900")
 	}
 	id, err := t.identity(ctx, req)
 	if err != nil {
@@ -147,10 +152,13 @@ func (t *tools) exec(ctx context.Context, req *mcp.CallToolRequest, in ExecInput
 func (t *tools) readFile(ctx context.Context, req *mcp.CallToolRequest, in ReadFileInput) (*mcp.CallToolResult, agentproto.ReadFileResult, error) {
 	var out agentproto.ReadFileResult
 	if in.Path == "" {
-		return nil, out, errors.New("path is required")
+		return nil, out, invalid("path is required")
+	}
+	if len(in.Path) > agentproto.MaxPathBytes {
+		return nil, out, invalid("path too long")
 	}
 	if in.Offset < 0 || in.Length < 0 || in.Length > agentproto.MaxReadBytes {
-		return nil, out, errors.New("offset/length out of range (length max 4 MiB)")
+		return nil, out, invalid("offset/length out of range (length max 4 MiB)")
 	}
 	id, err := t.identity(ctx, req)
 	if err != nil {
@@ -177,20 +185,23 @@ func (t *tools) readFile(ctx context.Context, req *mcp.CallToolRequest, in ReadF
 func (t *tools) writeFile(ctx context.Context, req *mcp.CallToolRequest, in WriteFileInput) (*mcp.CallToolResult, agentproto.WriteFileResult, error) {
 	var out agentproto.WriteFileResult
 	if in.Path == "" {
-		return nil, out, errors.New("path is required")
+		return nil, out, invalid("path is required")
+	}
+	if len(in.Path) > agentproto.MaxPathBytes {
+		return nil, out, invalid("path too long")
 	}
 	if (in.Text == nil) == (in.Base64 == nil) {
-		return nil, out, errors.New("exactly one of text and base64 is required")
+		return nil, out, invalid("exactly one of text and base64 is required")
 	}
 	if in.Text != nil && len(*in.Text) > agentproto.MaxWriteBytes {
-		return nil, out, errors.New("content exceeds 4 MiB")
+		return nil, out, invalid("content exceeds 4 MiB")
 	}
 	if in.Base64 != nil {
 		if base64.StdEncoding.DecodedLen(len(*in.Base64)) > agentproto.MaxWriteBytes+2 { //nolint:mnd // padding slack
-			return nil, out, errors.New("content exceeds 4 MiB")
+			return nil, out, invalid("content exceeds 4 MiB")
 		}
 		if strings.ContainsAny(*in.Base64, "\r\n ") {
-			return nil, out, errors.New("base64 must be a single unbroken string")
+			return nil, out, invalid("base64 must be a single unbroken string")
 		}
 	}
 	id, err := t.identity(ctx, req)

@@ -3,16 +3,22 @@ package agentsurface_test
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// Fitness function F1: the agent tool surface and the worker have no call
-// path into code that executes with dozor's own privileges. It is checked on
+// Fitness function F1: no internal import, no process spawn. The agent tool
+// surface and the worker have no call path into code that executes with
+// dozor's own privileges, and the surface cannot start a process itself. It is checked on
 // the real build graph (go list -deps), for both target OSes, so a transitive
 // import added anywhere in the closure fails here.
 
@@ -109,7 +115,7 @@ var stdAllow = []string{
 // platformAllow is imported by agentproto's darwin build only.
 var platformAllow = []string{"golang.org/x/sys/unix"}
 
-func TestF1_AgentSurfaceClosure(t *testing.T) {
+func TestF1_NoInternalImport_AgentSurface(t *testing.T) {
 	sdk := thirdPartyModules(closure(t, "linux", sdkPkg))
 	sdk["golang.org/x/sys"] = true // agentproto's darwin peer-credential call
 	for _, goos := range targets {
@@ -139,7 +145,7 @@ func TestF1_AgentSurfaceClosure(t *testing.T) {
 	}
 }
 
-func TestF1_WorkerClosure(t *testing.T) {
+func TestF1_NoInternalImport_Worker(t *testing.T) {
 	for _, goos := range targets {
 		pkgs := closure(t, goos, modPath+"/cmd/dozor-worker")
 		wantOwn := []string{modPath + "/cmd/dozor-worker", modPath + "/internal/agentproto", modPath + "/internal/agentworker"}
@@ -179,5 +185,71 @@ func TestF1_NoLoopReachesAgentSurface(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// spawnDenied lists selectors that start a process, by import path. Our own
+// non-test code may use none of them: the import allow-list already excludes
+// os/exec, and this closes the remaining routes (os.StartProcess,
+// syscall exec calls, go-sdk's command transport).
+var spawnDenied = map[string][]string{
+	"os":      {"StartProcess"},
+	"syscall": {"Exec", "ForkExec", "StartProcess"},
+	"os/exec": {"*"},
+	"github.com/modelcontextprotocol/go-sdk/mcp": {"CommandTransport", "NewCommandTransport"},
+}
+
+// TestF1_NoProcessSpawn parses every non-test file of the agent surface and
+// the protocol package, for all build tags, and fails on any denied selector.
+func TestF1_NoProcessSpawn(t *testing.T) {
+	root := moduleRoot(t)
+	fset := token.NewFileSet()
+	checked := 0
+	for _, dir := range []string{"internal/agentsurface", "internal/agentproto"} {
+		files, err := filepath.Glob(filepath.Join(root, dir, "*.go"))
+		if err != nil || len(files) == 0 {
+			t.Fatalf("no files in %s: %v", dir, err)
+		}
+		for _, path := range files {
+			if strings.HasSuffix(path, "_test.go") {
+				continue
+			}
+			f, err := parser.ParseFile(fset, path, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checked++
+			names := map[string]string{} // local name -> import path
+			for _, imp := range f.Imports {
+				ip, _ := strconv.Unquote(imp.Path.Value)
+				local := filepath.Base(ip)
+				if imp.Name != nil {
+					local = imp.Name.Name
+				}
+				if _, bad := spawnDenied[ip]; bad && (local == "_" || local == ".") {
+					t.Errorf("%s: %s imported as %q hides its uses", path, ip, local)
+				}
+				names[local] = ip
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				id, ok := sel.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				for _, name := range spawnDenied[names[id.Name]] {
+					if name == "*" || name == sel.Sel.Name {
+						t.Errorf("%s: %s.%s spawns or enables spawning a process", fset.Position(sel.Pos()), id.Name, sel.Sel.Name)
+					}
+				}
+				return true
+			})
+		}
+	}
+	if checked < 5 {
+		t.Fatalf("only %d files parsed; the glob is wrong", checked)
 	}
 }
