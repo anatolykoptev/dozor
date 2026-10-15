@@ -10,7 +10,7 @@ import (
 )
 
 func TestValidRunAs(t *testing.T) {
-	good := []string{"ab", "muse1", "a-b_c", "a" + strings.Repeat("b", 31)}
+	good := []string{"ab", "agent1", "a-b_c", "a" + strings.Repeat("b", 31)}
 	bad := []string{"", "a", "A", "1ab", "a b", "a/b", "../x", "a.b", "root", "krolik", "ubuntu",
 		"a" + strings.Repeat("b", 32), "ab\n", "é"}
 	for _, s := range good {
