@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.19.2](https://github.com/anatolykoptev/dozor/compare/v1.19.1...v1.19.2) (2026-10-15)
+
+
+### Fixed
+
+* **gateway:** fail closed on empty webhook secret and api token ([#267](https://github.com/anatolykoptev/dozor/issues/267)) ([ce11ec1](https://github.com/anatolykoptev/dozor/commit/ce11ec1d92009413522b69b553f831a0086d6046))
+* **security:** fingerprint masked keys, harden deploy webhook auth ([#223](https://github.com/anatolykoptev/dozor/issues/223), [#262](https://github.com/anatolykoptev/dozor/issues/262)) ([#270](https://github.com/anatolykoptev/dozor/issues/270)) ([416d906](https://github.com/anatolykoptev/dozor/commit/416d90662ce3ba9747945d6f78ba4e1c29b50d3a))
+
 ## [1.19.1](https://github.com/anatolykoptev/dozor/compare/v1.19.0...v1.19.1) (2026-10-14)
 
 
