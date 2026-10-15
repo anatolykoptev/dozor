@@ -620,6 +620,25 @@ func validateRepoConfig(repo string, rc *RepoConfig) error {
 	return nil
 }
 
+// minWebhookSecretLen is the shortest DOZOR_GITHUB_WEBHOOK_SECRET accepted.
+// /deploy/github is public and its only authentication is this HMAC key, so a
+// short secret is brute-forceable offline from one captured delivery.
+const minWebhookSecretLen = 16
+
+// normalizeWebhookSecret trims surrounding whitespace (a trailing newline from
+// `echo >> .env` would otherwise silently change the key) and rejects secrets
+// shorter than minWebhookSecretLen by returning "" - the handler then fails
+// closed with 503 (issue #262).
+func normalizeWebhookSecret(raw string) string {
+	secret := strings.TrimSpace(raw)
+	if len(secret) < minWebhookSecretLen {
+		// Silent on purpose: LoadConfig also runs from the MCP tools. The
+		// gateway's NewHandler logs the ERROR once.
+		return ""
+	}
+	return secret
+}
+
 // LoadConfig reads deploy-repos.yaml from the given path.
 // Secret is loaded from DOZOR_GITHUB_WEBHOOK_SECRET env var.
 //
@@ -639,7 +658,7 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, errors.New("deploy config has no repos")
 	}
 
-	cfg.Secret = os.Getenv("DOZOR_GITHUB_WEBHOOK_SECRET")
+	cfg.Secret = normalizeWebhookSecret(os.Getenv("DOZOR_GITHUB_WEBHOOK_SECRET"))
 	cfg.GitHubToken = os.Getenv("DOZOR_GITHUB_TOKEN")
 
 	for repo, rc := range cfg.Repos {

@@ -32,7 +32,7 @@ repos:
 `
 	path := writeYAML(t, t.TempDir(), yaml)
 
-	t.Setenv("DOZOR_GITHUB_WEBHOOK_SECRET", "test-secret-123")
+	t.Setenv("DOZOR_GITHUB_WEBHOOK_SECRET", "test-secret-1234567")
 
 	cfg, err := LoadConfig(path)
 	if err != nil {
@@ -43,8 +43,8 @@ repos:
 		t.Fatalf("expected 2 repos, got %d", len(cfg.Repos))
 	}
 
-	if cfg.Secret != "test-secret-123" {
-		t.Errorf("secret = %q, want %q", cfg.Secret, "test-secret-123")
+	if cfg.Secret != "test-secret-1234567" {
+		t.Errorf("secret = %q, want %q", cfg.Secret, "test-secret-1234567")
 	}
 
 	ox := cfg.Repos["anatolykoptev/ox-browser"]

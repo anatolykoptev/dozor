@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -53,12 +55,21 @@ type Handler struct {
 	// (receipt store — deployed-sha.json, never a clone HEAD; issue #181).
 	// Defaults to lookupDeployedSHA; swappable in tests.
 	shaResolver shaResolverFunc
+	// ClientIP resolves the originating client address for log lines. Behind
+	// Caddy r.RemoteAddr is always the proxy (127.0.0.1); the gateway injects
+	// the trusted-proxy aware resolver (DOZOR_TRUST_PROXY) so deploy does not
+	// grow a second, divergent copy of the X-Forwarded-For policy. Nil falls
+	// back to the host part of r.RemoteAddr.
+	ClientIP func(*http.Request) string
 }
 
 // NewHandler creates a GitHub webhook handler. The handler unconditionally
 // uses a Debouncer; per-repo dispatch falls back to immediate Submit when the
 // configured debounce window is zero.
 func NewHandler(config *Config, queue *Queue, notify func(string)) *Handler {
+	// Defence in depth: a Config built without LoadConfig must not authenticate
+	// with a short (guessable) secret either.
+	config.Secret = normalizeWebhookSecret(config.Secret)
 	h := &Handler{
 		config:      config,
 		queue:       queue,
@@ -72,7 +83,8 @@ func NewHandler(config *Config, queue *Queue, notify func(string)) *Handler {
 	if config.Secret == "" {
 		// Fail closed (issue #256): without a secret no request can be
 		// authenticated, so ServeHTTP rejects everything. Say so loudly once.
-		slog.Error("DOZOR_GITHUB_WEBHOOK_SECRET not set; POST /deploy/github is DISABLED and rejects every request with 503 until it is configured")
+		slog.Error("DOZOR_GITHUB_WEBHOOK_SECRET not set (or shorter than the 16-byte minimum); POST /deploy/github is DISABLED and rejects every request with 503 until it is configured",
+			"min_bytes", minWebhookSecretLen)
 	}
 	h.debouncer = NewDebouncer(nil, h.dispatch)
 	// Durable debounce: mirror the pending set to ~/.dozor/deploy-debounce.json
@@ -105,6 +117,18 @@ func (h *Handler) Close() {
 	}
 }
 
+// clientIP returns the originating client address for log lines.
+func (h *Handler) clientIP(r *http.Request) string {
+	if h.ClientIP != nil {
+		return h.ClientIP(r)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || host == "" {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 // ServeHTTP handles POST /deploy/github.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -112,42 +136,50 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	client := h.clientIP(r)
+
 	// Fail closed: an empty secret must never mean "skip authentication"
 	// (issue #256). The endpoint is public, so with no secret configured the
 	// only safe behaviour is to refuse every request.
 	if h.config.Secret == "" {
 		WebhookRejectedTotal.WithLabelValues("no_secret").Inc()
 		slog.Warn("deploy/webhook: rejecting request, no webhook secret configured",
-			"remote", r.RemoteAddr)
+			"client_ip", client)
 		http.Error(w, "webhook disabled: no secret configured", http.StatusServiceUnavailable)
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBody))
+	// MaxBytesReader (not LimitReader): an over-limit body is rejected, never
+	// silently truncated and HMAC-ed as if it were the whole payload.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBody))
 	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			WebhookRejectedTotal.WithLabelValues("body_too_large").Inc()
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "read body failed", http.StatusBadRequest)
 		return
 	}
 
-	// Verify HMAC signature.
-	// Try both X-Hub-Signature-256 and X-Hub-Signature headers
+	// Verify the HMAC-SHA256 signature. Only X-Hub-Signature-256 is honoured:
+	// the legacy sha1 X-Hub-Signature header can never verify against a
+	// sha256 HMAC, so it is not read at all (issue #262).
 	sig := r.Header.Get("X-Hub-Signature-256")
-	if sig == "" {
-		sig = r.Header.Get("X-Hub-Signature")
-	}
 	if sig == "" {
 		WebhookRejectedTotal.WithLabelValues("missing_signature").Inc()
 		slog.Warn("deploy/webhook: missing signature, rejecting",
-			"remote", r.RemoteAddr)
+			"client_ip", client)
 		http.Error(w, "missing signature", http.StatusUnauthorized)
 		return
 	}
 	if !verifySignature(body, sig, h.config.Secret) {
 		WebhookRejectedTotal.WithLabelValues("invalid_signature").Inc()
+		// Never echo the attacker-supplied header value into the log.
 		slog.Warn("deploy/webhook: invalid signature, rejecting",
-			"remote", r.RemoteAddr,
-			"signature_header", r.Header.Get("X-Hub-Signature-256"),
-			"legacy_header", r.Header.Get("X-Hub-Signature"))
+			"client_ip", client,
+			"legacy_header_present", r.Header.Get("X-Hub-Signature") != "")
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
@@ -428,17 +460,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// verifySignature checks the HMAC-SHA256 signature from GitHub.
+// verifySignature checks the HMAC-SHA256 signature from GitHub. The header
+// must be the "sha256=<hex>" envelope; anything else is rejected.
 func verifySignature(payload []byte, signature, secret string) bool {
-	if signature == "" {
+	sigHex, ok := strings.CutPrefix(signature, "sha256=")
+	if !ok {
 		return false
 	}
-
-	const prefix = "sha256="
-	if len(signature) <= len(prefix) {
-		return false
-	}
-	sigHex := signature[len(prefix):]
 
 	sigBytes, err := hex.DecodeString(sigHex)
 	if err != nil {

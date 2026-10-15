@@ -53,6 +53,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	slog.SetDefault(slog.New(slogh.NewHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))))
 
 	port := cfg.MCPPort
+	engine.LogGeminiKeyFingerprints(cfg)
 	if p := getFlagValue("--port"); p != "" {
 		port = p
 	}
@@ -162,6 +163,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 		_ = traceShutdown(shutdownCtx)
 	}()
 	defer webhookLimiter.Close()
+	defer deployWebhookLimiter.Close()
 
 	// 4. HTTP mux: build via mcpserver.Build (MCP + health + middleware) with
 	// custom gateway routes (webhooks, A2A, metrics, logs) via Routes func.
@@ -354,7 +356,9 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 	// and enqueue the drift (issue #174). Queue dedup makes it a no-op for
 	// builds RecoverQueue already re-enqueued.
 	go deploy.ReconcileMissedReleases(ctx, cfg, queue)
-	mx.Handle("POST /deploy/github", handler)
+	// Log the trusted-proxy aware client IP, not the Caddy hop (127.0.0.1).
+	handler.ClientIP = webhookSourceKey
+	mountDeployWebhook(mx, handler)
 
 	// Tear down debouncer goroutines when the gateway shuts down.
 	go func() {

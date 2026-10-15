@@ -272,7 +272,7 @@ func TestAssembleDeployCheck_FullOutput(t *testing.T) {
 	}
 	deploy.ConfigureDeployedSHAPersistence(persist) // load it
 
-	const secret = "s3cret"
+	const secret = "s3cret-0123456789abcdef"
 	cfg := &deploy.Config{
 		Secret: secret,
 		Repos: map[string]deploy.RepoConfig{"o/full-out": {

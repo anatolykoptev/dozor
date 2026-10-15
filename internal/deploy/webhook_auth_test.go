@@ -110,7 +110,7 @@ func TestHandler_EmptySecret_CountsRejection(t *testing.T) {
 func TestHandler_WithSecret_AuthUnchanged(t *testing.T) {
 	t.Parallel()
 
-	const secret = "s3cret"
+	const secret = "s3cret-0123456789abcdef"
 	body := pushPayload("anatolykoptev/dozor", "refs/heads/main", "abc1234567890")
 	cases := []struct {
 		name string

@@ -66,7 +66,9 @@ func registerAlertmanagerWebhookHandler(mx *http.ServeMux, notifyAlertFn func([]
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		key := webhookSourceKey(r)
 		if !webhookLimiter.Allow(key) {
-			slog.Warn("alertmanager webhook rate-limited", slog.String("source", key))
+			if webhookLimitedWarn.allow() {
+				slog.Warn("alertmanager webhook rate-limited (sampled: at most once a minute)", slog.String("source", key))
+			}
 			http.Error(w, "rate limited", http.StatusTooManyRequests)
 			return
 		}

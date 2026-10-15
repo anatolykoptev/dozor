@@ -127,7 +127,7 @@ func pushPayload(repo, ref, sha string) string {
 func TestHandler_Push(t *testing.T) {
 	t.Parallel()
 
-	secret := "webhook-secret"
+	secret := "webhook-secret-0123456789"
 	cfg := testConfig(secret)
 	q, _ := newTestQueue()
 	h := newTestHandler(cfg, q, func(string) {})
@@ -255,7 +255,7 @@ func TestHandler_UnknownRepo(t *testing.T) {
 func TestHandler_InvalidSignature(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfig("correct-secret")
+	cfg := testConfig("correct-secret-0123456789")
 	q, _ := newTestQueue()
 	h := newTestHandler(cfg, q, func(string) {})
 

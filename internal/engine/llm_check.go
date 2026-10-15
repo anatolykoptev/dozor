@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,8 +25,8 @@ const (
 	llmCheckTimeout = 10 * time.Second
 	// llmCheckMaxTokens is the max tokens for proxy channel tests (minimal cost).
 	llmCheckMaxTokens = 1
-	// maskKeySuffixLen is how many chars to show at the start of masked keys.
-	maskKeySuffixLen = 11
+	// maskKeyFingerprintLen is how many hex chars of sha256(key) label a key.
+	maskKeyFingerprintLen = 8
 )
 
 // CheckLLMKeys validates Gemini API keys directly and tests proxy channels.
@@ -104,14 +106,21 @@ func truncateUTF8(s string, maxRunes int) string {
 // stripURLFromErr returns err's text with every *url.Error layer unwrapped to
 // its cause. url.Error.Error() embeds the request URL, which can carry
 // credentials; the cause ("no such host", "context deadline exceeded") cannot.
+//
+// Nil-safe: a nil err yields "", and a *url.Error with a nil Err (which would
+// otherwise fall back to its URL-bearing text) yields a generic message.
 func stripURLFromErr(err error) string {
-	for {
+	for err != nil {
 		var ue *url.Error
 		if !errors.As(err, &ue) {
 			return err.Error()
 		}
+		if ue.Err == nil {
+			return "request failed"
+		}
 		err = ue.Err
 	}
+	return ""
 }
 
 // checkGeminiKey validates a single Gemini API key by listing models.
@@ -325,7 +334,7 @@ func checkProxyModel(ctx context.Context, baseURL, apiKey, model string) *Alert 
 		Level:           AlertError,
 		Service:         llmServicePrefix + model,
 		Title:           "unreachable",
-		Description:     err.Error(),
+		Description:     stripURLFromErr(err), // raw err.Error() embeds the request URL
 		SuggestedAction: "Check CLIProxyAPI is running and DOZOR_LLM_CHECK_URL is correct",
 		Timestamp:       time.Now(),
 	}
@@ -349,10 +358,23 @@ func FormatLLMAlerts(alerts []Alert) string {
 	return b.String()
 }
 
-// maskKey masks an API key for display: "AIzaSyCcPfX..." from "AIzaSyCcPfXpZMuN5...".
+// maskKey returns a stable, non-reversible label for an API key: "fp-" plus the
+// first 8 hex chars of sha256(key). It reveals no characters of the key (a
+// prefix would leak key material — every Google key starts "AIzaSy" and the
+// label reaches Telegram and the triage prompt, issue #223) yet stays
+// identical for the same key (alert dedup, human correlation) and differs
+// between keys.
 func maskKey(key string) string {
-	if len(key) <= maskKeySuffixLen {
-		return key
+	sum := sha256.Sum256([]byte(key))
+	return "fp-" + hex.EncodeToString(sum[:])[:maskKeyFingerprintLen]
+}
+
+// LogGeminiKeyFingerprints logs, once, the fp-xxxxxxxx label of every
+// configured Gemini key by index, so an operator can map an alert's Service
+// label back to a key (recipe in docs/CONFIGURATION.md). No key material is
+// logged.
+func LogGeminiKeyFingerprints(cfg Config) {
+	for i, key := range cfg.GeminiAPIKeys {
+		slog.Info(fmt.Sprintf("gemini key #%d fingerprint %s", i, maskKey(key)))
 	}
-	return key[:maskKeySuffixLen] + "..."
 }

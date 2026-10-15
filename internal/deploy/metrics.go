@@ -70,7 +70,8 @@ var (
 	// WebhookRejectedTotal counts POST /deploy/github requests rejected before
 	// parsing. reason: "no_secret" (DOZOR_GITHUB_WEBHOOK_SECRET unset — the
 	// endpoint is disabled, fail-closed; any increment means a misconfigured
-	// deploy), "missing_signature", "invalid_signature".
+	// deploy), "missing_signature", "invalid_signature", "body_too_large" (413), "rate_limited" (the
+	// per-source limiter in front of the route, cmd/dozor).
 	WebhookRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_deploy_webhook_rejected_total",
 		Help: "GitHub deploy webhook requests rejected by authentication, by reason.",

@@ -332,6 +332,17 @@ rsync -a --delete dist/ /var/www/krolik-tools/
 
 By default, back-to-back pushes to the same repo are coalesced into a single build using a 3-minute debounce window. Override globally with `DOZOR_DEFAULT_DEBOUNCE` (any Go duration, e.g. `5m`). Per-repo `debounce_seconds: N` always wins over the global default; set `debounce_seconds: -1` to opt out of debouncing entirely for a specific repo (immediate dispatch).
 
+### Authentication and rate limit
+
+`POST /deploy/github` is public (fronted by Caddy) and authenticated only by the GitHub HMAC.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DOZOR_GITHUB_WEBHOOK_SECRET` | _(empty)_ | GitHub webhook secret. Surrounding whitespace is trimmed; the trimmed value must be **at least 16 bytes** (use 32+ random bytes), otherwise it is treated as unset: an ERROR is logged at startup and every request gets `503`. Only the `X-Hub-Signature-256: sha256=<hex>` header is accepted; the legacy sha1 `X-Hub-Signature` header is ignored. |
+| `DOZOR_TRUST_PROXY` | _(empty = on)_ | Client IP for rate limiting and logs. By default `X-Forwarded-For` is honoured **only when the TCP peer is loopback** (Caddy on 127.0.0.1, which overwrites the header with the real client IP); the rightmost entry is used and must be a valid IP, otherwise the peer address is used. A non-loopback peer's `X-Forwarded-For` is never trusted. Set `0` or `false` to ignore `X-Forwarded-For` entirely. Applies to `/deploy/github`, `/webhook*` and `/webhook/alertmanager`. |
+
+The route is rate-limited per client IP (token bucket, **2 requests/s sustained, burst 60**) before the body is read; over the limit returns `429` and increments `dozor_deploy_webhook_rejected_total{reason="rate_limited"}` (logged at most once a minute). A body over 5 MiB gets `413` and `reason="body_too_large"`. GitHub does not retry a `429`, so the burst is sized for ~20 repos delivering push + release events at once.
+
 ### Skipping Auto-Deploy
 
 You can suppress a deploy without touching repo or server configuration, using either of two mechanisms:
@@ -361,3 +372,11 @@ repos:
 ```
 
 When `ignore_no_auto_deploy_label: true` is set, all pushes to that repo always deploy, regardless of markers or labels.
+
+## Gemini key fingerprints
+
+Alerts about a Gemini key (`llm:gemini-key-fp-xxxxxxxx`) never contain key characters: the label is `fp-` plus the first 8 hex chars of `sha256(key)`. Dozor logs `gemini key #<index> fingerprint fp-xxxxxxxx` once at gateway start. To compute a key's label locally:
+
+```bash
+printf %s "$KEY" | sha256sum | cut -c1-8   # prefix the result with fp-
+```
