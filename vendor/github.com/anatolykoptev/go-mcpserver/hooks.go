@@ -45,7 +45,12 @@ func (h MCPHooks) Middleware() mcp.Middleware {
 func (h MCPHooks) handleToolCall(
 	ctx context.Context, method string, req mcp.Request, next mcp.MethodHandler,
 ) (mcp.Result, error) {
-	name := req.GetParams().(*mcp.CallToolParamsRaw).Name
+	params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
+	if !ok {
+		// An observer must not change the outcome: pass through unobserved.
+		return next(ctx, method, req)
+	}
+	name := params.Name
 	if h.OnToolCall != nil {
 		h.OnToolCall(ctx, name)
 	}
@@ -103,10 +108,10 @@ func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 	}
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			if method != methodToolsCall {
+			params, ok := toolCallParams(method, req)
+			if !ok {
 				return next(ctx, method, req)
 			}
-			params := req.GetParams().(*mcp.CallToolParamsRaw)
 			timeout := resolveTimeout(params.Name, params.Arguments, cfg)
 
 			// Acquire semaphore (if configured) — non-blocking; if at
@@ -176,6 +181,17 @@ func ToolTimeoutMiddleware(cfg Config) mcp.Middleware {
 			}
 		}
 	}
+}
+
+// toolCallParams returns the tools/call params of req. ok is false for any
+// other method or an unexpected params type; callers then pass the request
+// through untouched.
+func toolCallParams(method string, req mcp.Request) (*mcp.CallToolParamsRaw, bool) {
+	if method != methodToolsCall {
+		return nil, false
+	}
+	params, ok := req.GetParams().(*mcp.CallToolParamsRaw)
+	return params, ok
 }
 
 // startToolKeepalive periodically emits an MCP progress notification for an
