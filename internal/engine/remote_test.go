@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -231,5 +232,99 @@ func TestRemote_AlertsHashIgnoresDescription(t *testing.T) {
 	}
 	if a == c {
 		t.Errorf("hash equal despite different Title: %s", a)
+	}
+}
+
+// recordingRemote answers every remote command with success and keeps the commands.
+type recordingRemote struct{ cmds []string }
+
+func (r *recordingRemote) exec(_ context.Context, cmd string) CommandResult {
+	r.cmds = append(r.cmds, cmd)
+	if strings.Contains(cmd, remoteProbeToken) {
+		return okProbe()
+	}
+	return CommandResult{Stdout: "active", Success: true}
+}
+
+func (r *recordingRemote) joined() string { return strings.Join(r.cmds, "\n") }
+
+func TestRemoteCommandPrefixDefaultsToSudoSystemctl(t *testing.T) {
+	r := &recordingRemote{}
+	cfg := remoteCfg()
+	checkRemote(context.Background(), cfg, r.exec, (&fakeRemote{httpCode: 200}).http)
+	remoteServiceStatus(context.Background(), cfg, r.exec)
+	got := r.joined()
+	if !strings.Contains(got, "sudo systemctl is-active mariadb 2>/dev/null") {
+		t.Errorf("default is-active command missing:\n%s", got)
+	}
+	if !strings.Contains(got, "sudo systemctl show mariadb --property=ActiveEnterTimestamp,MemoryCurrent") {
+		t.Errorf("default show command missing:\n%s", got)
+	}
+}
+
+func TestRemoteCommandPrefixIsConfigurable(t *testing.T) {
+	const wrap = "sudo -n /usr/local/sbin/piter-ops-svc"
+	r := &recordingRemote{}
+	cfg := remoteCfg()
+	cfg.RemoteSystemctl = wrap
+	checkRemote(context.Background(), cfg, r.exec, (&fakeRemote{httpCode: 200}).http)
+	remoteServiceStatus(context.Background(), cfg, r.exec)
+	got := r.joined()
+	for _, want := range []string{
+		wrap + " is-active mariadb 2>/dev/null",
+		wrap + " show mariadb --property=ActiveEnterTimestamp,MemoryCurrent",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	// No call may bypass the configured prefix: that would need the wildcard
+	// sudoers rule the wrapper exists to remove.
+	if strings.Contains(got, "sudo systemctl") {
+		t.Errorf("a remote command ignored RemoteSystemctl:\n%s", got)
+	}
+}
+
+func TestRemoteRestartAndLogsUseConfiguredPrefixes(t *testing.T) {
+	r := &recordingRemote{}
+	cfg := Config{RemoteHost: "h", RemoteSystemctl: "sudo -n W-svc", RemoteJournalctl: "sudo -n W-jrn"}
+	remoteRestart(context.Background(), cfg, "nginx", r.exec)
+	remoteLogs(context.Background(), cfg, "nginx", 50, r.exec)
+	got := r.joined()
+	for _, want := range []string{
+		"sudo -n W-svc restart nginx",
+		"sudo -n W-svc is-active nginx 2>/dev/null",
+		"sudo -n W-jrn -u nginx --no-pager -n 50",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "sudo systemctl") || strings.Contains(got, "sudo journalctl") {
+		t.Errorf("restart/logs ignored the configured prefix:\n%s", got)
+	}
+}
+
+func TestRemoteRestartAndLogsDefaultPrefixes(t *testing.T) {
+	r := &recordingRemote{}
+	cfg := Config{RemoteHost: "h"}
+	remoteRestart(context.Background(), cfg, "nginx", r.exec)
+	remoteLogs(context.Background(), cfg, "nginx", 50, r.exec)
+	got := r.joined()
+	for _, want := range []string{"sudo systemctl restart nginx", "sudo journalctl -u nginx --no-pager -n 50"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("default command %q missing in:\n%s", want, got)
+		}
+	}
+}
+
+func TestRemoteLogsClampsLineCountToWrapperLimit(t *testing.T) {
+	for _, tc := range []struct{ asked, want int }{{5000, 2000}, {2001, 2000}, {2000, 2000}, {50, 50}} {
+		r := &recordingRemote{}
+		remoteLogs(context.Background(), Config{RemoteHost: "h"}, "nginx", tc.asked, r.exec)
+		want := fmt.Sprintf("--no-pager -n %d", tc.want)
+		if !strings.Contains(r.joined(), want) {
+			t.Errorf("asked %d: command %q lacks %q", tc.asked, r.joined(), want)
+		}
 	}
 }

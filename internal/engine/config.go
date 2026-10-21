@@ -21,6 +21,8 @@ const (
 	// checks independent of this threshold.
 	defaultErrorThreshold         = 10
 	defaultRemoteCheckIntervalMin = 3
+	defaultRemoteSystemctl        = "sudo systemctl"
+	defaultRemoteJournalctl       = "sudo journalctl"
 	defaultDiskThreshold          = 80
 	defaultDiskCritical           = 95
 	defaultBraveMaxResults        = 5
@@ -57,14 +59,21 @@ type Config struct {
 	RemoteServices      []string
 	RemoteSSHPort       int
 	RemoteCheckInterval time.Duration
-	SystemdServices     []string
-	RequiredAuthVars    []string
-	DiskThreshold       float64
-	DiskCritical        float64
-	UserServices        []UserService
-	UserServicesUser    string
-	TrackedBinaries     []TrackedBinaryConfig
-	GitHubToken         string
+	// RemoteSystemctl / RemoteJournalctl are the command prefixes dozor runs on
+	// the remote host for service state, restart and logs. Default: plain
+	// `sudo systemctl` / `sudo journalctl`. A host that exposes only fixed-grammar
+	// root wrappers (e.g. hostiman's piter-ops-svc) points these at them, so no
+	// wildcard sudoers rule is needed on the target.
+	RemoteSystemctl  string
+	RemoteJournalctl string
+	SystemdServices  []string
+	RequiredAuthVars []string
+	DiskThreshold    float64
+	DiskCritical     float64
+	UserServices     []UserService
+	UserServicesUser string
+	TrackedBinaries  []TrackedBinaryConfig
+	GitHubToken      string
 
 	// Web Search
 	BraveAPIKey          string
@@ -177,6 +186,8 @@ func Init() Config {
 		RemoteServices:          envList("DOZOR_REMOTE_SERVICES", ""),
 		RemoteSSHPort:           envInt("DOZOR_REMOTE_SSH_PORT", defaultSSHPort),
 		RemoteCheckInterval:     envDurationStr("DOZOR_REMOTE_CHECK_INTERVAL", defaultRemoteCheckIntervalMin*time.Minute),
+		RemoteSystemctl:         env("DOZOR_REMOTE_SYSTEMCTL", defaultRemoteSystemctl),
+		RemoteJournalctl:        env("DOZOR_REMOTE_JOURNALCTL", defaultRemoteJournalctl),
 		SystemdServices:         envList("DOZOR_SYSTEMD_SERVICES", ""),
 		RequiredAuthVars:        envList("DOZOR_REQUIRED_AUTH_VARS", ""),
 		DiskThreshold:           envFloat("DOZOR_DISK_THRESHOLD", defaultDiskThreshold),

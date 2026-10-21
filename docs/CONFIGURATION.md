@@ -64,6 +64,8 @@ Before opening a PR that touches `workspace/` or `skills/`, grep your diff for: 
 | `DOZOR_REMOTE_URL` | _(empty)_ | HTTP(S) URL to check availability and SSL expiry |
 | `DOZOR_REMOTE_SERVICES` | _(empty)_ | Comma-separated remote systemd services to monitor |
 | `DOZOR_REMOTE_SSH_PORT` | `22` | SSH port for remote server |
+| `DOZOR_REMOTE_SYSTEMCTL` | `sudo systemctl` | Command prefix for remote service state, restart (`<prefix> is-active|show|restart <unit>`). Point it at a fixed-grammar root wrapper to avoid wildcard sudoers on the target |
+| `DOZOR_REMOTE_JOURNALCTL` | `sudo journalctl` | Command prefix for remote logs (`<prefix> -u <unit> --no-pager -n <N>`) |
 
 > Remote server requires sudoers on the target: `user ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx, ...`
 
