@@ -305,7 +305,7 @@ func runBuildWithFullLog(ctx context.Context, req BuildRequest, buildArgs []stri
 		slog.Warn("deploy: failed to dump full build log", "path", dumpPath, "error", werr)
 		dumpPath = ""
 	} else {
-		PruneTempLogs("dozor-build-*.log")
+		PruneTempLogs("dozor-build-*.log", dumpPath)
 	}
 
 	slog.Error("deploy: docker build failed",
@@ -453,7 +453,7 @@ func runUpWithFullLog(ctx context.Context, req BuildRequest, deployID string) st
 		slog.Warn("deploy: failed to dump full up log", "path", dumpPath, "error", werr)
 		dumpPath = ""
 	} else {
-		PruneTempLogs("dozor-up-*.log")
+		PruneTempLogs("dozor-up-*.log", dumpPath)
 	}
 
 	slog.Error("deploy: docker up failed",

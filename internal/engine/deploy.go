@@ -76,7 +76,7 @@ func (a *ServerAgent) StartManualDeploy(ctx context.Context, req deploy.ManualDe
 	// The log file stays readable for as long as its deployID may be polled,
 	// but the family is bounded — older outcome logs are pruned so the temp
 	// dir cannot accumulate them without limit.
-	deploy.PruneTempLogs("deploy-manual-*.log")
+	deploy.PruneTempLogs("deploy-manual-*.log", logFile)
 
 	// Register the deploy BEFORE the goroutine so GetDeployStatus answers
 	// truthfully from the first instant (issue #201: the file stayed empty
@@ -160,6 +160,18 @@ func (a *ServerAgent) StartDeploy(ctx context.Context, projectPath string, servi
 
 	deployID := fmt.Sprintf("deploy-%d", time.Now().Unix())
 	logFile := fmt.Sprintf("${TMPDIR:-/tmp}/%s.log", deployID)
+
+	// Bound the legacy deploy-<ts>.log family the same way the manual lane is
+	// bounded — deploy-[0-9]*.log deliberately cannot match deploy-manual-*.
+	// The just-started log is created locally first so the prune counts it
+	// inside the bound rather than next to it; on a remote transport the real
+	// file is written by the remote nohup and this stays an empty placeholder
+	// under the same bound.
+	localLog := filepath.Join(os.TempDir(), deployID+".log")
+	if f, err := os.Create(localLog); err == nil { //nolint:gosec // path is under the temp dir with a time-based name
+		f.Close() //nolint:errcheck // the remote nohup truncates and fills it
+	}
+	deploy.PruneTempLogs("deploy-[0-9]*.log", localLog)
 
 	// Build the deploy command
 	var parts []string

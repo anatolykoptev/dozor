@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // Patterns are the deploy-owned temp-file families watched by the guard.
@@ -27,55 +29,66 @@ var Patterns = []string{
 	"deploy-*",
 }
 
-// Entries returns the basenames inside dir matching Patterns.
-func Entries(dir string) map[string]bool {
-	out := map[string]bool{}
-	for _, p := range Patterns {
-		matches, _ := filepath.Glob(filepath.Join(dir, p))
-		for _, m := range matches {
-			out[filepath.Base(m)] = true
-		}
-	}
-	return out
-}
+// staleWorkDirAge is how old a dozor-test-tmp-* suite dir must be before the
+// next suite run sweeps it. A panic, `go test -timeout` kill, or SIGINT skips
+// the RemoveAll at the end of RunWithGuard, so dead trees would otherwise
+// accumulate in the ambient temp dir — the same leak class this guard exists
+// to prevent, recreated by the guard itself.
+const staleWorkDirAge = 6 * time.Hour
 
-// NewEntries returns the matching paths present in dirs now but absent from
-// before (a Snapshot taken earlier).
-func NewEntries(before map[string]map[string]bool, dirs []string) []string {
+// watchedLeftovers returns the basenames of must-clean deploy artifacts still
+// in dir: entries matching Patterns minus tolerated *.log dumps (those are
+// bounded by deploy.PruneTempLogs).
+func watchedLeftovers(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
 	var out []string
-	for _, d := range dirs {
-		for name := range Entries(d) {
-			if !before[d][name] {
-				out = append(out, filepath.Join(d, name))
-			}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".log") || !isWatched(e.Name()) {
+			continue
 		}
+		out = append(out, e.Name())
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
 }
 
-// Snapshot captures Entries(dir) for each dir.
-func Snapshot(dirs []string) map[string]map[string]bool {
-	out := make(map[string]map[string]bool, len(dirs))
-	for _, d := range dirs {
-		out[d] = Entries(d)
+// sweepStaleWorkDirs removes dozor-test-tmp-* suite dirs from the ambient
+// temp dir that are older than staleWorkDirAge and owned by the current uid.
+// Best-effort: ownership is checked via the file's uid (never another user's
+// tree), and removal failures are ignored — the next suite run retries.
+func sweepStaleWorkDirs() {
+	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "dozor-test-tmp-*"))
+	if err != nil {
+		return
 	}
-	return out
+	uid := os.Getuid()
+	for _, m := range matches {
+		fi, err := os.Stat(m)
+		if err != nil || time.Since(fi.ModTime()) < staleWorkDirAge {
+			continue
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || int(st.Uid) != uid {
+			continue // never touch another user's tree
+		}
+		_ = os.RemoveAll(m)
+	}
 }
 
-// RunWithGuard snapshots the ambient temp dir — plus literal /tmp when the
-// ambient dir is elsewhere — redirects TMPDIR into a throwaway work dir for
-// the whole suite, runs m, and fails the run if the suite added any
-// deploy-owned temp entry outside the sandbox. The literal-/tmp watch is
-// what a reverted hardcoded path trips even when the ambient TMPDIR was
-// already redirected. Returns the exit code to pass to os.Exit.
+// RunWithGuard redirects TMPDIR into a throwaway work dir for the whole
+// suite, runs m, then fails the run if the suite left must-clean deploy
+// artifacts inside that dir (worktree dirs, override files; kept *.log dumps
+// are tolerated — they are bounded by deploy.PruneTempLogs). The assertion
+// only ever covers the suite's OWN isolated dir: ambient /tmp is shared with
+// other dozor checkouts on the same host, so diffing it cannot tell which
+// process wrote an entry and flakes on a busy box. The hardcoded-/tmp leak
+// class is covered deterministically instead — by the source scan for "/tmp
+// literals in tmp_leak_guard_test.go. Returns the exit code for os.Exit.
 func RunWithGuard(m *testing.M) int {
-	ambient := os.TempDir()
-	watchDirs := []string{ambient}
-	if ambient != "/tmp" {
-		watchDirs = append(watchDirs, "/tmp")
-	}
-	before := Snapshot(watchDirs)
+	sweepStaleWorkDirs()
 
 	work, err := os.MkdirTemp("", "dozor-test-tmp-")
 	if err != nil {
@@ -89,9 +102,16 @@ func RunWithGuard(m *testing.M) int {
 
 	code := m.Run()
 
-	if leaked := NewEntries(before, watchDirs); len(leaked) > 0 {
-		fmt.Fprintf(os.Stderr, "tempguard: suite left %d deploy temp entries outside TMPDIR:\n  %s\n",
-			len(leaked), strings.Join(leaked, "\n  "))
+	leftover, lerr := watchedLeftovers(work)
+	switch {
+	case lerr != nil:
+		fmt.Fprintf(os.Stderr, "tempguard: cannot list work dir %s: %v\n", work, lerr)
+		if code == 0 {
+			code = 1
+		}
+	case len(leftover) > 0:
+		fmt.Fprintf(os.Stderr, "tempguard: suite left %d deploy temp entries in %s:\n  %s\n",
+			len(leftover), work, strings.Join(leftover, "\n  "))
 		if code == 0 {
 			code = 1
 		}
@@ -114,20 +134,12 @@ func Isolate(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TMPDIR", dir)
 	t.Cleanup(func() {
-		entries, err := os.ReadDir(dir)
+		leftover, err := watchedLeftovers(dir)
 		if err != nil {
 			t.Errorf("tempguard: cannot list %s: %v", dir, err)
 			return
 		}
-		var leftover []string
-		for _, e := range entries {
-			if strings.HasSuffix(e.Name(), ".log") || !isWatched(e.Name()) {
-				continue
-			}
-			leftover = append(leftover, e.Name())
-		}
 		if len(leftover) > 0 {
-			sort.Strings(leftover)
 			t.Errorf("tempguard: deploy temp artifacts left behind: %s", strings.Join(leftover, ", "))
 		}
 	})

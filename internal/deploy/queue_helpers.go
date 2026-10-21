@@ -31,6 +31,9 @@ const (
 	// status replies, so the newest files must stay readable — but without a
 	// bound they accumulated in /tmp indefinitely (issue: temp leak). PruneTempLogs
 	// keeps the newest MaxDeployTempLogs of a family and removes the rest.
+	// Retention is global per log family, not per repo: the families mix all
+	// repos' logs, so one crash-looping repo can evict another repo's older
+	// diagnostic files — the bound is a ceiling, not a per-repo guarantee.
 	MaxDeployTempLogs = 20
 )
 
@@ -107,10 +110,12 @@ func serviceKey(services []string) string {
 
 // PruneTempLogs removes all but the newest MaxDeployTempLogs files matching
 // pattern inside os.TempDir(). Called right after a kept diagnostic file is
-// written — the just-written file always survives. Best-effort: a removal
-// failure is logged, never propagated, because the diagnostic it guards is
-// already on disk and readable.
-func PruneTempLogs(pattern string) {
+// written — keepPath is that just-written file and is ALWAYS exempt, so a tie
+// on mtime can never evict the file whose path the caller is about to
+// advertise. Best-effort: a removal failure is logged, never propagated,
+// because the diagnostic it guards is already on disk and readable; a file
+// that vanished between glob and remove is already gone, not a failure.
+func PruneTempLogs(pattern, keepPath string) {
 	matches, err := filepath.Glob(filepath.Join(os.TempDir(), pattern))
 	if err != nil || len(matches) <= MaxDeployTempLogs {
 		return
@@ -132,7 +137,10 @@ func PruneTempLogs(pattern string) {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].mod.After(files[j].mod) })
 	for _, f := range files[MaxDeployTempLogs:] {
-		if err := os.Remove(f.path); err != nil {
+		if f.path == keepPath {
+			continue // the just-written file always survives the prune
+		}
+		if err := os.Remove(f.path); err != nil && !os.IsNotExist(err) {
 			slog.Warn("deploy: temp log prune failed", "path", f.path, "error", err)
 		}
 	}
