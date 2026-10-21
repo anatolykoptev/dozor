@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -135,6 +136,7 @@ func envRunID(env []string) string {
 // buildRunner is inside) and releases it AFTER (slot gone, release called
 // exactly once), with acquire/release sharing the same JOB_KEY.
 func TestCrossLaneLock_HeavyAcquireThenRelease(t *testing.T) {
+	tempguard.Isolate(t)
 	fl := newFakeLock(t, true)
 	restore := installFakeLock(t, fl)
 	defer restore()
@@ -195,6 +197,7 @@ func TestCrossLaneLock_HeavyAcquireThenRelease(t *testing.T) {
 // build that ERRORS must still release the lock (defer fires on the error
 // return path of processBuild, not just the success path).
 func TestCrossLaneLock_ReleasedOnBuildError(t *testing.T) {
+	tempguard.Isolate(t)
 	fl := newFakeLock(t, true)
 	restore := installFakeLock(t, fl)
 	defer restore()
@@ -230,6 +233,7 @@ func TestCrossLaneLock_ReleasedOnBuildError(t *testing.T) {
 // in the build path (deferred funcs run during panic unwinding). The panic is
 // recovered in the test goroutine so it does not crash the process.
 func TestCrossLaneLock_ReleasedOnPanic(t *testing.T) {
+	tempguard.Isolate(t)
 	fl := newFakeLock(t, true)
 	restore := installFakeLock(t, fl)
 	defer restore()
@@ -271,6 +275,7 @@ func TestCrossLaneLock_ReleasedOnPanic(t *testing.T) {
 // TestCrossLaneLock_NonHeavySkipsLock asserts a non-heavy build never touches
 // the cross-lane lock — cheap go/static deploys stay unblocked.
 func TestCrossLaneLock_NonHeavySkipsLock(t *testing.T) {
+	tempguard.Isolate(t)
 	fl := newFakeLock(t, true)
 	restore := installFakeLock(t, fl)
 	defer restore()
@@ -301,6 +306,7 @@ func TestCrossLaneLock_NonHeavySkipsLock(t *testing.T) {
 // and a release is still attempted (no-op on missing state). Uses a fake that
 // fails acquire immediately so the test does not wait the real 45m.
 func TestCrossLaneLock_AcquireTimeoutProceedsUnlocked(t *testing.T) {
+	tempguard.Isolate(t)
 	fl := newFakeLock(t, false) // acquire always fails
 	restore := installFakeLock(t, fl)
 	defer restore()

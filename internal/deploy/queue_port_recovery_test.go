@@ -3,11 +3,13 @@ package deploy
 import (
 	"context"
 	"errors"
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"strings"
 	"testing"
 )
 
 func TestExecuteBuild_PortMappingRecoverySuccess(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	origRunner := cmdRunner
 	origOutput := outputRunner
@@ -81,6 +83,7 @@ func TestExecuteBuild_PortMappingRecoverySuccess(t *testing.T) {
 }
 
 func TestExecuteBuild_PortMappingRecoveryFails(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	origRunner := cmdRunner
 	origOutput := outputRunner

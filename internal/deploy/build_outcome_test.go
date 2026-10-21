@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 // processBuild must record the outcome of every build (any status), and the
 // record must survive a "restart" (re-Configure from the same receipt file).
 func TestProcessBuild_RecordsOutcomeAndSurvivesRestart(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 
 	const cloneSHA = "c10a4b2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b"
@@ -159,6 +161,7 @@ func TestLastSuccessfulDeploy_SurvivesLaterOutcomes(t *testing.T) {
 // server_deploy (the manual lane) must record an outcome, else the tool keeps
 // showing the previous webhook commit as the last success.
 func TestExecuteManualDeploy_RecordsManualOutcome(t *testing.T) {
+	tempguard.Isolate(t)
 	ConfigureDeployedSHAPersistence("")
 	req := ManualDeployRequest{Repo: "test/manual-outcome", Config: RepoConfig{Services: []string{"manual-outcome-svc"}}}
 	// Fails fast (no source path / compose) — a failed run is still an outcome.

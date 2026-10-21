@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -139,6 +140,7 @@ func TestLoadGuard_CounterTimeout(t *testing.T) {
 // disabling the processBuild wiring (making the guard run for ALL builds) fails
 // this test because the reader WILL be called on a light build.
 func TestLoadGuard_NonHeavySkipsGuard(t *testing.T) {
+	tempguard.Isolate(t)
 	var readerCalls int
 	reader := func() (float64, error) {
 		readerCalls++
@@ -170,6 +172,7 @@ func TestLoadGuard_NonHeavySkipsGuard(t *testing.T) {
 // acquireCrossLaneLock in processBuild — the guard must NOT hold the box-wide
 // ci-lock while idle-waiting on load (that would stall the CI lane).
 func TestLoadGuard_GuardBeforeLock(t *testing.T) {
+	tempguard.Isolate(t)
 	var mu sync.Mutex
 	var guardCalled bool
 	var lockBeforeGuard bool

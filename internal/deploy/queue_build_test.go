@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -63,6 +64,7 @@ func zeroDelays(t *testing.T) func() {
 }
 
 func TestExecuteBuild_RetryThenSuccess(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 
 	calls := 0
@@ -89,6 +91,7 @@ func TestExecuteBuild_RetryThenSuccess(t *testing.T) {
 }
 
 func TestExecuteBuild_AllRetriesFail(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 
 	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
@@ -111,6 +114,7 @@ func TestExecuteBuild_AllRetriesFail(t *testing.T) {
 }
 
 func TestExecuteBuild_ContextCancelledDuringRetry(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -147,6 +151,7 @@ func TestExecuteBuild_ContextCancelledDuringRetry(t *testing.T) {
 // argv, the port-recovery recreate, or the rollback up included) turns this
 // RED.
 func TestExecuteBuild_EveryComposeArgvPassesF(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 
 	const composePath = "/fake/compose"
@@ -313,6 +318,7 @@ func deployCloneReq(repo, clone string) BuildRequest {
 // and WITHOUT a rollback attempt (docker never ran — nothing to roll back;
 // a rollback would re-verify the refused clone and double-count, MINOR 2).
 func TestExecuteBuild_CloneDirtiedBetweenBuildAndUp_RefusedOnce(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	_, clone, _ := newDeployCloneFixture(t)
 
@@ -382,6 +388,7 @@ func TestExecuteBuild_CloneDirtiedBetweenBuildAndUp_RefusedOnce(t *testing.T) {
 // dirtied inside it, then checkHealth reports a lost port mapping — the
 // recovery's force-recreate must be refused before reaching docker.
 func TestExecuteBuild_PortRecoveryCloneDirty_Refused(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	_, clone, _ := newDeployCloneFixture(t)
 
@@ -440,6 +447,7 @@ func TestExecuteBuild_PortRecoveryCloneDirty_Refused(t *testing.T) {
 // re-verify must refuse — the current container is left running instead of
 // recreating from unverified compose files.
 func TestExecuteBuild_RollbackCloneDirty_Refused(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	_, clone, _ := newDeployCloneFixture(t)
 
@@ -509,6 +517,7 @@ func TestExecuteBuild_RollbackCloneDirty_Refused(t *testing.T) {
 // tryRollback must stay wired: the removal mutant `tryRollback → nil` turns
 // this RED (RolledBack stays false, the tag/up never runs).
 func TestExecuteBuild_UpFails_RollbackRuns(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	_, clone, _ := newDeployCloneFixture(t)
 
@@ -574,6 +583,7 @@ func TestExecuteBuild_UpFails_RollbackRuns(t *testing.T) {
 // reason and the dirty paths, and NO deployed-SHA receipt is written — a
 // refusal ships nothing.
 func TestProcessBuild_CloneRefusalVisibility(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 
 	// The clone verifies nothing: it is dirty at build time.
@@ -640,6 +650,7 @@ func TestProcessBuild_CloneRefusalVisibility(t *testing.T) {
 //   - clearDeployRefusal(repo, services) — a successful deploy must clear a
 //     refusal-set pending marker. RED when the call is removed.
 func TestProcessBuild_SuccessClearsRefusalAndRecordsComposeSHA(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 
 	// Stubbed git seams: clean clone at "clonesha0000", FETCH_HEAD == HEAD so

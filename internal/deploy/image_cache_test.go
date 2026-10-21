@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -161,6 +162,7 @@ func TestAllServicesCacheable_FeatureOff(t *testing.T) {
 // computed via `git rev-parse HEAD^{tree}` in the worktree. The tree hash is
 // the content-address key for image-cache tagging.
 func TestGitPrepare_ReturnsTreeHash(t *testing.T) {
+	tempguard.Isolate(t)
 	const fakeTreeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
 	withGitTreeHashRunner(t, func(_ context.Context, _ string) (string, error) {
 		return fakeTreeHash, nil
@@ -188,6 +190,7 @@ func TestGitPrepare_ReturnsTreeHash(t *testing.T) {
 // empty and the build proceeds as today (image caching silently disabled
 // for this deploy).
 func TestGitPrepare_TreeHashError_ReturnsEmpty(t *testing.T) {
+	tempguard.Isolate(t)
 	withGitTreeHashRunner(t, func(_ context.Context, _ string) (string, error) {
 		return "", errors.New("git rev-parse failed")
 	})
@@ -336,6 +339,7 @@ func TestTryPullCachedImage_RetagErrorFallsBack(t *testing.T) {
 // when image cache is enabled and the pull succeeds, composeBuild returns ""
 // WITHOUT calling docker compose build (buildRunner is not invoked).
 func TestComposeBuild_PullHitSkipsBuild(t *testing.T) {
+	tempguard.Isolate(t)
 	const treeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
 
 	buildCalled := false
@@ -377,6 +381,7 @@ func TestComposeBuild_PullHitSkipsBuild(t *testing.T) {
 // TestComposeBuild_PullMissBuilds verifies that when the pull fails,
 // composeBuild falls through to the normal build path (buildRunner IS called).
 func TestComposeBuild_PullMissBuilds(t *testing.T) {
+	tempguard.Isolate(t)
 	const treeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
 
 	buildCalled := false
@@ -421,6 +426,7 @@ func TestComposeBuild_PullMissBuilds(t *testing.T) {
 // image_cache configured are completely unaffected — the pull path is never
 // attempted and the build proceeds as today.
 func TestComposeBuild_NoImageCache_BuildsAsBefore(t *testing.T) {
+	tempguard.Isolate(t)
 	buildCalled := false
 	origBuild := buildRunner
 	buildRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {

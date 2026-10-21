@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -87,6 +88,7 @@ func makeManualReq(repo, composePath string, services ...string) BuildRequest {
 // that returns before composeUp in executeBuild — upCalled becomes true and
 // the assertion fails. (Verified by temporarily removing the gate.)
 func TestExecuteBuild_ManualGate_HoldsDeploy(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 
 	upCalled := false
@@ -119,6 +121,7 @@ func TestExecuteBuild_ManualGate_HoldsDeploy(t *testing.T) {
 // RED-on-revert: remove the binary/static early-return in the manual gate —
 // executeBinaryBuild runs and cmdRunner fires, failing the assertion.
 func TestExecuteBuild_ManualGate_Binary_SkipsBuild(t *testing.T) {
+	tempguard.Isolate(t)
 	cmdCalled := false
 	withCmdRunner(t, func(_ context.Context, _ string, name string, _ ...string) error {
 		if name == "git" || name == "go" {
@@ -163,6 +166,7 @@ func TestExecuteBuild_ManualGate_Binary_SkipsBuild(t *testing.T) {
 // dozor_pending_deploy{repo,service} must read 1 (artifact ready, not
 // deployed). Asserts the EXPORTED metric text, anchored, not an internal var.
 func TestExecuteBuild_ManualGate_SetsPendingGauge(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	upRunner = func(_ context.Context, _ string, _ []string) ([]byte, error) {
 		t.Error("composeUp must not run")
@@ -196,6 +200,7 @@ func TestExecuteBuild_ManualGate_SetsPendingGauge(t *testing.T) {
 // (ExecuteManualDeploy) of a manual repo must clear dozor_pending_deploy back
 // to 0 (the held artifact is now deployed). Asserts exported metric text.
 func TestManualDeploy_ClearsPendingGauge(t *testing.T) {
+	tempguard.Isolate(t)
 	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
 		return "main", nil
@@ -263,6 +268,7 @@ func TestPendingDeployGauge_PreinitialisedToZero(t *testing.T) {
 // repos. RED-on-revert: change the gate predicate to `!= ""` — composeUp is
 // skipped for release repos too, upCalled stays false and this fails.
 func TestExecuteBuild_ManualGate_NonManualRepo_Deploys(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 
 	upCalled := false
@@ -326,6 +332,7 @@ func TestExecuteBuild_ManualGate_NonManualRepo_Deploys(t *testing.T) {
 // healthy, which is worse and is exactly the quiet failure half 2 exists to
 // prevent.
 func TestExecuteBuild_ManualGate_Binary_SetsPendingGauge(t *testing.T) {
+	tempguard.Isolate(t)
 	withCmdRunner(t, func(_ context.Context, _ string, _ string, _ ...string) error {
 		t.Error("no build command must run for a binary manual repo")
 		return nil

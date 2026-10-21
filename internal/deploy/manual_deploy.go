@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -592,7 +593,7 @@ func gitPrepareBranch(ctx context.Context, sourcePath, branch string) (worktreeP
 	}
 
 	target := "origin/" + branch
-	wtPath := fmt.Sprintf("/tmp/deploy-manual-%s-%d", branch, time.Now().UnixMilli())
+	wtPath := filepath.Join(os.TempDir(), fmt.Sprintf("deploy-manual-%s-%d", branch, time.Now().UnixMilli()))
 
 	if err := runCmd(ctx, sourcePath, "git", "worktree", "add", "--detach", wtPath, target); err != nil {
 		return "", "", noop, fmt.Sprintf("git worktree add (manual, origin/%s): %v", branch, err)

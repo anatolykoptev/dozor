@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"errors"
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -384,6 +385,7 @@ func TestSyncSourceCheckout_StatusErrorIsError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestProcessBuild_SourceSyncOffCriticalPath(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)() // stubs buildRunner/upRunner to no-ops so executeBuild is fast
 	withSourceSyncEnabled(t, true)
 	withGitIndexLock(t, func(string) bool { return false })

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -167,6 +168,7 @@ func TestTail_KeepsEnd(t *testing.T) {
 // captured output — docker errors sit after pages of progress spam, so a
 // head-truncated message shows only the boilerplate and loses the cause.
 func TestRunBuildWithFullLog_ReturnsTail(t *testing.T) {
+	tempguard.Isolate(t)
 	orig := buildRunner
 	big := make([]byte, 0, maxOutputLen*3)
 	big = append(big, []byte("HEADER-NOISE-")...)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -340,6 +341,7 @@ func TestFetchLock_SymlinkedPathSharesLock(t *testing.T) {
 // — the underlying git command runs unserialised and succeeds in milliseconds,
 // so the case returns in well under the lock timeout with no error.
 func TestFetchLock_ProductionSitesBlockOnHeldLock(t *testing.T) {
+	tempguard.Isolate(t)
 	if testing.Short() {
 		t.Skip("integration test skipped with -short")
 	}

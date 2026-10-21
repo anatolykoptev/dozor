@@ -76,7 +76,7 @@ func gitPrepare(ctx context.Context, sourcePath, commitSHA string) (worktreePath
 	if shortSHA == "" {
 		shortSHA = "latest"
 	}
-	wtPath := fmt.Sprintf("/tmp/deploy-%s-%d", shortSHA, time.Now().UnixMilli())
+	wtPath := filepath.Join(os.TempDir(), fmt.Sprintf("deploy-%s-%d", shortSHA, time.Now().UnixMilli()))
 
 	if err := runCmd(ctx, sourcePath, "git", "worktree", "add", "--detach", wtPath, target); err != nil {
 		return "", "", noop, fmt.Sprintf("git worktree add: %v", err)
@@ -300,10 +300,12 @@ func runBuildWithFullLog(ctx context.Context, req BuildRequest, buildArgs []stri
 		return ""
 	}
 
-	dumpPath := fmt.Sprintf("/tmp/dozor-build-%s-%d.log", short(req.CommitSHA), time.Now().UnixMilli())
+	dumpPath := filepath.Join(os.TempDir(), fmt.Sprintf("dozor-build-%s-%d.log", short(req.CommitSHA), time.Now().UnixMilli()))
 	if werr := os.WriteFile(dumpPath, output, 0o600); werr != nil { //nolint:mnd // standard log-file mode
 		slog.Warn("deploy: failed to dump full build log", "path", dumpPath, "error", werr)
 		dumpPath = ""
+	} else {
+		PruneTempLogs("dozor-build-*.log")
 	}
 
 	slog.Error("deploy: docker build failed",
@@ -446,10 +448,12 @@ func runUpWithFullLog(ctx context.Context, req BuildRequest, deployID string) st
 		return ""
 	}
 
-	dumpPath := fmt.Sprintf("/tmp/dozor-up-%s-%d.log", deployID, time.Now().UnixMilli())
+	dumpPath := filepath.Join(os.TempDir(), fmt.Sprintf("dozor-up-%s-%d.log", deployID, time.Now().UnixMilli()))
 	if werr := os.WriteFile(dumpPath, output, 0o600); werr != nil { //nolint:mnd // standard log-file mode
 		slog.Warn("deploy: failed to dump full up log", "path", dumpPath, "error", werr)
 		dumpPath = ""
+	} else {
+		PruneTempLogs("dozor-up-*.log")
 	}
 
 	slog.Error("deploy: docker up failed",

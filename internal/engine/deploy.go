@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -59,11 +60,11 @@ func getManualDeployStatus(id string) (string, bool) {
 // working tree is built as-is (debug opt-out — always logs a WARN).
 func (a *ServerAgent) StartManualDeploy(ctx context.Context, req deploy.ManualDeployRequest) DeployResult {
 	deployID := fmt.Sprintf("deploy-manual-%d", time.Now().Unix())
-	logFile := fmt.Sprintf("/tmp/%s.log", deployID)
+	logFile := filepath.Join(os.TempDir(), deployID+".log")
 
 	// Open log file before launching the goroutine so we can report errors
 	// immediately rather than silently losing them if the open fails.
-	f, err := os.Create(logFile) //nolint:gosec // path is under /tmp with a time-based name
+	f, err := os.Create(logFile) //nolint:gosec // path is under the temp dir with a time-based name
 	if err != nil {
 		return DeployResult{
 			Success: false,
@@ -71,6 +72,11 @@ func (a *ServerAgent) StartManualDeploy(ctx context.Context, req deploy.ManualDe
 		}
 	}
 	f.Close() //nolint:errcheck // just ensuring file exists before goroutine writes
+
+	// The log file stays readable for as long as its deployID may be polled,
+	// but the family is bounded — older outcome logs are pruned so the temp
+	// dir cannot accumulate them without limit.
+	deploy.PruneTempLogs("deploy-manual-*.log")
 
 	// Register the deploy BEFORE the goroutine so GetDeployStatus answers
 	// truthfully from the first instant (issue #201: the file stayed empty
