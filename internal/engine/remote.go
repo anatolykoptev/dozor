@@ -135,7 +135,7 @@ func checkRemote(ctx context.Context, cfg Config, exec remoteExecFunc, httpCheck
 
 	// Check systemd services
 	for _, svc := range cfg.RemoteServices {
-		res := exec(ctx, fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null", svc))
+		res := exec(ctx, fmt.Sprintf("%s is-active %s 2>/dev/null", cfg.remoteSystemctl(), svc))
 		state := strings.TrimSpace(res.Stdout)
 		if state == "" {
 			status.Services[svc] = string(StateUnknown)
@@ -171,6 +171,23 @@ func checkRemote(ctx context.Context, cfg Config, exec remoteExecFunc, httpCheck
 	return status
 }
 
+// remoteSystemctl returns the configured remote systemctl command prefix, or the
+// plain `sudo systemctl` when unset (zero-value Config in tests and old callers).
+func (c Config) remoteSystemctl() string {
+	if c.RemoteSystemctl == "" {
+		return defaultRemoteSystemctl
+	}
+	return c.RemoteSystemctl
+}
+
+// remoteJournalctl is remoteSystemctl's journal counterpart.
+func (c Config) remoteJournalctl() string {
+	if c.RemoteJournalctl == "" {
+		return defaultRemoteJournalctl
+	}
+	return c.RemoteJournalctl
+}
+
 // newRemoteTransport creates a Transport configured for the remote server.
 func newRemoteTransport(cfg Config) *Transport {
 	return NewTransport(Config{
@@ -193,7 +210,7 @@ func remoteServiceStatus(ctx context.Context, cfg Config, exec remoteExecFunc) s
 		return b.String()
 	}
 	for _, svc := range cfg.RemoteServices {
-		res := exec(ctx, fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null", svc))
+		res := exec(ctx, fmt.Sprintf("%s is-active %s 2>/dev/null", cfg.remoteSystemctl(), svc))
 		state := strings.TrimSpace(res.Stdout)
 		if state == "" {
 			state = string(StateUnknown)
@@ -206,7 +223,7 @@ func remoteServiceStatus(ctx context.Context, cfg Config, exec remoteExecFunc) s
 		fmt.Fprintf(&b, "[%s] %s: %s\n", icon, svc, state)
 
 		// Get uptime and memory
-		res = exec(ctx, fmt.Sprintf("sudo systemctl show %s --property=ActiveEnterTimestamp,MemoryCurrent 2>/dev/null", svc))
+		res = exec(ctx, fmt.Sprintf("%s show %s --property=ActiveEnterTimestamp,MemoryCurrent 2>/dev/null", cfg.remoteSystemctl(), svc))
 		FormatSystemctlProperties(res.Stdout, &b)
 	}
 
@@ -215,18 +232,21 @@ func remoteServiceStatus(ctx context.Context, cfg Config, exec remoteExecFunc) s
 
 // RemoteRestart restarts a service on the remote server and verifies it's active.
 func RemoteRestart(ctx context.Context, cfg Config, service string) string {
+	return remoteRestart(ctx, cfg, service, newRemoteTransport(cfg).ExecuteUnsafe)
+}
+
+func remoteRestart(ctx context.Context, cfg Config, service string, exec remoteExecFunc) string {
 	if ok, reason := guardUnit("remote_restart", service); !ok {
 		return "Invalid service: " + reason
 	}
-	t := newRemoteTransport(cfg)
 
-	res := t.ExecuteUnsafe(ctx, "sudo systemctl restart "+service)
+	res := exec(ctx, cfg.remoteSystemctl()+" restart "+service)
 	if !res.Success {
 		return fmt.Sprintf("Failed to restart %s: %s", service, res.Output())
 	}
 
 	// Verify state after restart
-	res = t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null", service))
+	res = exec(ctx, fmt.Sprintf("%s is-active %s 2>/dev/null", cfg.remoteSystemctl(), service))
 	state := strings.TrimSpace(res.Stdout)
 	if state == stateActive {
 		return fmt.Sprintf("Service %s restarted successfully (active).", service)
@@ -236,12 +256,15 @@ func RemoteRestart(ctx context.Context, cfg Config, service string) string {
 
 // RemoteLogs returns recent journal logs for a remote service.
 func RemoteLogs(ctx context.Context, cfg Config, service string, lines int) string {
+	return remoteLogs(ctx, cfg, service, lines, newRemoteTransport(cfg).ExecuteUnsafe)
+}
+
+func remoteLogs(ctx context.Context, cfg Config, service string, lines int, exec remoteExecFunc) string {
 	if ok, reason := guardUnit("remote_logs", service); !ok {
 		return "Invalid service: " + reason
 	}
-	t := newRemoteTransport(cfg)
 
-	res := t.ExecuteUnsafe(ctx, fmt.Sprintf("sudo journalctl -u %s --no-pager -n %d", service, lines))
+	res := exec(ctx, fmt.Sprintf("%s -u %s --no-pager -n %d", cfg.remoteJournalctl(), service, lines))
 	if !res.Success {
 		return fmt.Sprintf("Failed to get logs for %s: %s", service, res.Output())
 	}
