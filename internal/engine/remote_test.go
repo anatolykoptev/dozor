@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -313,6 +314,17 @@ func TestRemoteRestartAndLogsDefaultPrefixes(t *testing.T) {
 	for _, want := range []string{"sudo systemctl restart nginx", "sudo journalctl -u nginx --no-pager -n 50"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("default command %q missing in:\n%s", want, got)
+		}
+	}
+}
+
+func TestRemoteLogsClampsLineCountToWrapperLimit(t *testing.T) {
+	for _, tc := range []struct{ asked, want int }{{5000, 2000}, {2001, 2000}, {2000, 2000}, {50, 50}} {
+		r := &recordingRemote{}
+		remoteLogs(context.Background(), Config{RemoteHost: "h"}, "nginx", tc.asked, r.exec)
+		want := fmt.Sprintf("--no-pager -n %d", tc.want)
+		if !strings.Contains(r.joined(), want) {
+			t.Errorf("asked %d: command %q lacks %q", tc.asked, r.joined(), want)
 		}
 	}
 }

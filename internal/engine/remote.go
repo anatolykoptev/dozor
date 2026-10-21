@@ -13,6 +13,8 @@ const (
 	httpServerErrorMin = 500
 	// remoteSSLWarnHours is the number of hours before SSL expiry to warn.
 	remoteSSLWarnHours = 14 * 24
+	// remoteLogsMaxLines caps the journal lines requested from a remote host.
+	remoteLogsMaxLines = 2000
 )
 
 // remoteProbeToken is echoed by the SSH reachability probe; the host counts as
@@ -263,6 +265,10 @@ func remoteLogs(ctx context.Context, cfg Config, service string, lines int, exec
 	if ok, reason := guardUnit("remote_logs", service); !ok {
 		return "Invalid service: " + reason
 	}
+	// Callers (tools/handlers.go) allow up to 5000 lines; a fixed-grammar remote
+	// wrapper (hostiman piter-ops-journal) refuses more than remoteLogsMaxLines, which
+	// would turn a large request into a hard failure instead of a shorter log.
+	lines = min(lines, remoteLogsMaxLines)
 
 	res := exec(ctx, fmt.Sprintf("%s -u %s --no-pager -n %d", cfg.remoteJournalctl(), service, lines))
 	if !res.Success {
