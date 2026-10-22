@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"strings"
 	"testing"
 )
@@ -196,6 +197,7 @@ func TestSnapshotBuiltImages_IgnoresRunningContainer(t *testing.T) {
 // line (the dependency), both snapshots inspect that dep image → identical
 // IDs → logImageDiff fails the deploy.
 func TestComposeBuild_ConfigImagesListsDeps_NoFalseFail(t *testing.T) {
+	tempguard.Isolate(t)
 	const (
 		svcName  = "go-wowa"
 		svcImage = "krolik-server-go-wowa"
@@ -266,6 +268,7 @@ func TestComposeBuild_ConfigImagesListsDeps_NoFalseFail(t *testing.T) {
 // the deploy MUST still fail — the check must not be deleted into oblivion
 // while fixing #240 (a genuinely stale cache stays a hard failure).
 func TestComposeBuild_GenuinelyUnchangedImage_StillFails(t *testing.T) {
+	tempguard.Isolate(t)
 	const (
 		svcName  = "go-wowa"
 		svcImage = "krolik-server-go-wowa"

@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"errors"
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,6 +140,7 @@ func TestResolveBuildOverrides_ContextOutsideSourceErrors(t *testing.T) {
 // minimal, deterministic docker-compose document with per-service build
 // context overrides.
 func TestWriteBuildContextOverride_Format(t *testing.T) {
+	tempguard.Isolate(t)
 	overrides := []BuildOverride{
 		{Service: "memdb-go", Context: "/tmp/wt/memdb-go"},
 		{Service: "go-job", Context: "/tmp/wt"},
@@ -174,6 +176,7 @@ func TestWriteBuildContextOverride_Format(t *testing.T) {
 // message. This is the diagnostic that would have exposed the truncated
 // "transferring dockerfile: 2B done" error that masked the subdir bug.
 func TestRunBuildWithFullLog_DumpsStderrOnFailure(t *testing.T) {
+	tempguard.Isolate(t)
 	origBuild := buildRunner
 	defer func() { buildRunner = origBuild }()
 
@@ -225,6 +228,7 @@ func TestRunBuildWithFullLog_DumpsStderrOnFailure(t *testing.T) {
 // returned error string. This is the diagnostic that would have shown the
 // "Container name already in use" error hidden behind env-var warnings.
 func TestRunUpWithFullLog_DumpsStderrOnFailure(t *testing.T) {
+	tempguard.Isolate(t)
 	origUp := upRunner
 	defer func() { upRunner = origUp }()
 
@@ -278,6 +282,7 @@ func TestRunUpWithFullLog_DumpsStderrOnFailure(t *testing.T) {
 // TestRunUpWithFullLog_SuccessReturnsEmpty ensures no dump file is
 // created and no error returned on a successful up.
 func TestRunUpWithFullLog_SuccessReturnsEmpty(t *testing.T) {
+	tempguard.Isolate(t)
 	origUp := upRunner
 	defer func() { upRunner = origUp }()
 
@@ -319,6 +324,7 @@ func TestMaxUpOutputLen_LargerThanBuild(t *testing.T) {
 // gitPrepare — catFileSeen stays false and the ordering assertion
 // (cat-file before worktree add) fails.
 func TestGitPrepare_FetchesSHABeforeWorktreeAdd(t *testing.T) {
+	tempguard.Isolate(t)
 	type gitCall struct {
 		sub  string
 		args []string
@@ -392,6 +398,7 @@ func TestGitPrepare_FetchesSHABeforeWorktreeAdd(t *testing.T) {
 // `git worktree add`, worktreeAddCalled becomes true and the
 // "invalid reference" assertion (error must NOT contain it) fails.
 func TestGitPrepare_MissingSHA_FailsWithClearError(t *testing.T) {
+	tempguard.Isolate(t)
 	worktreeAddCalled := false
 	withCmdRunner(t, func(_ context.Context, _ string, name string, args ...string) error {
 		if name == "git" && len(args) > 0 {
@@ -430,6 +437,7 @@ func TestGitPrepare_MissingSHA_FailsWithClearError(t *testing.T) {
 // TestRunBuildWithFullLog_SuccessReturnsEmpty ensures no dump file is
 // created and no error returned on a successful build.
 func TestRunBuildWithFullLog_SuccessReturnsEmpty(t *testing.T) {
+	tempguard.Isolate(t)
 	origBuild := buildRunner
 	defer func() { buildRunner = origBuild }()
 

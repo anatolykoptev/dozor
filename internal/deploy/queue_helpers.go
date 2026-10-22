@@ -3,8 +3,12 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"time"
 )
 
 const (
@@ -20,6 +24,17 @@ const (
 	maxUpOutputLen = 4000
 
 	shortSHALen = 7
+
+	// MaxDeployTempLogs bounds each family of kept deploy diagnostic files
+	// under os.TempDir() (dozor-build-*.log, dozor-up-*.log,
+	// deploy-manual-*.log). The paths are surfaced in error messages and
+	// status replies, so the newest files must stay readable — but without a
+	// bound they accumulated in /tmp indefinitely (issue: temp leak). PruneTempLogs
+	// keeps the newest MaxDeployTempLogs of a family and removes the rest.
+	// Retention is global per log family, not per repo: the families mix all
+	// repos' logs, so one crash-looping repo can evict another repo's older
+	// diagnostic files — the bound is a ceiling, not a per-repo guarantee.
+	MaxDeployTempLogs = 20
 )
 
 // cmdRunner is the function used to run external commands.
@@ -91,6 +106,44 @@ func serviceKey(services []string) string {
 		s += svc
 	}
 	return s
+}
+
+// PruneTempLogs removes all but the newest MaxDeployTempLogs files matching
+// pattern inside os.TempDir(). Called right after a kept diagnostic file is
+// written — keepPath is that just-written file and is ALWAYS exempt, so a tie
+// on mtime can never evict the file whose path the caller is about to
+// advertise. Best-effort: a removal failure is logged, never propagated,
+// because the diagnostic it guards is already on disk and readable; a file
+// that vanished between glob and remove is already gone, not a failure.
+func PruneTempLogs(pattern, keepPath string) {
+	matches, err := filepath.Glob(filepath.Join(os.TempDir(), pattern))
+	if err != nil || len(matches) <= MaxDeployTempLogs {
+		return
+	}
+	type aged struct {
+		path string
+		mod  time.Time
+	}
+	files := make([]aged, 0, len(matches))
+	for _, m := range matches {
+		fi, err := os.Stat(m)
+		if err != nil {
+			continue // unstatable entries are kept — a bound, not a guarantee
+		}
+		files = append(files, aged{m, fi.ModTime()})
+	}
+	if len(files) <= MaxDeployTempLogs {
+		return
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.After(files[j].mod) })
+	for _, f := range files[MaxDeployTempLogs:] {
+		if f.path == keepPath {
+			continue // the just-written file always survives the prune
+		}
+		if err := os.Remove(f.path); err != nil && !os.IsNotExist(err) {
+			slog.Warn("deploy: temp log prune failed", "path", f.path, "error", err)
+		}
+	}
 }
 
 func short(sha string) string {

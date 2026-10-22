@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -165,6 +166,7 @@ func newDeployCloneFixture(t *testing.T) (origin, clone, pusher string) {
 // (a) A dirty tracked file refuses the deploy, names the file, and bumps
 // dozor_deploy_clone_refused_total{reason="dirty"}.
 func TestPullDeployClone_DirtyRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, _ := newDeployCloneFixture(t)
 	writeFile(t, filepath.Join(clone, "docker-compose.yml"), "version: '3'\n# DIRTY local edit\n")
 
@@ -189,6 +191,7 @@ func TestPullDeployClone_DirtyRefused(t *testing.T) {
 // (b) A clean clone whose fetch fails (bad remote URL) is refused with
 // reason="fetch_error" and the message names the fetch error.
 func TestPullDeployClone_FetchErrorRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, pusher := newDeployCloneFixture(t)
 	pushCommit(t, pusher, "docker-compose.yml", "version: '3'\nservices: {}\n") // clone is now behind
 
@@ -211,6 +214,7 @@ func TestPullDeployClone_FetchErrorRefused(t *testing.T) {
 
 // (c) A clean clone behind origin fetches and fast-forwards — no refusal.
 func TestPullDeployClone_BehindOriginFastForwards(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, pusher := newDeployCloneFixture(t)
 	newSHA := pushCommit(t, pusher, "docker-compose.yml", "version: '3'\nservices: {}\n")
 
@@ -225,6 +229,7 @@ func TestPullDeployClone_BehindOriginFastForwards(t *testing.T) {
 // (d) A local commit diverged from origin refuses the deploy with
 // reason="diverged", naming both SHAs.
 func TestPullDeployClone_DivergedRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, pusher := newDeployCloneFixture(t)
 	remoteSHA := pushCommit(t, pusher, "docker-compose.yml", "version: '3'\nservices: {}\n")
 
@@ -261,6 +266,7 @@ func TestPullDeployClone_DivergedRefused(t *testing.T) {
 
 // (e) Untracked files only (agent-written plans/) never block the deploy.
 func TestPullDeployClone_UntrackedProceeds(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, _ := newDeployCloneFixture(t)
 	if err := os.MkdirAll(filepath.Join(clone, "plans"), 0o755); err != nil {
 		t.Fatal(err)
@@ -277,6 +283,7 @@ func TestPullDeployClone_UntrackedProceeds(t *testing.T) {
 // origin/main ref is advanced to the pushed SHA even though the pull was
 // refused. A guard that checks dirty-first would leave origin/main stale.
 func TestPullDeployClone_DirtyFetchRanFirst(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, pusher := newDeployCloneFixture(t)
 	newSHA := pushCommit(t, pusher, "docker-compose.yml", "version: '3'\nservices: {}\n")
 
@@ -304,6 +311,7 @@ func TestPullDeployClone_DirtyFetchRanFirst(t *testing.T) {
 // mismatch that logged "git fetch failed: couldn't find remote ref dev" on
 // every dev-branch deploy.
 func TestPullDeployClone_PrefersCloneBranch(t *testing.T) {
+	tempguard.Isolate(t)
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
 	withAttachedClone(t)
 	var fetched string
@@ -323,6 +331,7 @@ func TestPullDeployClone_PrefersCloneBranch(t *testing.T) {
 
 // TestPullDeployClone_EmptyPath is a no-op (no clone configured, nothing verified).
 func TestPullDeployClone_EmptyPath(t *testing.T) {
+	tempguard.Isolate(t)
 	// None of the runners should be called when clonePath is empty.
 	called := false
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
@@ -340,6 +349,7 @@ func TestPullDeployClone_EmptyPath(t *testing.T) {
 
 // TestPullDeployClone_UpToDate — remote has nothing new (HEAD == fetched ref).
 func TestPullDeployClone_UpToDate(t *testing.T) {
+	tempguard.Isolate(t)
 	const sha = "abc1234"
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
 		return []byte(""), nil // clean
@@ -364,6 +374,7 @@ func TestPullDeployClone_UpToDate(t *testing.T) {
 // `git pull` (a pull re-fetches and can race origin forward past the
 // verified ref, refusing as diverged on stale advice — #239 review).
 func TestPullDeployClone_FastForward(t *testing.T) {
+	tempguard.Isolate(t)
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
 		return []byte(""), nil
 	})
@@ -407,6 +418,7 @@ func TestPullDeployClone_FastForward(t *testing.T) {
 // TestPullDeployClone_GitStatusError — git status itself fails: the clone's
 // cleanliness is unverifiable, so the deploy is refused (fail-closed).
 func TestPullDeployClone_GitStatusError(t *testing.T) {
+	tempguard.Isolate(t)
 	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withAttachedClone(t)
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
@@ -421,6 +433,7 @@ func TestPullDeployClone_GitStatusError(t *testing.T) {
 // TestPullDeployClone_DetachedRefused — a detached HEAD in the clone has no
 // branch head to compare; refuse with reason="detached" (issue #239).
 func TestPullDeployClone_DetachedRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, _ := newDeployCloneFixture(t)
 	sha := gitOut(t, clone, "rev-parse", "HEAD")
 	mustRun(t, clone, "git", "checkout", sha) // detach HEAD
@@ -442,6 +455,7 @@ func TestPullDeployClone_DetachedRefused(t *testing.T) {
 // The clone must already sit on that branch (wrong_branch refusal, MINOR 4),
 // so the current-branch seam reports "release".
 func TestPullDeployClone_DeployCloneBranchConfig(t *testing.T) {
+	tempguard.Isolate(t)
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
 	withGitCurrentBranch(t, func(_ context.Context, _ string) (string, error) { return "release", nil })
 	var fetched string
@@ -463,6 +477,7 @@ func TestPullDeployClone_DeployCloneBranchConfig(t *testing.T) {
 // TestPullDeployClone_DefaultBranchMain verifies that deploy_clone_branch=""
 // resolves to "main".
 func TestPullDeployClone_DefaultBranchMain(t *testing.T) {
+	tempguard.Isolate(t)
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
 	withAttachedClone(t)
 	var gotBranch string
@@ -513,6 +528,7 @@ func TestResolveGitSHA_Error(t *testing.T) {
 // TestComposeBuild_InjectsBuildArgs verifies that OXPULSE_GIT_SHA and
 // BUILD_TIMESTAMP appear as --build-arg entries in the docker compose call.
 func TestComposeBuild_InjectsBuildArgs(t *testing.T) {
+	tempguard.Isolate(t)
 	// Stub all git runners.
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
 	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
@@ -577,6 +593,7 @@ func TestComposeBuild_InjectsBuildArgs(t *testing.T) {
 // TestComposeBuild_InjectsBuildArgs_NoWorktree verifies that build-arg injection
 // also works when worktreePath is empty (SourcePath is used for SHA resolution).
 func TestComposeBuild_InjectsBuildArgs_NoWorktree(t *testing.T) {
+	tempguard.Isolate(t)
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
 	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "samesha", nil })
@@ -618,6 +635,7 @@ func TestComposeBuild_InjectsBuildArgs_NoWorktree(t *testing.T) {
 // BuildArgs are injected with ${SHA} substituted to the 12-char artifact tag
 // derived from the FULL 40-char commit SHA via artifactTagSHA.
 func TestComposeBuild_ExtraBuildArgs_SHAPlaceholder(t *testing.T) {
+	tempguard.Isolate(t)
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) { return []byte(""), nil })
 	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withGitRevParse(t, func(_ context.Context, _, _ string) (string, error) { return "samesha", nil })
@@ -672,6 +690,7 @@ func TestComposeBuild_ExtraBuildArgs_SHAPlaceholder(t *testing.T) {
 // executeManualComposeDeploy) refuse. A refused clone aborts the build
 // before docker compose runs.
 func TestComposeBuild_DirtyCloneRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	withGitFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withAttachedClone(t)
 	withGitStatus(t, func(_ context.Context, _ string) ([]byte, error) {
@@ -712,6 +731,7 @@ func TestComposeBuild_DirtyCloneRefused(t *testing.T) {
 // the on-disk tree deliberately; the deploy-clone guard is skipped entirely
 // (the server_deploy response says nothing was verified).
 func TestComposeBuild_FromDiskSkipsCloneVerify(t *testing.T) {
+	tempguard.Isolate(t)
 	withGitFetch(t, func(_ context.Context, _, _ string) error {
 		t.Error("gitFetchRunner must not run under from_disk — nothing is verified")
 		return nil
@@ -785,6 +805,7 @@ func upCallCount(t *testing.T) *int {
 // reason="dirty" and docker must never run — this is the ~45-minute window
 // the build-time-only check left open.
 func TestComposeUp_DirtyBetweenBuildAndUpRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, _ := newDeployCloneFixture(t)
 
 	const repo = "test/up-dirty-refused"
@@ -826,6 +847,7 @@ func TestComposeUp_DirtyBetweenBuildAndUpRefused(t *testing.T) {
 // reason="moved", naming both SHAs — the build verified one origin state and
 // the up must never silently render another.
 func TestComposeUp_MovedBetweenBuildAndUpRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, _ := newDeployCloneFixture(t)
 
 	const repo = "test/up-moved-refused"
@@ -865,6 +887,7 @@ func TestComposeUp_MovedBetweenBuildAndUpRefused(t *testing.T) {
 // (i) The clone is detached BETWEEN build and up. The up must refuse with
 // reason="detached" — a detached HEAD has no branch line to compare.
 func TestComposeUp_DetachedBetweenBuildAndUpRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, _ := newDeployCloneFixture(t)
 
 	const repo = "test/up-detached-refused"
@@ -895,6 +918,7 @@ func TestComposeUp_DetachedBetweenBuildAndUpRefused(t *testing.T) {
 // (j) A verified clone lets the up proceed and reports the clone's HEAD as
 // the compose@<sha> the up ran against — the receipt/notify value.
 func TestComposeUp_VerifiedCloneProceedsAndReportsSHA(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, _ := newDeployCloneFixture(t)
 
 	const repo = "test/up-verified"
@@ -924,6 +948,7 @@ func TestComposeUp_VerifiedCloneProceedsAndReportsSHA(t *testing.T) {
 // failed deploy's rollback must NOT drive a stale rollback — the current
 // container is left running (no tag, no recreate).
 func TestRollbackImages_CloneDirtiedBetweenBuildAndRollbackRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, _ := newDeployCloneFixture(t)
 
 	const repo = "test/rollback-refused"
@@ -964,6 +989,7 @@ func TestRollbackImages_CloneDirtiedBetweenBuildAndRollbackRefused(t *testing.T)
 // override is LOUD — but an override is NOT a refusal, so it counts under
 // dozor_deploy_clone_override_total{repo}, never refused_total{reason="override"}.
 func TestComposeBuild_AllowStaleConfigSkipsVerify(t *testing.T) {
+	tempguard.Isolate(t)
 	withGitFetch(t, func(_ context.Context, _, _ string) error {
 		t.Error("gitFetchRunner must NOT run under allow_stale_config — nothing is verified")
 		return nil
@@ -1098,6 +1124,7 @@ func fastForwardClone(t *testing.T, clone string) string {
 // proceed — the compose files are still origin-verified, just newer — and the
 // compose receipt records the CURRENT sha, not the build-time one.
 func TestComposeUp_ForwardFFAccepted_ReportsNewSHA(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, pusher := newDeployCloneFixture(t)
 
 	const repo = "test/up-forward-ff"
@@ -1136,6 +1163,7 @@ func TestComposeUp_ForwardFFAccepted_ReportsNewSHA(t *testing.T) {
 // build verified. The compose files no longer derive from the verified line —
 // refuse with reason="moved".
 func TestComposeUp_NonDescendantBetweenBuildAndUpRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, pusher := newDeployCloneFixture(t)
 
 	const repo = "test/up-non-descendant"
@@ -1184,6 +1212,7 @@ func TestComposeUp_NonDescendantBetweenBuildAndUpRefused(t *testing.T) {
 // deploy_clone_branch at up time (an operator switched it between build and
 // up): refuse with reason="wrong_branch".
 func TestComposeUp_WrongBranchBetweenBuildAndUpRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, _ := newDeployCloneFixture(t)
 
 	const repo = "test/up-wrong-branch"
@@ -1221,6 +1250,7 @@ func TestComposeUp_WrongBranchBetweenBuildAndUpRefused(t *testing.T) {
 // still run (it renders the newer-but-verified compose). Covers the rollback
 // call site refusing on the old strict-equality rule.
 func TestRollbackImages_ForwardFFAccepted(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, pusher := newDeployCloneFixture(t)
 
 	const repo = "test/rollback-forward-ff"
@@ -1268,6 +1298,7 @@ func TestRollbackImages_ForwardFFAccepted(t *testing.T) {
 // longer derives from the verified line — and leave the current container
 // running (no tag, no recreate).
 func TestRollbackImages_NonDescendantRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, pusher := newDeployCloneFixture(t)
 
 	const repo = "test/rollback-non-descendant"
@@ -1318,6 +1349,7 @@ func TestRollbackImages_NonDescendantRefused(t *testing.T) {
 // deploy_clone_branch at pull time: refuse with reason="wrong_branch". A
 // branch switch is an operator action — never silently serve it.
 func TestPullDeployClone_WrongBranchRefused(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, _ := newDeployCloneFixture(t)
 	mustRun(t, clone, "git", "checkout", "-b", "other-branch")
 
@@ -1343,6 +1375,7 @@ func TestPullDeployClone_WrongBranchRefused(t *testing.T) {
 // exactly what the build verified, so the up must proceed and report
 // cv.headSHA — refusing it as "moved" was the bug.
 func TestComposeUp_OriginRefAdvancedUnmovedHeadAccepted(t *testing.T) {
+	tempguard.Isolate(t)
 	_, clone, pusher := newDeployCloneFixture(t)
 
 	const repo = "test/up-origin-ref-advanced"

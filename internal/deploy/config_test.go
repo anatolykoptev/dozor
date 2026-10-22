@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 )
 
 func writeYAML(t *testing.T, dir, content string) string {
@@ -574,7 +576,9 @@ func TestMain(m *testing.M) {
 	// immediate dispatch (status=queued) are not broken by the 3m default.
 	// Individual TestDebounceWindow subtests set it explicitly via withDefaultDebounce.
 	defaultDebounceWindow = 0
-	os.Exit(m.Run())
+	// The guard sandboxes TMPDIR for the whole suite and fails the run if a
+	// deploy-owned temp entry is created outside it — the /tmp-leak sentinel.
+	os.Exit(tempguard.RunWithGuard(m))
 }
 
 func withDefaultDebounce(t *testing.T, d time.Duration) {

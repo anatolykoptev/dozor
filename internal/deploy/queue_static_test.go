@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,7 @@ func makeStaticReq(script string) BuildRequest {
 }
 
 func TestExecuteStaticBuild_HappyPath(t *testing.T) {
+	tempguard.Isolate(t)
 	orig := staticScriptRunner
 	defer func() { staticScriptRunner = orig }()
 
@@ -62,6 +64,7 @@ func TestExecuteStaticBuild_HappyPath(t *testing.T) {
 }
 
 func TestExecuteStaticBuild_ScriptFailure(t *testing.T) {
+	tempguard.Isolate(t)
 	orig := staticScriptRunner
 	defer func() { staticScriptRunner = orig }()
 
@@ -84,6 +87,7 @@ func TestExecuteStaticBuild_ScriptFailure(t *testing.T) {
 }
 
 func TestExecuteStaticBuild_RoutedFromExecuteBuild(t *testing.T) {
+	tempguard.Isolate(t)
 	// Verify that executeBuild dispatches to executeStaticBuild for KindStatic.
 	orig := staticScriptRunner
 	defer func() { staticScriptRunner = orig }()
@@ -152,6 +156,7 @@ exit 1
 }
 
 func TestExecuteStaticBuild_ChangedPathsPassthrough(t *testing.T) {
+	tempguard.Isolate(t)
 	// Verify ChangedPaths is forwarded to the script runner for DEPLOY_CHANGED_PATHS.
 	orig := staticScriptRunner
 	defer func() { staticScriptRunner = orig }()

@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"errors"
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"strings"
 	"testing"
 )
@@ -13,6 +14,7 @@ const psRunning = `[{"State":"running","Status":"Up","Publishers":[]}]`
 // TestRollback_HealthCheckFail_RollbackSucceeds verifies that a health-check failure
 // triggers rollback and sets RolledBack=true.
 func TestRollback_HealthCheckFail_RollbackSucceeds(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	origOut := outputRunner
 	defer func() { outputRunner = origOut }()
@@ -84,6 +86,7 @@ func TestRollback_RollbackAlsoFails(t *testing.T) {
 
 // TestRollback_ComposeUpFail_RollbackAttempted verifies rollback is triggered on compose up failure.
 func TestRollback_ComposeUpFail_RollbackAttempted(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	origOut := outputRunner
 	defer func() { outputRunner = origOut }()
@@ -115,6 +118,7 @@ func TestRollback_ComposeUpFail_RollbackAttempted(t *testing.T) {
 
 // TestRollback_AllSucceeds_NoRollback verifies RolledBack stays false on clean deploy.
 func TestRollback_AllSucceeds_NoRollback(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	origOut := outputRunner
 	defer func() { outputRunner = origOut }()

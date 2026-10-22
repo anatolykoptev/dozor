@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anatolykoptev/dozor/internal/testutil/tempguard"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
@@ -103,6 +104,7 @@ func collectCounterSum(cv *prometheus.CounterVec) float64 {
 // RED-on-revert: replace gitPrepareBranch with composeBuild(ctx, req, "", "") —
 // worktreeTarget stays "" (no worktree add issued) and the assertion fails.
 func TestManualDeploy_DriftedClone_BuildsOriginMain(t *testing.T) {
+	tempguard.Isolate(t)
 	withManualFetch(t, func(_ context.Context, _, branch string) error {
 		if branch != "main" {
 			t.Errorf("fetch must use configured branch 'main', got %q", branch)
@@ -157,6 +159,7 @@ func TestManualDeploy_DriftedClone_BuildsOriginMain(t *testing.T) {
 // RED-on-revert: delete ManualDeployBranchMismatchTotal.WithLabelValues(...).Inc()
 // from ExecuteManualDeploy — after stays equal to before and assertion fails.
 func TestManualDeploy_DriftedClone_EmitsMismatchCounter(t *testing.T) {
+	tempguard.Isolate(t)
 	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
 		return "dev", nil
@@ -191,6 +194,7 @@ func TestManualDeploy_DriftedClone_EmitsMismatchCounter(t *testing.T) {
 // RED-on-revert: change `cloneBranch != branch` guard to `cloneBranch != ""`
 // — counter fires even when clone is on main, causing this test to fail.
 func TestManualDeploy_CloneOnMain_NoMismatch(t *testing.T) {
+	tempguard.Isolate(t)
 	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
 		return "main", nil // same as configured — no drift
@@ -225,6 +229,7 @@ func TestManualDeploy_CloneOnMain_NoMismatch(t *testing.T) {
 // RED-on-revert: delete the req.FromDisk early-return path — "git worktree add"
 // gets called and worktreeAdded becomes true, failing the assertion.
 func TestManualDeploy_FromDisk_SkipsWorktree(t *testing.T) {
+	tempguard.Isolate(t)
 	withManualFetch(t, func(_ context.Context, _, _ string) error {
 		t.Error("git fetch must not be called in from_disk mode")
 		return nil
@@ -261,6 +266,7 @@ func TestManualDeploy_FromDisk_SkipsWorktree(t *testing.T) {
 
 // TestManualDeploy_FetchFailure — git fetch error aborts the deploy.
 func TestManualDeploy_FetchFailure(t *testing.T) {
+	tempguard.Isolate(t)
 	withManualFetch(t, func(_ context.Context, _, _ string) error {
 		return errors.New("network unreachable")
 	})
@@ -314,6 +320,7 @@ func withSystemctlRunnerManual(t *testing.T, fn func(context.Context, ...string)
 // assertion to fail. The staticScriptCalled assertion also fails because the
 // script runner is never invoked.
 func TestManualDeploy_StaticKind_RunsScriptNotCompose(t *testing.T) {
+	tempguard.Isolate(t)
 	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
 		return "main", nil
@@ -369,6 +376,7 @@ func TestManualDeploy_StaticKind_RunsScriptNotCompose(t *testing.T) {
 // composeBuildCalled to become true. The systemctl assertion also fails because
 // executeBinaryBuild is never reached.
 func TestManualDeploy_BinaryKind_RunsBinaryNotCompose(t *testing.T) {
+	tempguard.Isolate(t)
 	withShortSHARunnerManual(t, func(_ context.Context, _ string) (string, error) { return "abc1234", nil })
 
 	// cmdRunner is used by runCmd — both git pull (executeBinaryBuild) and
@@ -428,6 +436,7 @@ func TestManualDeploy_BinaryKind_RunsBinaryNotCompose(t *testing.T) {
 // the assertion `gotSHA != originSHA` fails because the static script is called with
 // the HEAD value returned by gitFullSHARunner (headFullSHA) instead.
 func TestManualDeploy_StaticKind_UsesOriginSHA(t *testing.T) {
+	tempguard.Isolate(t)
 	const originSHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"   // full 40-char hex
 	const headFullSHA = "1234567890abcdef1234567890abcdef12345678" // full 40-char hex (different)
 	const headShortSHA = "head456"                                 // short SHA for OXPULSE_GIT_SHA
@@ -491,6 +500,7 @@ func TestManualDeploy_StaticKind_UsesOriginSHA(t *testing.T) {
 // RED-on-revert: remove the drift-guard block from executeManualBinaryDeploy —
 // after stays equal to before and the assertion fails.
 func TestManualDeploy_BinaryKind_DriftEmitsMismatchCounter(t *testing.T) {
+	tempguard.Isolate(t)
 	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
 		return "dev", nil // clone is on dev, configured is main — drift
 	})
@@ -530,6 +540,7 @@ func TestManualDeploy_BinaryKind_DriftEmitsMismatchCounter(t *testing.T) {
 // RED-on-revert: change WithLabelValues("binary_pull",...) back to "sha_pinned" —
 // the "binary_pull" counter stays at before, failing the assertion.
 func TestManualDeploy_BinaryKind_UsesHonestLabel(t *testing.T) {
+	tempguard.Isolate(t)
 	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) {
 		return "main", nil // no drift, isolate label test
 	})
@@ -585,6 +596,7 @@ func TestManualDeploy_BinaryKind_UsesHonestLabel(t *testing.T) {
 // TestManualDeploy_ManualCounterFires_Success — ManualDeployTotal{result=success}
 // must fire on a successful sha_pinned deploy.
 func TestManualDeploy_ManualCounterFires_Success(t *testing.T) {
+	tempguard.Isolate(t)
 	withManualFetch(t, func(_ context.Context, _, _ string) error { return nil })
 	withManualCurrentBranch(t, func(_ context.Context, _ string) (string, error) { return "main", nil })
 	withCmdRunner(t, func(_ context.Context, _ string, _ string, _ ...string) error { return nil })
@@ -623,6 +635,7 @@ func TestManualDeploy_ManualCounterFires_Success(t *testing.T) {
 // executeManualComposeDeploy — pull is skipped (sawPull stays false) and
 // pushCachedImages is never called (sawPush stays false).
 func TestManualDeploy_ComposeKind_ParticipatesInImageCache(t *testing.T) {
+	tempguard.Isolate(t)
 	const fakeTreeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
 	t.Setenv("DOZOR_IMAGE_CACHE_TOKEN_CMD", "fake-token-cmd")
 
@@ -691,6 +704,7 @@ func TestManualDeploy_ComposeKind_ParticipatesInImageCache(t *testing.T) {
 // RED-on-revert: remove the from_disk skip log block — the reason string is
 // absent from the captured logs and the assertion fails.
 func TestManualDeploy_FromDisk_SkipsImageCacheWithReason(t *testing.T) {
+	tempguard.Isolate(t)
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -754,6 +768,7 @@ func TestManualDeploy_FromDisk_SkipsImageCacheWithReason(t *testing.T) {
 // RED-on-revert: make pushCachedImages return an error that the caller
 // propagates — result.Success becomes false and the assertion fails.
 func TestManualDeploy_PushFailureDoesNotFailDeploy(t *testing.T) {
+	tempguard.Isolate(t)
 	const fakeTreeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
 	t.Setenv("DOZOR_IMAGE_CACHE_TOKEN_CMD", "fake-token-cmd")
 
@@ -835,6 +850,7 @@ func TestManualDeploy_PushFailureDoesNotFailDeploy(t *testing.T) {
 //
 // must turn THIS test RED.
 func TestManualDeploy_ComposeLane_UsesFullSHA_AtTheCallSite(t *testing.T) {
+	tempguard.Isolate(t)
 	const fullSHA = "9e57d2974426b7e070cb0deadbeefcafe1234567"
 	const shortSHA = "9e57d2974" // what the old code produced — 9 chars, not 12
 
@@ -889,6 +905,7 @@ func TestManualDeploy_ComposeLane_UsesFullSHA_AtTheCallSite(t *testing.T) {
 // cross-lane lock processBuild uses. Before the fix the manual path called
 // composeBuild directly — three concurrent cargo builds on the shared box.
 func TestManualDeploy_HeavyAcquiresCrossLaneLock(t *testing.T) {
+	tempguard.Isolate(t)
 	fl := newFakeLock(t, true)
 	restore := installFakeLock(t, fl)
 	defer restore()
@@ -938,6 +955,7 @@ func TestManualDeploy_HeavyAcquiresCrossLaneLock(t *testing.T) {
 
 // Non-heavy manual deploys must stay cheap: no lock interaction at all.
 func TestManualDeploy_NonHeavySkipsCrossLaneLock(t *testing.T) {
+	tempguard.Isolate(t)
 	fl := newFakeLock(t, true)
 	restore := installFakeLock(t, fl)
 	defer restore()
@@ -983,6 +1001,7 @@ func TestManualDeploy_NonHeavySkipsCrossLaneLock(t *testing.T) {
 // under the tag it came from — waste plus a spurious ERROR when the registry
 // credential is unusable, on a deploy that in fact went perfectly.
 func TestManualDeploy_PullHit_DoesNotRePush(t *testing.T) {
+	tempguard.Isolate(t)
 	const fakeTreeHash = "72def7ea3afd8dd4c5aa384823cd97d534d01763"
 	t.Setenv("DOZOR_IMAGE_CACHE_TOKEN_CMD", "fake-token-cmd")
 
@@ -1059,6 +1078,7 @@ func TestManualDeploy_PullHit_DoesNotRePush(t *testing.T) {
 // verified (the compose file comes from it), and no source receipt is
 // advanced (BuiltSHA empty — nothing was built).
 func TestExecuteManualDeploy_NoBuild_UpNoBuild(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 
 	// The deploy clone verifies (fetch + status + compare, same as a built
@@ -1122,6 +1142,7 @@ func TestExecuteManualDeploy_NoBuild_UpNoBuild(t *testing.T) {
 // cannot express "deploy without building" (the build IS the deploy), so
 // build=false is rejected with a clear error instead of silently building.
 func TestExecuteManualDeploy_NoBuild_NonComposeRejected(t *testing.T) {
+	tempguard.Isolate(t)
 	result := ExecuteManualDeploy(context.Background(), ManualDeployRequest{
 		Repo:    "anatolykoptev/go-job",
 		NoBuild: true,
@@ -1150,6 +1171,7 @@ func TestExecuteManualDeploy_NoBuild_NonComposeRejected(t *testing.T) {
 // and composeUp, exactly like the webhook lane. Removing the pre-up verify
 // from composeUp turns this RED (the up would run).
 func TestExecuteManualComposeDeploy_CloneDirtiedBetweenBuildAndUp(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	_, clone, _ := newDeployCloneFixture(t)
 
@@ -1213,6 +1235,7 @@ func TestExecuteManualComposeDeploy_CloneDirtiedBetweenBuildAndUp(t *testing.T) 
 // gauge (queue_clone_pull.go clearDeployRefusal wiring): removing the call
 // turns this RED (the marker would stay set forever).
 func TestExecuteManualDeploy_SuccessClearsRefusalMarker(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	_, clone, _ := newDeployCloneFixture(t)
 
@@ -1276,6 +1299,7 @@ func TestExecuteManualDeploy_SuccessClearsRefusalMarker(t *testing.T) {
 // the gauge drops to 0 and the refusal marker vanishes while the release is
 // still undeployed.
 func TestExecuteManualDeploy_NoBuild_KeepsDeployOwedSignal(t *testing.T) {
+	tempguard.Isolate(t)
 	defer zeroDelays(t)()
 	_, clone, _ := newDeployCloneFixture(t)
 
