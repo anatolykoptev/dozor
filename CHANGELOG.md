@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.21.0](https://github.com/anatolykoptev/dozor/compare/v1.20.0...v1.21.0) (2026-10-24)
+
+
+### Added
+
+* **remote:** configurable systemctl/journalctl prefix for the remote host (R4 S4) ([#287](https://github.com/anatolykoptev/dozor/issues/287)) ([e4dca64](https://github.com/anatolykoptev/dozor/commit/e4dca64f83c142632f6323c8898a1695837f5d85))
+
+
+### Fixed
+
+* **deploy:** remove temp files after use; tests use t.TempDir ([#290](https://github.com/anatolykoptev/dozor/issues/290)) ([a051c5e](https://github.com/anatolykoptev/dozor/commit/a051c5e9d69254975639b224e00a7448b3b592e9))
+
 ## [1.20.0](https://github.com/anatolykoptev/dozor/compare/v1.19.3...v1.20.0) (2026-10-15)
 
 
