@@ -304,7 +304,9 @@ func pullDeployCloneLocked(ctx context.Context, req BuildRequest, clonePath stri
 	// 1. Fetch FIRST — before the dirty check — so a dirty clone still gets
 	// fresh refs. #239: the old dirty-check-first order skipped the fetch and
 	// the deploy silently used stale compose files.
-	if err := gitFetchRunner(ctx, clonePath, branch); err != nil {
+	if err := retryTransientGit(ctx, "git fetch", func() error {
+		return gitFetchRunner(ctx, clonePath, branch)
+	}); err != nil {
 		slog.Warn("deploy: clone pull refused — git fetch failed",
 			"repo", repo, "clone", clonePath, "branch", branch, "error", err)
 		return nil, refuseDeployClone(repo, "fetch_error", services,

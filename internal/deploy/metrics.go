@@ -114,8 +114,8 @@ var (
 		Help: "Pending builds replaced by a newer commit before they ran (newest-wins coalescing).",
 	}, []string{"repo", "service"})
 
-	// BuildResultTotal counts completed builds by status (success, failure, timeout).
-	// Labels: repo (anatolykoptev/repo-name), service (service name), status (success|failure|timeout).
+	// BuildResultTotal counts completed builds by status (success, failure, timeout, source_unavailable).
+	// Labels: repo (anatolykoptev/repo-name), service (service name), status (success|failure|timeout|source_unavailable — git remote unreachable after retries; not a build failure).
 	BuildResultTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_build_result_total",
 		Help: "Build results by repository, service, and outcome status.",
@@ -137,6 +137,9 @@ var (
 	//                         proceeded UNLOCKED (fail-safe, no deadlock). A
 	//                         sustained tick here means cross-lane serialisation is
 	//                         silently degrading to a no-op — alert on it.
+	//   "sentinel_failed"   — the per-build lease sentinel could not be spawned; the
+	//                         lease fell back to the hook's $PPID (daemon) binding,
+	//                         so a missed release would hold the lane until restart.
 	CrossLaneLockTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dozor_crosslane_lock_total",
 		Help: "Cross-lane box-wide build-lock outcomes for heavy builds, by outcome.",

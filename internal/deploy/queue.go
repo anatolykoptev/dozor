@@ -516,7 +516,13 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 
 	// Record build result metrics for each service.
 	status := "success"
-	if !result.Success {
+	sourceDown := !result.Success && isSourceUnavailable(result.Error)
+	if sourceDown {
+		// The git remote was unreachable even after retries: not a build
+		// failure (nothing was built), so it must not count as one or page
+		// as FAILED. See source_retry.go.
+		status = statusSourceUnavailable
+	} else if !result.Success {
 		// Distinguish timeout from other failures for better observability.
 		effectiveTimeout := req.Config.BuildTimeout.OrDefault(buildTimeout)
 		if strings.Contains(strings.ToLower(result.Error), "context deadline exceeded") ||
@@ -599,6 +605,10 @@ func (q *Queue) processBuild(ctx context.Context, req BuildRequest, isHeavy bool
 			}
 			q.notify(msg)
 		}
+	} else if sourceDown {
+		q.notify(fmt.Sprintf(
+			"\U0001f50c [%s] Source unreachable — build not attempted (GitHub fetch failed after retries): %s",
+			services, result.Error))
 	} else if result.RolledBack {
 		q.notify(fmt.Sprintf(
 			"⚠️ [%s] FAILED (rolled back): %s", services, result.Error))

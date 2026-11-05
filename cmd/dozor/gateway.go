@@ -86,8 +86,9 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 	// rendered via the satori-render sidecar (no LLM in the path). On any
 	// rendering failure (sidecar down, satori error, network) it falls back
 	// to the plain-text notifyFn so the operator never loses the alert.
-	// The textual content (caption when the card succeeds, full message on
-	// fallback) is the same FormatRemoteAlerts string the previous flow used.
+	// The card renders alerts[0]; for a group the caption lists EVERY member
+	// (buildAlertCaption), so a grouped notification never hides alerts. On
+	// fallback the full fallbackText is sent as before.
 	notifyAlertFn := func(alerts []engine.Alert, fallbackText string) {
 		if adminChatID == "" {
 			return
@@ -113,7 +114,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 			notifyFn(fallbackText)
 			return
 		}
-		caption := engine.TruncateRunesEllipsis(fallbackText, engine.MaxCaptionRunes)
+		caption := buildAlertCaption(alerts, fallbackText)
 		msgBus.PublishOutbound(bus.Message{
 			ID:        fmt.Sprintf("alert-%d", time.Now().UnixMilli()),
 			Channel:   "telegram",
@@ -124,6 +125,7 @@ func runGateway(cfg engine.Config, eng *engine.ServerAgent) {
 			Timestamp: time.Now(),
 		})
 		slog.Info("alert card sent",
+			slog.Int("alerts", len(alerts)),
 			slog.String("service", alerts[0].Service),
 			slog.String("level", string(alerts[0].Level)),
 			slog.Int("png_bytes", len(card)))
@@ -343,12 +345,6 @@ func registerDeployWebhook(ctx context.Context, mx *http.ServeMux, notifyFn func
 	//  2. RecoverPending replays debounce entries — both route through
 	//     Queue.Submit, which dedups by (service-key, SHA), so a commit recovered
 	//     by BOTH layers produces exactly one build (no double-recovery).
-	// Reclaim box-wide ci-lock slots leaked by a previous dozor process
-	// killed mid-heavy-build (the deferred release never ran). Must run
-	// BEFORE RecoverQueue: a re-enqueued interrupted build would otherwise
-	// block ~45min on the slot its predecessor died holding (issue #193).
-	deploy.SweepDozorCiLockSlots()
-
 	if err := queue.RecoverQueue(ctx); err != nil {
 		slog.Warn("deploy: queue recovery failed", "error", err)
 	}

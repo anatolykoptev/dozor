@@ -29,8 +29,10 @@ func gitPrepare(ctx context.Context, sourcePath, commitSHA string) (worktreePath
 	if sourcePath == "" {
 		return "", "", noop, ""
 	}
-	if err := withFetchLock(ctx, sourcePath, func() error {
-		return runCmd(ctx, sourcePath, "git", "fetch", "origin")
+	if err := retryTransientGit(ctx, "git fetch", func() error {
+		return withFetchLock(ctx, sourcePath, func() error {
+			return runCmd(ctx, sourcePath, "git", "fetch", "origin")
+		})
 	}); err != nil {
 		return "", "", noop, fmt.Sprintf("git fetch: %v", err)
 	}

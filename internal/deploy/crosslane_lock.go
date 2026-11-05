@@ -5,9 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
-	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,14 +20,23 @@ import (
 // box-wide ci-lock the CI runners already use.
 //
 // The CI runners serialise via /home/krolik/bin/ci-lock-acquire.sh +
-// ci-lock-release.sh — a mkdir-slot lock in $XDG_RUNTIME_DIR/ci-slot-N
-// (CI_LOCK_SLOTS default 1, CI_LOCK_WAIT_SECS 2700s, stale-steal after
-// CI_LOCK_STALE_SECS 3600s). dozor acquires this SAME lock around each HEAVY
+// ci-lock-release.sh — a LEASE lock: the acquire hook starts a holder process
+// that lives exactly as long as a "worker" process (for a CI job, the job's
+// Runner.Worker, found by walking the ancestry), and the kernel ends the lease
+// when that worker exits. State lives in $XDG_RUNTIME_DIR (CI_LOCK_SLOTS default
+// 1, CI_LOCK_WAIT_SECS 2700s). dozor acquires this SAME lock around each HEAVY
 // build and releases it after.
+//
+// dozor has no Runner.Worker in its ancestry. Left alone the hook falls back to
+// binding the lease to $PPID — the dozor DAEMON — so one missed release held
+// the lane for as long as the daemon lived (27 h on 2026-11-03/04). Each build
+// therefore spawns a small sentinel child (see startLeaseSentinel) and hands its
+// pid to the hook via CI_LOCK_WORKER_PID: the lease then ends with the build
+// even when the release script fails or never runs.
 //
 // Namespace (verified 2026-07-16 on krolik): dozor and EVERY CI runner run as
 // the same user (krolik, uid 1002) under user@1002.service, so they share
-// $XDG_RUNTIME_DIR=/run/user/1002 and the ci-slot-N dirs collide → the lock
+// $XDG_RUNTIME_DIR=/run/user/1002 and the lease state collides → the lock
 // genuinely serialises cross-lane. No shared-path override is needed on this
 // box. The env knobs below let a split-user deployment point both lanes at a
 // shared dir (e.g. set XDG_RUNTIME_DIR on the acquire/release env) if it ever
@@ -43,9 +51,9 @@ import (
 // Contract (correctness is paramount — a lock bug stalls ALL fleet deploys):
 //   - Heavy builds ONLY. A non-Heavy build never touches the lock.
 //   - Acquire before the build; RELEASE on EVERY exit path via defer (success,
-//     build error, panic, early return). A leaked lock blocks all future heavy
-//     builds until the 1h stale-steal — the stale-steal is a BACKSTOP, never
-//     the primary mechanism.
+//     build error, panic, ctx cancel, early return). The release script is the
+//     primary mechanism; the sentinel kill (also on every exit path) is the
+//     backstop that bounds a leaked lease to the build's own lifetime.
 //   - Deterministic JOB_KEY: GITHUB_REPOSITORY/GITHUB_RUN_ID/GITHUB_JOB are set
 //     identically on acquire and release so the scripts compute the SAME key.
 //   - Fail-SAFE on acquire timeout: a non-zero acquire (no slot freed within
@@ -125,18 +133,18 @@ func defaultCILockReleaser(env []string) {
 // three to a stable per-build key makes the release match the acquire exactly.
 // repo namespacing via GITHUB_REPOSITORY=dozor/<repo> keeps dozor slots
 // distinct from CI runner slots for the same SHA.
-func ciLockEnv(repo, buildID string) []string {
+func ciLockEnv(repo, buildID string, workerPID int) []string {
 	// Guard against a JOB_KEY divergence: the scripts derive RUN_ID via
 	// ${GITHUB_RUN_ID:-$$}, and bash `:-` fires on EMPTY too — so an empty
 	// buildID would make the acquire and release (separate procs) fall to
 	// DIFFERENT $$ PIDs, the release key mismatch, and the acquired slot leak
-	// until the 1h stale-steal. A fixed placeholder keeps RUN_ID non-empty and
+	// until the lease holder exits. A fixed placeholder keeps RUN_ID non-empty and
 	// stable across the acquire/release pair (reachable via head_commit:null).
 	runID := buildID
 	if runID == "" {
 		runID = "nosha"
 	}
-	return []string{
+	env := []string{
 		"GITHUB_REPOSITORY=dozor/" + repo,
 		"GITHUB_RUN_ID=" + runID,
 		"GITHUB_JOB=" + ciLockJob,
@@ -146,58 +154,48 @@ func ciLockEnv(repo, buildID string) []string {
 		// cargo build never blocks a 3m Go preflight on the single shared box.
 		"CI_LOCK_SLOT_START=2",
 	}
+	if workerPID > 0 {
+		// Bind the lease to the per-build sentinel, not to the dozor daemon.
+		env = append(env, "CI_LOCK_WORKER_PID="+strconv.Itoa(workerPID))
+	}
+	return env
 }
 
-// SweepDozorCiLockSlots releases box-wide ci-lock slots still owned by a
-// PREVIOUS dozor process — the deferred release in processBuild never ran when
-// dozor was killed/restarted mid-heavy-build, so the slot dir and its ci-job-*
-// reverse index outlive the process. The next build then blocks on its own
-// corpse until the script's 1h stale-steal — observed as a ~45min silent stall
-// on every dozor self-deploy that interrupts a heavy build (issue #193).
+// leaseSentinelStarter starts the per-build sentinel process and returns its
+// pid plus an idempotent stop func. Seam for tests.
+var leaseSentinelStarter = startLeaseSentinel
+
+// startLeaseSentinel spawns `cat` reading from a pipe whose write end dozor
+// holds. The lease hook binds the lock to this child's pid + starttime, so the
+// lease ends when the child exits. The child exits when (a) stop() closes the
+// pipe and kills it, or (b) the dozor daemon dies for any reason — the kernel
+// closes the write end, cat sees EOF. No polling, no pid-reuse window, and no
+// orphan that could re-create the very leak this exists to prevent.
 //
-// Called once at startup, BEFORE queue.RecoverQueue re-enqueues interrupted
-// builds, so a recovered build acquires cleanly instead of queueing behind the
-// slot it died holding. Safe by construction:
-//   - Runs before any build in THIS process could have acquired a slot, so a
-//     dozor-owned slot can only belong to a dead predecessor.
-//   - Only owner keys matching dozor_<repo>-*-<ciLockJob> are touched — CI
-//     runner slots (gha_*) are never swept.
-//
-// Best-effort: a failed sweep logs and continues; the stale-steal remains the
-// backstop.
-func SweepDozorCiLockSlots() {
-	runDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runDir == "" {
-		runDir = "/run/user/" + strconv.Itoa(os.Getuid())
-	}
-	slots, err := filepath.Glob(filepath.Join(runDir, "ci-slot-*"))
+// stop reaps the child (Wait) so no zombie lingers; it is safe to call more
+// than once.
+func startLeaseSentinel() (pid int, stop func(), err error) {
+	pr, pw, err := os.Pipe()
 	if err != nil {
-		slog.Warn("deploy: ci-lock sweep: cannot list slots", "dir", runDir, "error", err)
-		return
+		return 0, nil, err
 	}
-	for _, slot := range slots {
-		ownerBytes, err := os.ReadFile(filepath.Join(slot, "owner"))
-		if err != nil {
-			continue // mid-acquire or already gone — not ours to judge
-		}
-		owner := strings.TrimSpace(string(ownerBytes))
-		// JOB_KEY shape from the acquire script: <repo>-<runid>-<job> with '/'
-		// flattened to '_', so a dozor slot owner is "dozor_<repo>-<id>-dozor-deploy".
-		if !strings.HasPrefix(owner, "dozor_") || !strings.HasSuffix(owner, "-"+ciLockJob) {
-			continue
-		}
-		slog.Info("deploy: sweeping ci-lock slot leaked by previous dozor process",
-			"slot", filepath.Base(slot), "owner", owner)
-		if err := os.RemoveAll(slot); err != nil {
-			slog.Warn("deploy: ci-lock sweep: cannot remove slot", "slot", slot, "error", err)
-			continue
-		}
-		// Mirror ci-lock-release.sh: drop the reverse-index state file so a
-		// later release attempt for the same key is a clean no-op.
-		if err := os.Remove(filepath.Join(runDir, "ci-job-"+owner)); err != nil && !os.IsNotExist(err) {
-			slog.Warn("deploy: ci-lock sweep: cannot remove state file", "owner", owner, "error", err)
-		}
+	cmd := exec.Command("cat") //nolint:gosec // fixed argv, no user input
+	cmd.Stdin = pr
+	if err := cmd.Start(); err != nil {
+		_ = pr.Close()
+		_ = pw.Close()
+		return 0, nil, err
 	}
+	_ = pr.Close() // the child owns the read end now
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			_ = pw.Close()
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		})
+	}
+	return cmd.Process.Pid, stop, nil
 }
 
 // acquireCrossLaneLock tries to take the box-wide ci-lock for a HEAVY build.
@@ -206,12 +204,28 @@ func SweepDozorCiLockSlots() {
 //   - acquired (script exit 0): releaser releases the slot on call.
 //   - timed out / failed (non-zero): logs a warning and PROCEEDS unlocked
 //     (fail-safe); the releaser still attempts a release, which the script
-//     turns into a no-op when no state file exists for the key.
+//     turns into a no-op when no state exists for the key.
+//
+// In every case the per-build lease sentinel is stopped when the releaser runs
+// (deferred, so a panicking release script cannot skip it), and also right
+// away when the acquire fails. If the sentinel cannot be started the lock falls
+// back to the hook's $PPID binding (the pre-sentinel behaviour) and says so.
 //
 // The buildID must be stable across the acquire/release pair (it is captured in
 // the env closure); the caller generates it once per build.
 func acquireCrossLaneLock(ctx context.Context, repo, buildID string) func() {
-	env := ciLockEnv(repo, buildID)
+	pid, stopSentinel, err := leaseSentinelStarter()
+	if err != nil {
+		slog.Warn("cross-lane lock: lease sentinel failed to start, lease binds to the daemon",
+			"repo", repo, "build_id", buildID, "error", err)
+		CrossLaneLockTotal.WithLabelValues("sentinel_failed").Inc()
+		pid, stopSentinel = 0, func() {}
+	}
+	env := ciLockEnv(repo, buildID, pid)
+	release := func() {
+		defer stopSentinel()
+		ciLockReleaser(env)
+	}
 	acquired, err := ciLockAcquirer(ctx, env)
 	if !acquired {
 		wait := time.Duration(ciLockWaitSecs) * time.Second
@@ -219,10 +233,10 @@ func acquireCrossLaneLock(ctx context.Context, repo, buildID string) func() {
 			"repo", repo, "build_id", buildID, "wait", wait, "error", err)
 		CrossLaneLockTotal.WithLabelValues("timeout_proceeded").Inc()
 		// Fail-safe: still attempt release (no-op if acquire wrote no state).
-		return func() { ciLockReleaser(env) }
+		return release
 	}
 	slog.Info("deploy: cross-lane lock acquired for heavy build",
 		"repo", repo, "build_id", buildID)
 	CrossLaneLockTotal.WithLabelValues("acquired").Inc()
-	return func() { ciLockReleaser(env) }
+	return release
 }
