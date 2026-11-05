@@ -28,7 +28,7 @@ type BuildOutcome struct {
 	Repo       string    `json:"repo"`
 	Services   []string  `json:"services,omitempty"`
 	CommitSHA  string    `json:"commit"`
-	Status     string    `json:"status"` // success|failure|timeout|superseded|manual_gated
+	Status     string    `json:"status"` // success|failure|timeout|superseded|manual_gated|source_unavailable
 	FinishedAt time.Time `json:"finished_at"`
 	Duration   string    `json:"duration,omitempty"`
 	Error      string    `json:"error,omitempty"`

@@ -47,7 +47,9 @@ func executeBinaryBuild(ctx context.Context, req BuildRequest) BuildResult {
 
 	// Step 1: pull latest source.
 	slog.Info("deploy/binary: git pull", "repo", req.Repo, "path", req.Config.SourcePath)
-	if err := runCmd(ctx, req.Config.SourcePath, "git", "pull", "--ff-only"); err != nil {
+	if err := retryTransientGit(ctx, "git pull", func() error {
+		return runCmd(ctx, req.Config.SourcePath, "git", "pull", "--ff-only")
+	}); err != nil {
 		result.Error = fmt.Sprintf("git pull: %v", err)
 		return result
 	}

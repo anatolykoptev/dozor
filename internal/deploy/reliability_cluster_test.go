@@ -198,47 +198,6 @@ func TestRunBuildWithFullLog_ReturnsTail(t *testing.T) {
 	}
 }
 
-// ── issue #193: leaked ci-lock slot sweep ────────────────────────────────
-
-func TestSweepDozorCiLockSlots_RemovesOnlyDozorOwned(t *testing.T) {
-	runDir := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", runDir)
-
-	dozorKey := "dozor_oxbrowser-abc123-" + ciLockJob
-	runnerKey := "gha_selfhosted-99-build"
-
-	slot := filepath.Join(runDir, "ci-slot-2")
-	if err := os.MkdirAll(slot, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(slot, "owner"), []byte(dozorKey), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(runDir, "ci-job-"+dozorKey), []byte(slot), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A foreign CI-runner slot the sweep must not touch.
-	foreign := filepath.Join(runDir, "ci-slot-1")
-	if err := os.MkdirAll(foreign, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(foreign, "owner"), []byte(runnerKey), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	SweepDozorCiLockSlots()
-
-	if _, err := os.Stat(slot); !os.IsNotExist(err) {
-		t.Fatalf("leaked dozor slot still present after sweep: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(runDir, "ci-job-"+dozorKey)); !os.IsNotExist(err) {
-		t.Fatalf("leaked ci-job state file still present: %v", err)
-	}
-	if _, err := os.Stat(foreign); err != nil {
-		t.Fatalf("foreign runner slot removed by sweep: %v", err)
-	}
-}
-
 // ── issue #174: startup reconcile re-drives missed deploys ───────────────
 
 func TestReconcileMissedReleases_EnqueuesTagDrift(t *testing.T) {

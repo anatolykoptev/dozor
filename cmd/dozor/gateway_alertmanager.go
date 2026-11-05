@@ -239,3 +239,57 @@ func buildAlertmanagerFallback(alerts []engine.Alert) string {
 	}
 	return sb.String()
 }
+
+// groupCaptionLineRunes caps one member line of a grouped caption.
+const groupCaptionLineRunes = 110
+
+// overflowNames names as many of the remaining alerts as fit in budget runes
+// and states the count of those that do not, so the caption never silently
+// drops members.
+func overflowNames(rest []engine.Alert, budget int) string {
+	var sb strings.Builder
+	sb.WriteString("\n+ ")
+	used := 3
+	for i, r := range rest {
+		more := fmt.Sprintf(" (+%d more)", len(rest)-i)
+		piece := r.Service
+		if i > 0 {
+			piece = ", " + piece
+		}
+		if used+utf8.RuneCountInString(piece)+utf8.RuneCountInString(more) > budget {
+			sb.WriteString(strings.TrimPrefix(more, " "))
+			return sb.String()
+		}
+		sb.WriteString(piece)
+		used += utf8.RuneCountInString(piece)
+	}
+	return sb.String()
+}
+
+// buildAlertCaption returns the Telegram photo caption for a notification.
+// The card image renders alerts[0] only, so for a group the caption must name
+// every member: a compact "[LEVEL] service: title" line each, never hiding
+// alerts behind the first. A single alert keeps the full fallback text. If the
+// list outgrows the caption budget the overflow is still named (service names
+// only) rather than silently dropped.
+func buildAlertCaption(alerts []engine.Alert, fallbackText string) string {
+	if len(alerts) <= 1 {
+		return engine.TruncateRunesEllipsis(fallbackText, engine.MaxCaptionRunes)
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d alerts in group:", len(alerts))
+	used := utf8.RuneCountInString(sb.String())
+	for i, a := range alerts {
+		line := engine.TruncateRunesEllipsis(
+			fmt.Sprintf("[%s] %s: %s", strings.ToUpper(string(a.Level)), a.Service, a.Title),
+			groupCaptionLineRunes)
+		cost := utf8.RuneCountInString(line) + 3 // "\n- "
+		if used+cost > engine.MaxCaptionRunes {
+			sb.WriteString(overflowNames(alerts[i:], engine.MaxCaptionRunes-used))
+			break
+		}
+		sb.WriteString("\n- " + line)
+		used += cost
+	}
+	return engine.TruncateRunesEllipsis(sb.String(), engine.MaxCaptionRunes)
+}

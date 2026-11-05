@@ -371,12 +371,12 @@ func TestCrossLaneLock_CounterOutcomes(t *testing.T) {
 // acquire vs release JOB_KEY → the slot leaks until the 1h stale-steal). RED
 // against the pre-guard verbatim pass-through.
 func TestCiLockEnv_EmptyBuildIDGetsPlaceholder(t *testing.T) {
-	if got := envRunID(ciLockEnv("owner/rust-svc", "")); got == "" {
+	if got := envRunID(ciLockEnv("owner/rust-svc", "", 0)); got == "" {
 		t.Fatal("GITHUB_RUN_ID empty for empty buildID — falls back to $$, diverging acquire/release JOB_KEY")
 	} else if got != "nosha" {
 		t.Fatalf("GITHUB_RUN_ID = %q for empty buildID, want placeholder %q", got, "nosha")
 	}
-	if got := envRunID(ciLockEnv("owner/rust-svc", "abc123")); got != "abc123" {
+	if got := envRunID(ciLockEnv("owner/rust-svc", "abc123", 0)); got != "abc123" {
 		t.Fatalf("non-empty buildID should pass through unchanged, got %q", got)
 	}
 }
@@ -385,7 +385,7 @@ func TestCiLockEnv_EmptyBuildIDGetsPlaceholder(t *testing.T) {
 // builds MUST target slot 2 (CI_LOCK_SLOT_START=2) so they never block Go CI
 // runners on slot 1.
 func TestCiLockEnv_SlotStartIs2(t *testing.T) {
-	env := ciLockEnv("owner/rust-svc", "abc123")
+	env := ciLockEnv("owner/rust-svc", "abc123", 0)
 	for _, kv := range env {
 		if kv == "CI_LOCK_SLOT_START=2" {
 			return
