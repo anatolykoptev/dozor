@@ -158,6 +158,10 @@ func TestIsTransientGitError(t *testing.T) {
 		{errors.New("read: Connection reset by peer"), true},
 		{errors.New("Connection closed by remote host"), true},
 		{errors.New("CONNECTION CLOSED BY REMOTE HOST"), true},
+		// git appends "Could not read from remote repository" to a missing remote
+		// too; waiting will not fix that.
+		{errors.New("fatal: '/x/no-such-remote' does not appear to be a git repository\nfatal: Could not read from remote repository."), false},
+		{errors.New("ERROR: Repository not found.\nfatal: Could not read from remote repository."), false},
 		{errors.New("CONFLICT (content): Merge conflict in main.go"), false},
 		{errors.New("fatal: not a git repository"), false},
 		{context.DeadlineExceeded, false},

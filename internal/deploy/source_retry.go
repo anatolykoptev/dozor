@@ -66,6 +66,14 @@ var transientGitMarkers = []string{
 	"early eof",
 }
 
+// permanentGitMarkers veto a transient match: git prints "Could not read from
+// remote repository" after these too, but a missing or renamed remote will not
+// come back by waiting, so it must stay a loud build failure.
+var permanentGitMarkers = []string{
+	"does not appear to be a git repository",
+	"repository not found",
+}
+
 // isTransientGitError reports whether err looks like a transport/auth failure
 // of the git remote. A cancelled/expired context is never transient.
 func isTransientGitError(err error) bool {
@@ -73,6 +81,11 @@ func isTransientGitError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+	for _, m := range permanentGitMarkers {
+		if strings.Contains(msg, m) {
+			return false
+		}
+	}
 	for _, m := range transientGitMarkers {
 		if strings.Contains(msg, m) {
 			return true
